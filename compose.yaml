@@ -1,0 +1,88 @@
+services:
+  selfhost:
+    build: .
+    restart: unless-stopped
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+      SELFHOST_HOST_PROC: /host/proc
+      SELFHOST_HOST_SYS: /host/sys
+      SELFHOST_HOST_DISK: /host/disk
+      DATABASE_URL: postgres://selfhost:${POSTGRES_PASSWORD:-selfhost-local-password}@postgres:5432/selfhost?sslmode=disable
+      SELFHOST_JWT_SECRET: ${JWT_SECRET:-development-secret-change-before-production}
+      SELFHOST_COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      SELFHOST_PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      SELFHOST_ENCRYPTION_KEY: ${ENCRYPTION_KEY:-development-encryption-key-change-now}
+      GITLAB_CLIENT_ID: ${GITLAB_CLIENT_ID:-}
+      GITLAB_CLIENT_SECRET: ${GITLAB_CLIENT_SECRET:-}
+      GITLAB_BASE_URL: ${GITLAB_BASE_URL:-https://gitlab.com}
+      SMTP_ENABLED: ${SMTP_ENABLED:-true}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_ENCRYPTION: ${SMTP_ENCRYPTION:-starttls}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-DeployForge}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+      SMTP_NOTIFY_DEPLOYMENT_FAILURES: ${SMTP_NOTIFY_DEPLOYMENT_FAILURES:-true}
+      SMTP_NOTIFY_DEPLOYMENT_SUCCESSES: ${SMTP_NOTIFY_DEPLOYMENT_SUCCESSES:-false}
+      CADDY_ADMIN_URL: unix:///run/caddy-admin/admin.sock
+      SELFHOST_CONTROL_HOSTS: ${CONTROL_HOSTS:-localhost}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - ${HOST_DISK_PATH:-.}:/host/disk:ro
+      - caddy_admin:/run/caddy-admin
+    networks: [control, proxy]
+    depends_on:
+      caddy:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: selfhost
+      POSTGRES_USER: selfhost
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-selfhost-local-password}
+    command: ["postgres", "-c", "shared_buffers=32MB", "-c", "max_connections=30", "-c", "work_mem=2MB"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [control]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U selfhost -d selfhost"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      SELFHOST_CONTROL_HOSTS: ${CONTROL_HOSTS:-localhost}
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+      - "${HTTPS_PORT:-8443}:443"
+      - "${HTTPS_PORT:-8443}:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_admin:/run/caddy-admin
+    networks: [control, proxy]
+
+networks:
+  control:
+    internal: true
+  proxy:
+    name: selfhost-proxy
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+  caddy_admin:

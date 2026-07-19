@@ -1,0 +1,18 @@
+{
+  admin unix//run/caddy-admin/admin.sock
+}
+
+:80 {
+  encode zstd gzip
+  @controlIP header_regexp Host "^(?:[0-9]{1,3}[.]){3}[0-9]{1,3}(?::[0-9]+)?$"
+  handle @controlIP {
+    reverse_proxy selfhost:8080
+  }
+  @control host {$SELFHOST_CONTROL_HOSTS:localhost 127.0.0.1}
+  handle @control {
+    reverse_proxy selfhost:8080
+  }
+  handle {
+    respond "Not Found" 404
+  }
+}

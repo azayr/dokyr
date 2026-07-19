@@ -1,0 +1,11 @@
+[
+  {
+    "date": "2026-07-18",
+    "scope": "application shell and deployments workbench",
+    "genre": "modern-minimal",
+    "macrostructure": "Workbench",
+    "navigation": "N3 side rail",
+    "anchorHue": 154,
+    "variation": "wide operational summary, single deployment ledger, left-aligned empty state"
+  }
+]
