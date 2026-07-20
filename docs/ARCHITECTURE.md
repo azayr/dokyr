@@ -186,9 +186,9 @@ sequenceDiagram
 
 Initial user creation locks the `users` table inside a transaction, so concurrent setup attempts cannot create multiple owners. Public registration closes as soon as one user exists.
 
-## 7. Image deployment flow
+## 7. Application deployment and zero-downtime promotion
 
-Only `source_type=image` projects are deployable in the current implementation.
+Application services can deploy a registry image or clone and build a Git repository. Every application-service deployment uses a candidate container so the current release remains available until the replacement passes its configured health check.
 
 ```mermaid
 sequenceDiagram
@@ -196,35 +196,41 @@ sequenceDiagram
     participant API as Go API
     participant DB as PostgreSQL
     participant Docker as Docker Engine API
-    participant Registry as Image registry
+    participant Source as Git or image registry
 
-    UI->>API: POST /api/projects/{id}/deploy
+    UI->>API: POST /api/services/{id}/deploy
     API->>DB: Create deployment (deploying)
     API->>DB: Record PREPARE event
     API-->>UI: 202 Accepted + deployment ID
-    API->>Docker: POST /images/create
-    Docker->>Registry: Pull image and layers
-    loop Pull progress
-        Docker-->>API: JSON progress frame
-        API->>DB: Append PULL event
-        UI->>API: Poll deployment details
-        API-->>UI: Deployment + ordered events
+    API->>Source: Pull image or clone and build source
+    API->>Docker: Create unique *-next-* candidate
+    API->>Docker: Start candidate on selfhost-proxy
+    API->>Docker: Verify HTTP path, command, or running state
+    alt Candidate is unhealthy
+        API->>Docker: Remove candidate
+        API->>DB: Mark deployment failed and rollback complete
+        Note over Docker: Current stable container remains online
+    else Candidate is healthy
+        API->>Docker: Give candidate the stable network alias
+        API->>Docker: Rename current container to *-previous
+        API->>Docker: Rename candidate to stable name
+        API->>Docker: Remove previous container
+        API->>DB: Mark deployment and service healthy
     end
-    API->>Docker: Remove previous project container
-    API->>Docker: Create selfhost-prj_* on selfhost-proxy
-    API->>Docker: Start and inspect container
-    API->>DB: Mark deployment and project healthy
 ```
 
 Application containers follow these invariants:
 
-- name: `selfhost-<project-id>`;
-- labels: `selfhost.managed=true` and `selfhost.project.id=<id>`;
+- stable name: `selfhost-svc-<service-id>`;
+- candidate name: `selfhost-svc-<service-id>-next-<unique-suffix>`;
+- labels: `selfhost.managed=true`, `selfhost.project.id=<id>`, and `selfhost.service.id=<id>`;
 - network: `selfhost-proxy`;
-- application port: project-defined `container_port` (`80` by default);
+- application port: service-defined `container_port` (`80` by default);
 - no random host port is published;
 - restart policy: `unless-stopped`;
 - `no-new-privileges` is enabled.
+
+The stable container name is also the private hostname used by Caddy. A candidate is never assigned that stable alias until it passes verification. If candidate creation, startup, or verification fails, only the candidate is removed and the current release continues serving traffic.
 
 Deployment execution runs in a background goroutine with a 15-minute timeout. Progress is persisted in `deployment_events`; the UI polls, so reconnecting does not lose the event history. A control-plane restart marks deployments left in `deploying` or `building` as failed.
 
@@ -461,7 +467,7 @@ Preserve these invariants unless an architecture change explicitly replaces them
 4. **Docker ownership:** managed resources use `selfhost.*` labels and deterministic names. Never enumerate or delete unrelated host containers or volumes.
 5. **Networking:** applications and managed databases join `selfhost-proxy`; applications do not publish random host ports; Caddy routes assigned domains.
 6. **Caddy safety:** generate the complete desired host map and keep the final 404 fallback. Never route an unknown hostname to the panel.
-7. **Failure recovery:** container replacement must restore the previous working container when creation, start, or verification fails.
+7. **Failure recovery:** application deployments must keep the previous stable container online until the candidate passes verification. A failed candidate is removed without changing the stable release.
 8. **Database privacy:** managed databases remain private unless the user explicitly enables a validated, unique public port.
 9. **UI/API contract:** Svelte routes use the shared API wrapper so a 401 returns the user to login. Long-running progress is persisted and polled rather than held only in browser memory.
 10. **Resource limits:** Docker responses and log reads are bounded. Keep request validation and limits when adding streaming or richer log features.
@@ -470,12 +476,11 @@ When tracing a feature, start at the Svelte route, locate its `/api/...` call in
 
 ## 16. Known limitations and logical next boundaries
 
-- Repository OAuth and discovery work, but Git clone/build/deploy does not.
 - Deployment and log updates use polling; there is no WebSocket or server-sent-event transport.
 - There is no job queue, worker process, concurrency controller, deployment cancellation, or distributed lock for deployments.
 - The system manages one Docker Engine and does not schedule across servers.
 - There is no automatic backup/restore workflow, secret rotation workflow, audit log, rate limiting, or fine-grained authorization enforcement beyond authenticated access.
 - Caddy configuration is rebuilt from database state; direct manual runtime changes may be overwritten on the next domain synchronization.
-- The platform has no automated application health-check configuration or zero-downtime rollout yet; image deployment removes the old application container before creating the new one.
+- Zero-downtime promotion is local to one Docker Engine. It protects service availability during a release but does not provide multi-node high availability if the host or Docker daemon fails.
 
 The clean expansion point for repository builds and multi-node operation is a durable jobs table plus a separately deployable worker/agent. Keep provider credentials and desired project state in the control plane; give workers narrowly scoped execution credentials instead of exposing the central Docker socket over TCP.

@@ -3214,8 +3214,15 @@ func (a *API) runApplicationServiceDeployment(deployment store.Deployment, servi
 	}
 	duration := int(time.Since(started).Round(time.Second).Seconds())
 	if err != nil {
-		_ = a.store.UpdateApplicationServiceStatus(context.Background(), service.ID, "failed", err.Error())
-		_ = a.store.UpdateProjectStatus(context.Background(), service.ProjectID, "degraded")
+		fallback, fallbackErr := a.docker.ApplicationService(context.Background(), service.ID, service.Name)
+		if fallbackErr == nil && fallback.Status == "healthy" {
+			_ = a.store.UpdateApplicationServiceStatus(context.Background(), service.ID, fallback.Status, err.Error())
+			_ = a.store.UpdateProjectStatus(context.Background(), service.ProjectID, fallback.Status)
+			a.recordDeploymentEvent(context.Background(), deployment.ID, "rollback", "complete", "Candidate discarded; previous healthy release remains online")
+		} else {
+			_ = a.store.UpdateApplicationServiceStatus(context.Background(), service.ID, "failed", err.Error())
+			_ = a.store.UpdateProjectStatus(context.Background(), service.ProjectID, "degraded")
+		}
 		a.recordDeploymentEvent(context.Background(), deployment.ID, activeStage, "error", err.Error())
 		_ = a.store.FinishDeployment(context.Background(), deployment.ID, "failed", "Deployment failed for "+service.Name, duration)
 		a.log.Error("deploy application service", "service", service.ID, "error", err)

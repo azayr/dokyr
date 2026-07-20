@@ -28,6 +28,17 @@ func TestDecodeImagePullReturnsRegistryError(t *testing.T) {
 	}
 }
 
+func TestApplicationCandidateContainerNameIsDistinctAndStablePrefix(t *testing.T) {
+	started := time.Unix(0, 123456789)
+	name := applicationCandidateContainerName("svc_example", started)
+	if name == applicationContainerName("svc_example") || !strings.HasPrefix(name, applicationContainerName("svc_example")+"-next-") {
+		t.Fatalf("candidate name = %q", name)
+	}
+	if again := applicationCandidateContainerName("svc_example", started); again != name {
+		t.Fatalf("candidate name changed: %q != %q", again, name)
+	}
+}
+
 func TestImagePullQuery(t *testing.T) {
 	tests := []struct {
 		name      string

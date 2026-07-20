@@ -8,10 +8,11 @@
   const imageStages = [
     { id: 'prepare', label: 'Prepare release', detail: 'Validate source and credentials' },
     { id: 'pull', label: 'Pull image', detail: 'Stream layers from the registry' },
-    { id: 'replace', label: 'Replace container', detail: 'Clear the previous runtime slot' },
+    { id: 'replace', label: 'Reserve release', detail: 'Keep the current container serving traffic' },
     { id: 'create', label: 'Create container', detail: 'Attach runtime settings and network' },
     { id: 'start', label: 'Start container', detail: 'Launch the new process' },
-    { id: 'verify', label: 'Verify runtime', detail: 'Inspect container state' }
+    { id: 'verify', label: 'Verify candidate', detail: 'Check readiness before receiving traffic' },
+    { id: 'promote', label: 'Promote release', detail: 'Switch traffic and retire the previous container' }
   ];
   const repositoryStages = [
     { id: 'prepare', label: 'Prepare release', detail: 'Validate source and credentials' },
@@ -37,7 +38,7 @@
   $: steps = stageDefinitions.map((definition) => {
     const events = data.events.filter((event) => event.stage === definition.id);
     const failed = events.some((event) => event.type === 'error');
-    const complete = events.some((event) => event.type === 'complete') || (definition.id === 'verify' && data.deployment.status === 'healthy');
+    const complete = events.some((event) => event.type === 'complete') || (['verify', 'promote'].includes(definition.id) && data.deployment.status === 'healthy');
     const started = events.length > 0;
     const startedAt = events[0]?.createdAt;
     const endedAt = events[events.length - 1]?.createdAt;

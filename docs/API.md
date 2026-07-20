@@ -107,6 +107,10 @@ An application service is either an image pull or a Git clone + Docker build. `c
   "imageUrl": "",
   "containerPort": 8080,
   "command": "serve --port 8080",
+  "healthCheckType": "http",
+  "healthCheckPath": "/health",
+  "healthCheckCommand": "",
+  "healthCheckTimeoutSeconds": 60,
   "status": "healthy",
   "container": "selfhost-svc-svc_…",
   "createdAt": "2026-07-19T12:00:00Z",
@@ -159,7 +163,7 @@ Paths must start with `/`; accepted examples include `/*`, `/api/*`, `/api/**` (
 }
 ```
 
-Typical stages are `prepare`, `clone`, `build`, `pull`, `replace`, `create`, `start`, and `complete`. Event type is generally `start`, `log`, `complete`, or `error`. Poll the deployment detail endpoint while status is `deploying`.
+Typical stages are `prepare`, `clone`, `build`, `pull`, `replace`, `create`, `start`, `verify`, `promote`, `rollback`, and `complete`. Event type is generally `start`, `log`, `complete`, or `error`. Poll the deployment detail endpoint while status is `deploying`.
 
 ## Public/bootstrap API
 
@@ -517,6 +521,9 @@ Image service:
   "registryId": "optional-registry-id",
   "containerPort": 8080,
   "command": "",
+  "healthCheckType": "http",
+  "healthCheckPath": "/",
+  "healthCheckTimeoutSeconds": 60,
   "environment": "ADMINER_DEFAULT_SERVER=selfhost-db-db_…"
 }
 ```
@@ -535,11 +542,16 @@ Git service:
   "buildStrategy": "dockerfile",
   "containerPort": 8080,
   "command": "serve --port 8080",
+  "healthCheckType": "command",
+  "healthCheckCommand": "wget -qO- http://127.0.0.1:8080/health",
+  "healthCheckTimeoutSeconds": 60,
   "environment": "APP_ENV=production\nLOG_LEVEL=info"
 }
 ```
 
-`environment` is a newline-separated `KEY=value` string on service creation. Later use the structured environment endpoint. Git repositories must be visible to the selected GitHub/GitLab connection. `buildStrategy` is `dockerfile` (default), `railpack`, or `nixpacks`. Dockerfile builds require `dockerfilePath` and `buildContext`, both of which must remain inside the repository; absolute paths and parent traversal are rejected. Railpack and Nixpacks inspect the repository and do not require a Dockerfile.
+`environment` is a newline-separated `KEY=value` string on service creation. Later use the structured environment endpoint. `healthCheckType` is `none`, `http`, or `command`. HTTP checks require an absolute `healthCheckPath`; command checks require `healthCheckCommand`. `healthCheckTimeoutSeconds` accepts 5–600 seconds and defaults to 60. With `none`, promotion verifies that the candidate container remains running.
+
+Git repositories must be visible to the selected GitHub/GitLab connection. `buildStrategy` is `dockerfile` (default), `railpack`, or `nixpacks`. Dockerfile builds require `dockerfilePath` and `buildContext`, both of which must remain inside the repository; absolute paths and parent traversal are rejected. Railpack and Nixpacks inspect the repository and do not require a Dockerfile.
 
 Nixpacks uses the control plane's existing Docker socket. Railpack requires a BuildKit daemon; set `SELFHOST_BUILDKIT_HOST` to its reachable `tcp://host:port` endpoint before selecting Railpack. This is intentionally opt-in so the control-plane compose stack does not introduce a privileged builder daemon automatically.
 
@@ -553,7 +565,7 @@ Nixpacks uses the control plane's existing Docker socket. Railpack requires a Bu
 { "service": { "…": "Application service" }, "deployment": { "…": "Deployment" } }
 ```
 
-For an image it pulls the registry image, replaces the private container, and starts it. For a repository it obtains a short-lived provider token, clones the selected branch, builds with the configured Dockerfile/context, then replaces and starts the container. Poll `GET /api/deployments/{deploymentId}` for live event output.
+For an image it pulls the registry image. For a repository it obtains a short-lived provider token, clones the selected branch, and builds with the configured strategy. The runtime then creates a uniquely named candidate container while the stable container remains online. After the candidate passes its HTTP, command, or running-state check, it receives the stable private hostname and the previous container is retired. If the candidate fails, it is removed and the stable release remains active. Poll `GET /api/deployments/{deploymentId}` for live event output.
 
 ### Automatic deployment triggers
 
@@ -608,7 +620,7 @@ If `registryWebhookTag` is not empty, the JSON payload must contain that value i
 { "triggered": true, "deployment": "dep_…" }
 ```
 
-Automatic deployments use the same execution path as the manual deploy button: Git services clone and rebuild; image services pull the configured image and recreate the container. If the service is already deploying, the event is accepted but ignored.
+Automatic deployments use the same zero-downtime execution path as the manual deploy button: Git services clone and rebuild; image services pull the configured image; both create, verify, and promote a candidate container. If the service is already deploying, the event is accepted but ignored.
 
 ### Service logs and removal
 

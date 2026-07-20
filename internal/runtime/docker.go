@@ -589,22 +589,21 @@ func (d *Docker) deployApplicationContainer(ctx context.Context, serviceID, proj
 	if err != nil {
 		return Service{}, fmt.Errorf("invalid container command: %w", err)
 	}
-	if progress != nil {
-		progress("replace", "start", "Checking for an existing service container")
+	stableName := applicationContainerName(serviceID)
+	candidateName := applicationCandidateContainerName(serviceID, time.Now())
+	currentExists, err := d.containerExists(ctx, stableName)
+	if err != nil {
+		return Service{}, fmt.Errorf("inspect current release: %w", err)
 	}
-
-	name := applicationContainerName(serviceID)
-	if existing, err := d.request(ctx, http.MethodDelete, "/containers/"+url.PathEscape(name)+"?force=1", nil, nil); err == nil {
-		existing.Body.Close()
-		if progress != nil {
-			progress("replace", "log", "Stopped and removed the previous service container")
+	if progress != nil {
+		progress("replace", "start", "Reserving a zero-downtime release slot")
+		if currentExists {
+			progress("replace", "log", "Current container remains online while the candidate is verified")
+		} else {
+			progress("replace", "log", "No current container exists; preparing the first release")
 		}
-	} else if !errors.Is(err, ErrNotFound) {
-		return Service{}, fmt.Errorf("replace container: %w", err)
-	}
-	if progress != nil {
-		progress("replace", "complete", "Service container slot is ready")
-		progress("create", "start", "Creating "+name)
+		progress("replace", "complete", "Candidate release slot is ready")
+		progress("create", "start", "Creating "+candidateName)
 	}
 
 	portKey := fmt.Sprintf("%d/tcp", containerPort)
@@ -630,35 +629,130 @@ func (d *Docker) deployApplicationContainer(ctx context.Context, serviceID, proj
 	if len(commandArguments) > 0 {
 		createBody["Cmd"] = commandArguments
 	}
-	created, err := d.request(ctx, http.MethodPost, "/containers/create?name="+url.QueryEscape(name), createBody, nil)
+	created, err := d.request(ctx, http.MethodPost, "/containers/create?name="+url.QueryEscape(candidateName), createBody, nil)
 	if err != nil {
-		return Service{}, fmt.Errorf("create container: %w", err)
+		return Service{}, fmt.Errorf("create candidate container: %w", err)
 	}
 	created.Body.Close()
+	candidatePresent := true
+	promoted := false
+	defer func() {
+		if !candidatePresent || promoted {
+			return
+		}
+		if removed, removeErr := d.request(context.Background(), http.MethodDelete, "/containers/"+url.PathEscape(candidateName)+"?force=1", nil, nil); removeErr == nil {
+			removed.Body.Close()
+			if progress != nil {
+				progress("rollback", "log", "Candidate removed; the previous release remains online")
+			}
+		}
+	}()
 	if progress != nil {
 		if len(commandArguments) > 0 {
 			progress("create", "log", "Container command: "+command)
 		}
-		progress("create", "complete", "Service container created on selfhost-proxy")
-		progress("start", "start", "Starting "+name)
+		progress("create", "complete", "Candidate container created on selfhost-proxy")
+		progress("start", "start", "Starting "+candidateName)
 	}
-	started, err := d.request(ctx, http.MethodPost, "/containers/"+url.PathEscape(name)+"/start", nil, nil)
+	started, err := d.request(ctx, http.MethodPost, "/containers/"+url.PathEscape(candidateName)+"/start", nil, nil)
 	if err != nil {
-		return Service{}, fmt.Errorf("start container: %w", err)
+		return Service{}, fmt.Errorf("start candidate container: %w", err)
 	}
 	started.Body.Close()
 	if progress != nil {
 		progress("start", "complete", "Service process started")
 		progress("verify", "start", applicationHealthCheckDescription(healthCheck, containerPort))
 	}
-	service, err := d.waitForApplicationHealth(ctx, serviceID, serviceName, containerPort, healthCheck)
+	_, err = d.waitForApplicationHealth(ctx, candidateName, serviceName, containerPort, healthCheck)
 	if err != nil {
 		return Service{}, err
 	}
 	if progress != nil {
 		progress("verify", "complete", applicationHealthCheckSuccess(healthCheck))
+		progress("promote", "start", "Switching traffic to the verified candidate")
 	}
-	return service, nil
+	cleanupWarning, err := d.promoteApplicationContainer(ctx, stableName, candidateName, currentExists)
+	if err != nil {
+		return Service{}, fmt.Errorf("promote candidate container: %w", err)
+	}
+	candidatePresent = false
+	promoted = true
+	if progress != nil {
+		if cleanupWarning != "" {
+			progress("promote", "log", cleanupWarning)
+		}
+		progress("promote", "complete", "Traffic switched; previous container retired")
+	}
+	return d.ApplicationService(ctx, serviceID, serviceName)
+}
+
+func applicationCandidateContainerName(serviceID string, started time.Time) string {
+	return fmt.Sprintf("%s-next-%x", applicationContainerName(serviceID), started.UnixNano())
+}
+
+func (d *Docker) containerExists(ctx context.Context, name string) (bool, error) {
+	var inspected struct {
+		ID string `json:"Id"`
+	}
+	err := d.get(ctx, "/containers/"+url.PathEscape(name)+"/json", &inspected)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (d *Docker) renameContainer(ctx context.Context, current, replacement string) error {
+	response, err := d.request(ctx, http.MethodPost, "/containers/"+url.PathEscape(current)+"/rename?name="+url.QueryEscape(replacement), nil, nil)
+	if err != nil {
+		return err
+	}
+	response.Body.Close()
+	return nil
+}
+
+func (d *Docker) promoteApplicationContainer(ctx context.Context, stableName, candidateName string, currentExists bool) (string, error) {
+	disconnected, err := d.request(ctx, http.MethodPost, "/networks/selfhost-proxy/disconnect", map[string]any{"Container": candidateName, "Force": true}, nil)
+	if err != nil {
+		return "", fmt.Errorf("detach candidate network: %w", err)
+	}
+	disconnected.Body.Close()
+	connected, err := d.request(ctx, http.MethodPost, "/networks/selfhost-proxy/connect", map[string]any{
+		"Container": candidateName,
+		"EndpointConfig": map[string]any{
+			"Aliases": []string{stableName},
+		},
+	}, nil)
+	if err != nil {
+		return "", fmt.Errorf("attach stable network alias: %w", err)
+	}
+	connected.Body.Close()
+
+	previousName := stableName + "-previous"
+	if currentExists {
+		if stale, staleErr := d.request(ctx, http.MethodDelete, "/containers/"+url.PathEscape(previousName)+"?force=1", nil, nil); staleErr == nil {
+			stale.Body.Close()
+		} else if !errors.Is(staleErr, ErrNotFound) {
+			return "", fmt.Errorf("clear stale previous release: %w", staleErr)
+		}
+		if err := d.renameContainer(ctx, stableName, previousName); err != nil {
+			return "", fmt.Errorf("preserve current release: %w", err)
+		}
+	}
+	if err := d.renameContainer(ctx, candidateName, stableName); err != nil {
+		if currentExists {
+			_ = d.renameContainer(context.Background(), previousName, stableName)
+		}
+		return "", fmt.Errorf("activate candidate release: %w", err)
+	}
+	if !currentExists {
+		return "", nil
+	}
+	removed, err := d.request(ctx, http.MethodDelete, "/containers/"+url.PathEscape(previousName)+"?force=1", nil, nil)
+	if err != nil {
+		return "New release is active, but Docker could not remove the previous container: " + err.Error(), nil
+	}
+	removed.Body.Close()
+	return "", nil
 }
 
 func applicationHealthCheckDescription(check ApplicationHealthCheck, port int) string {
@@ -683,12 +777,12 @@ func applicationHealthCheckSuccess(check ApplicationHealthCheck) string {
 	}
 }
 
-func (d *Docker) waitForApplicationHealth(ctx context.Context, serviceID, serviceName string, port int, check ApplicationHealthCheck) (Service, error) {
+func (d *Docker) waitForApplicationHealth(ctx context.Context, container, serviceName string, port int, check ApplicationHealthCheck) (Service, error) {
 	if check.Timeout <= 0 {
 		check.Timeout = 60 * time.Second
 	}
 	if check.Type == "" || check.Type == "none" {
-		service, err := d.ApplicationService(ctx, serviceID, serviceName)
+		service, err := d.applicationServiceContainer(ctx, container, serviceName)
 		if err != nil {
 			return Service{}, fmt.Errorf("verify container: %w", err)
 		}
@@ -703,14 +797,14 @@ func (d *Docker) waitForApplicationHealth(ctx context.Context, serviceID, servic
 	for {
 		switch check.Type {
 		case "http":
-			lastErr = checkApplicationHTTP(checkContext, applicationContainerName(serviceID), port, check.Path)
+			lastErr = checkApplicationHTTP(checkContext, container, port, check.Path)
 		case "command":
-			lastErr = d.checkApplicationCommand(checkContext, applicationContainerName(serviceID), check.Command)
+			lastErr = d.checkApplicationCommand(checkContext, container, check.Command)
 		default:
 			return Service{}, fmt.Errorf("unsupported health check type %q", check.Type)
 		}
 		if lastErr == nil {
-			service, err := d.ApplicationService(checkContext, serviceID, serviceName)
+			service, err := d.applicationServiceContainer(checkContext, container, serviceName)
 			if err != nil {
 				return Service{}, fmt.Errorf("inspect healthy container: %w", err)
 			}
@@ -1162,7 +1256,10 @@ func (d *Docker) RemoveApplication(ctx context.Context, serviceID string) error 
 }
 
 func (d *Docker) ApplicationService(ctx context.Context, serviceID, serviceName string) (Service, error) {
-	name := applicationContainerName(serviceID)
+	return d.applicationServiceContainer(ctx, applicationContainerName(serviceID), serviceName)
+}
+
+func (d *Docker) applicationServiceContainer(ctx context.Context, name, serviceName string) (Service, error) {
 	var inspected struct {
 		Name  string `json:"Name"`
 		State struct {
