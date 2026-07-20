@@ -62,6 +62,13 @@ GitHub needs no OAuth values in `.env`. Open **Settings → Security**, select
 Then open **Sources** and select which repositories—or all repositories—the
 app may access. Repository access can be changed later from the same page.
 
+If the private GitHub App is deleted from GitHub, its encrypted local
+credentials become unusable. The next GitHub link, login, or repository-install
+attempt verifies the App with GitHub first. A confirmed 401/404 clears the stale
+App credentials and installations; an authenticated owner is then taken through
+the App creation flow again. Users attempting GitHub login must sign in with
+their password once and reconnect GitHub from **Settings → Security**.
+
 GitLab does not provide GitHub's App Manifest flow. To connect GitLab, copy
 `.env.example` to `.env`, create a GitLab OAuth application, and use this exact
 callback URL:

@@ -172,6 +172,10 @@ type ApplicationService struct {
 	RegistryWebhookTag    string    `json:"registryWebhookTag,omitempty"`
 	ContainerPort         int       `json:"containerPort"`
 	Command               string    `json:"command,omitempty"`
+	HealthCheckType       string    `json:"healthCheckType"`
+	HealthCheckPath       string    `json:"healthCheckPath,omitempty"`
+	HealthCheckCommand    string    `json:"healthCheckCommand,omitempty"`
+	HealthCheckTimeout    int       `json:"healthCheckTimeoutSeconds"`
 	Environment           []string  `json:"-"`
 	EnvironmentEncrypted  string    `json:"-"`
 	EnvironmentSecretKeys []string  `json:"-"`
@@ -738,7 +742,7 @@ func splitEnvironment(value string) []string {
 }
 
 func (s *Store) ApplicationServices(ctx context.Context, projectID string) ([]ApplicationService, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,project_id,name,source_type,image_url,COALESCE(registry_id,''),COALESCE(connection_id,''),repository,branch,dockerfile_path,build_context,build_strategy,auto_deploy,registry_webhook_secret_encrypted,registry_webhook_tag,container_port,command,environment,environment_secret_keys,status,last_error,created_at,updated_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id,project_id,name,source_type,image_url,COALESCE(registry_id,''),COALESCE(connection_id,''),repository,branch,dockerfile_path,build_context,build_strategy,auto_deploy,registry_webhook_secret_encrypted,registry_webhook_tag,container_port,command,health_check_type,health_check_path,health_check_command,health_check_timeout_seconds,environment,environment_secret_keys,status,last_error,created_at,updated_at
 		FROM application_services WHERE project_id=$1 ORDER BY created_at,id`, projectID)
 	if err != nil {
 		return nil, err
@@ -748,7 +752,7 @@ func (s *Store) ApplicationServices(ctx context.Context, projectID string) ([]Ap
 	for rows.Next() {
 		var item ApplicationService
 		var secretKeys string
-		if err := rows.Scan(&item.ID, &item.ProjectID, &item.Name, &item.SourceType, &item.ImageURL, &item.RegistryID, &item.ConnectionID, &item.Repository, &item.Branch, &item.DockerfilePath, &item.BuildContext, &item.BuildStrategy, &item.AutoDeploy, &item.RegistryWebhookSecret, &item.RegistryWebhookTag, &item.ContainerPort, &item.Command, &item.EnvironmentEncrypted, &secretKeys, &item.Status, &item.LastError, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.ProjectID, &item.Name, &item.SourceType, &item.ImageURL, &item.RegistryID, &item.ConnectionID, &item.Repository, &item.Branch, &item.DockerfilePath, &item.BuildContext, &item.BuildStrategy, &item.AutoDeploy, &item.RegistryWebhookSecret, &item.RegistryWebhookTag, &item.ContainerPort, &item.Command, &item.HealthCheckType, &item.HealthCheckPath, &item.HealthCheckCommand, &item.HealthCheckTimeout, &item.EnvironmentEncrypted, &secretKeys, &item.Status, &item.LastError, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		item.EnvironmentSecretKeys = splitEnvironment(secretKeys)
@@ -760,8 +764,8 @@ func (s *Store) ApplicationServices(ctx context.Context, projectID string) ([]Ap
 func (s *Store) ApplicationService(ctx context.Context, id string) (ApplicationService, error) {
 	var item ApplicationService
 	var secretKeys string
-	err := s.db.QueryRowContext(ctx, `SELECT id,project_id,name,source_type,image_url,COALESCE(registry_id,''),COALESCE(connection_id,''),repository,branch,dockerfile_path,build_context,build_strategy,auto_deploy,registry_webhook_secret_encrypted,registry_webhook_tag,container_port,command,environment,environment_secret_keys,status,last_error,created_at,updated_at
-		FROM application_services WHERE id=$1`, id).Scan(&item.ID, &item.ProjectID, &item.Name, &item.SourceType, &item.ImageURL, &item.RegistryID, &item.ConnectionID, &item.Repository, &item.Branch, &item.DockerfilePath, &item.BuildContext, &item.BuildStrategy, &item.AutoDeploy, &item.RegistryWebhookSecret, &item.RegistryWebhookTag, &item.ContainerPort, &item.Command, &item.EnvironmentEncrypted, &secretKeys, &item.Status, &item.LastError, &item.CreatedAt, &item.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id,project_id,name,source_type,image_url,COALESCE(registry_id,''),COALESCE(connection_id,''),repository,branch,dockerfile_path,build_context,build_strategy,auto_deploy,registry_webhook_secret_encrypted,registry_webhook_tag,container_port,command,health_check_type,health_check_path,health_check_command,health_check_timeout_seconds,environment,environment_secret_keys,status,last_error,created_at,updated_at
+		FROM application_services WHERE id=$1`, id).Scan(&item.ID, &item.ProjectID, &item.Name, &item.SourceType, &item.ImageURL, &item.RegistryID, &item.ConnectionID, &item.Repository, &item.Branch, &item.DockerfilePath, &item.BuildContext, &item.BuildStrategy, &item.AutoDeploy, &item.RegistryWebhookSecret, &item.RegistryWebhookTag, &item.ContainerPort, &item.Command, &item.HealthCheckType, &item.HealthCheckPath, &item.HealthCheckCommand, &item.HealthCheckTimeout, &item.EnvironmentEncrypted, &secretKeys, &item.Status, &item.LastError, &item.CreatedAt, &item.UpdatedAt)
 	item.EnvironmentSecretKeys = splitEnvironment(secretKeys)
 	return item, err
 }
@@ -775,8 +779,8 @@ func (s *Store) CreateApplicationService(ctx context.Context, service Applicatio
 	if service.ConnectionID != "" {
 		connectionID = service.ConnectionID
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO application_services(id,project_id,name,source_type,image_url,registry_id,connection_id,repository,branch,dockerfile_path,build_context,build_strategy,auto_deploy,registry_webhook_secret_encrypted,registry_webhook_tag,container_port,command,environment,environment_secret_keys,status)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`, service.ID, service.ProjectID, service.Name, service.SourceType, service.ImageURL, registryID, connectionID, service.Repository, service.Branch, service.DockerfilePath, service.BuildContext, service.BuildStrategy, service.AutoDeploy, service.RegistryWebhookSecret, service.RegistryWebhookTag, service.ContainerPort, service.Command, service.EnvironmentEncrypted, strings.Join(service.EnvironmentSecretKeys, "\n"), service.Status)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO application_services(id,project_id,name,source_type,image_url,registry_id,connection_id,repository,branch,dockerfile_path,build_context,build_strategy,auto_deploy,registry_webhook_secret_encrypted,registry_webhook_tag,container_port,command,health_check_type,health_check_path,health_check_command,health_check_timeout_seconds,environment,environment_secret_keys,status)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`, service.ID, service.ProjectID, service.Name, service.SourceType, service.ImageURL, registryID, connectionID, service.Repository, service.Branch, service.DockerfilePath, service.BuildContext, service.BuildStrategy, service.AutoDeploy, service.RegistryWebhookSecret, service.RegistryWebhookTag, service.ContainerPort, service.Command, service.HealthCheckType, service.HealthCheckPath, service.HealthCheckCommand, service.HealthCheckTimeout, service.EnvironmentEncrypted, strings.Join(service.EnvironmentSecretKeys, "\n"), service.Status)
 	return err
 }
 
@@ -790,8 +794,8 @@ func (s *Store) UpdateApplicationService(ctx context.Context, service Applicatio
 		connectionID = service.ConnectionID
 	}
 	result, err := s.db.ExecContext(ctx, `UPDATE application_services
-		SET name=$2,source_type=$3,image_url=$4,registry_id=$5,connection_id=$6,repository=$7,branch=$8,dockerfile_path=$9,build_context=$10,build_strategy=$11,container_port=$12,command=$13,updated_at=NOW()
-		WHERE id=$1`, service.ID, service.Name, service.SourceType, service.ImageURL, registryID, connectionID, service.Repository, service.Branch, service.DockerfilePath, service.BuildContext, service.BuildStrategy, service.ContainerPort, service.Command)
+		SET name=$2,source_type=$3,image_url=$4,registry_id=$5,connection_id=$6,repository=$7,branch=$8,dockerfile_path=$9,build_context=$10,build_strategy=$11,container_port=$12,command=$13,health_check_type=$14,health_check_path=$15,health_check_command=$16,health_check_timeout_seconds=$17,updated_at=NOW()
+		WHERE id=$1`, service.ID, service.Name, service.SourceType, service.ImageURL, registryID, connectionID, service.Repository, service.Branch, service.DockerfilePath, service.BuildContext, service.BuildStrategy, service.ContainerPort, service.Command, service.HealthCheckType, service.HealthCheckPath, service.HealthCheckCommand, service.HealthCheckTimeout)
 	if err != nil {
 		return err
 	}
@@ -1077,6 +1081,29 @@ func (s *Store) UpsertProviderAppConfig(ctx context.Context, config ProviderAppC
 		config.ClientIDEncrypted, config.ClientSecretEncrypted, config.PrivateKeyEncrypted,
 		config.WebhookSecretEncrypted, config.CreatedBy)
 	return err
+}
+
+// ResetProviderAppConfig removes credentials and source connections that belong
+// to a provider app which no longer exists remotely. User identity links are
+// intentionally preserved so the same GitHub identity can be authorized again.
+func (s *Store) ResetProviderAppConfig(ctx context.Context, provider string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, statement := range []string{
+		"DELETE FROM source_connections WHERE provider=$1",
+		"DELETE FROM provider_setup_states WHERE provider=$1",
+		"DELETE FROM oauth_states WHERE provider=$1",
+		"DELETE FROM auth_oauth_states WHERE provider=$1",
+		"DELETE FROM provider_app_configs WHERE provider=$1",
+	} {
+		if _, err := tx.ExecContext(ctx, statement, provider); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) UpsertSourceConnection(ctx context.Context, c SourceConnection) error {

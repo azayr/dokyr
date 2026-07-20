@@ -40,6 +40,13 @@ type RegistryAuth struct {
 
 type ProgressFunc func(stage, eventType, message string)
 
+type ApplicationHealthCheck struct {
+	Type    string
+	Path    string
+	Command string
+	Timeout time.Duration
+}
+
 type Service struct {
 	Name      string `json:"name"`
 	Image     string `json:"image"`
@@ -235,8 +242,12 @@ func (d *Docker) pullImage(ctx context.Context, image string, headers map[string
 		return err
 	}
 	defer res.Body.Close()
-	decoder := json.NewDecoder(res.Body)
-	for decoder.More() {
+	return decodeImagePull(res.Body, progress)
+}
+
+func decodeImagePull(reader io.Reader, progress ProgressFunc) error {
+	decoder := json.NewDecoder(reader)
+	for {
 		var update struct {
 			Status      string `json:"status"`
 			ID          string `json:"id"`
@@ -357,7 +368,7 @@ func (d *Docker) DeployImage(ctx context.Context, projectID, image string, conta
 	return service, nil
 }
 
-func (d *Docker) DeployApplicationImage(ctx context.Context, serviceID, projectID, serviceName, image string, containerPort int, environment []string, command string, auth *RegistryAuth, progress ProgressFunc) (Service, error) {
+func (d *Docker) DeployApplicationImage(ctx context.Context, serviceID, projectID, serviceName, image string, containerPort int, environment []string, command string, healthCheck ApplicationHealthCheck, auth *RegistryAuth, progress ProgressFunc) (Service, error) {
 	if containerPort < 1 || containerPort > 65535 {
 		return Service{}, fmt.Errorf("container port must be between 1 and 65535")
 	}
@@ -378,7 +389,7 @@ func (d *Docker) DeployApplicationImage(ctx context.Context, serviceID, projectI
 	if progress != nil {
 		progress("pull", "complete", "Image is ready locally")
 	}
-	return d.deployApplicationContainer(ctx, serviceID, projectID, serviceName, image, containerPort, environment, command, progress)
+	return d.deployApplicationContainer(ctx, serviceID, projectID, serviceName, image, containerPort, environment, command, healthCheck, progress)
 }
 
 func (d *Docker) BuildApplicationImage(ctx context.Context, serviceID, sourceDir, buildStrategy, dockerfilePath, buildContext string, progress ProgressFunc) (string, error) {
@@ -569,11 +580,11 @@ func buildkitHost() string {
 	return ""
 }
 
-func (d *Docker) DeployApplicationBuiltImage(ctx context.Context, serviceID, projectID, serviceName, image string, containerPort int, environment []string, command string, progress ProgressFunc) (Service, error) {
-	return d.deployApplicationContainer(ctx, serviceID, projectID, serviceName, image, containerPort, environment, command, progress)
+func (d *Docker) DeployApplicationBuiltImage(ctx context.Context, serviceID, projectID, serviceName, image string, containerPort int, environment []string, command string, healthCheck ApplicationHealthCheck, progress ProgressFunc) (Service, error) {
+	return d.deployApplicationContainer(ctx, serviceID, projectID, serviceName, image, containerPort, environment, command, healthCheck, progress)
 }
 
-func (d *Docker) deployApplicationContainer(ctx context.Context, serviceID, projectID, serviceName, image string, containerPort int, environment []string, command string, progress ProgressFunc) (Service, error) {
+func (d *Docker) deployApplicationContainer(ctx context.Context, serviceID, projectID, serviceName, image string, containerPort int, environment []string, command string, healthCheck ApplicationHealthCheck, progress ProgressFunc) (Service, error) {
 	commandArguments, err := parseContainerCommand(command)
 	if err != nil {
 		return Service{}, fmt.Errorf("invalid container command: %w", err)
@@ -638,8 +649,136 @@ func (d *Docker) deployApplicationContainer(ctx context.Context, serviceID, proj
 	started.Body.Close()
 	if progress != nil {
 		progress("start", "complete", "Service process started")
+		progress("verify", "start", applicationHealthCheckDescription(healthCheck, containerPort))
 	}
-	return d.ApplicationService(ctx, serviceID, serviceName)
+	service, err := d.waitForApplicationHealth(ctx, serviceID, serviceName, containerPort, healthCheck)
+	if err != nil {
+		return Service{}, err
+	}
+	if progress != nil {
+		progress("verify", "complete", applicationHealthCheckSuccess(healthCheck))
+	}
+	return service, nil
+}
+
+func applicationHealthCheckDescription(check ApplicationHealthCheck, port int) string {
+	switch check.Type {
+	case "http":
+		return fmt.Sprintf("Waiting for HTTP %s on private port %d", check.Path, port)
+	case "command":
+		return "Waiting for the health command to succeed"
+	default:
+		return "Inspecting the running container"
+	}
+}
+
+func applicationHealthCheckSuccess(check ApplicationHealthCheck) string {
+	switch check.Type {
+	case "http":
+		return "HTTP health check passed"
+	case "command":
+		return "Health command completed successfully"
+	default:
+		return "Container is running"
+	}
+}
+
+func (d *Docker) waitForApplicationHealth(ctx context.Context, serviceID, serviceName string, port int, check ApplicationHealthCheck) (Service, error) {
+	if check.Timeout <= 0 {
+		check.Timeout = 60 * time.Second
+	}
+	if check.Type == "" || check.Type == "none" {
+		service, err := d.ApplicationService(ctx, serviceID, serviceName)
+		if err != nil {
+			return Service{}, fmt.Errorf("verify container: %w", err)
+		}
+		if service.Status != "healthy" {
+			return Service{}, errors.New("container stopped before runtime verification")
+		}
+		return service, nil
+	}
+	checkContext, cancel := context.WithTimeout(ctx, check.Timeout)
+	defer cancel()
+	var lastErr error
+	for {
+		switch check.Type {
+		case "http":
+			lastErr = checkApplicationHTTP(checkContext, applicationContainerName(serviceID), port, check.Path)
+		case "command":
+			lastErr = d.checkApplicationCommand(checkContext, applicationContainerName(serviceID), check.Command)
+		default:
+			return Service{}, fmt.Errorf("unsupported health check type %q", check.Type)
+		}
+		if lastErr == nil {
+			service, err := d.ApplicationService(checkContext, serviceID, serviceName)
+			if err != nil {
+				return Service{}, fmt.Errorf("inspect healthy container: %w", err)
+			}
+			return service, nil
+		}
+		select {
+		case <-checkContext.Done():
+			return Service{}, fmt.Errorf("health check timed out after %s: %w", check.Timeout, lastErr)
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+func checkApplicationHTTP(ctx context.Context, container string, port int, path string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d%s", container, port, path), nil)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 32*1024))
+	if response.StatusCode < 200 || response.StatusCode >= 400 {
+		return fmt.Errorf("HTTP health path returned %s", response.Status)
+	}
+	return nil
+}
+
+func (d *Docker) checkApplicationCommand(ctx context.Context, container, command string) error {
+	created, err := d.request(ctx, http.MethodPost, "/containers/"+url.PathEscape(container)+"/exec", map[string]any{
+		"AttachStdout": true,
+		"AttachStderr": true,
+		"Cmd":          []string{"/bin/sh", "-c", command},
+	}, nil)
+	if err != nil {
+		return err
+	}
+	var execution struct {
+		ID string `json:"Id"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&execution); err != nil {
+		created.Body.Close()
+		return err
+	}
+	created.Body.Close()
+	started, err := d.request(ctx, http.MethodPost, "/exec/"+url.PathEscape(execution.ID)+"/start", map[string]any{"Detach": false, "Tty": false}, nil)
+	if err != nil {
+		return err
+	}
+	_, _ = io.Copy(io.Discard, started.Body)
+	started.Body.Close()
+	var inspected struct {
+		Running  bool `json:"Running"`
+		ExitCode int  `json:"ExitCode"`
+	}
+	if err := d.get(ctx, "/exec/"+url.PathEscape(execution.ID)+"/json", &inspected); err != nil {
+		return err
+	}
+	if inspected.Running {
+		return errors.New("health command is still running")
+	}
+	if inspected.ExitCode != 0 {
+		return fmt.Errorf("health command exited with code %d", inspected.ExitCode)
+	}
+	return nil
 }
 
 func parseContainerCommand(value string) ([]string, error) {

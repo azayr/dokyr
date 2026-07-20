@@ -831,6 +831,9 @@ func (a *API) verifyUserTOTP(u store.User, code string) bool {
 func (a *API) githubLoginStart(w http.ResponseWriter, r *http.Request) {
 	destination, err := a.integrations.StartGitHubAccountOAuth(r.Context(), "", "login")
 	if err != nil {
+		if errors.Is(err, integration.ErrGitHubAccountNotConfigured) {
+			err = errors.New("The GitHub App was removed or is not configured. Sign in with your password, then reconnect GitHub in Settings → Security.")
+		}
 		http.Redirect(w, r, "/login?error="+url.QueryEscape(err.Error()), http.StatusFound)
 		return
 	}
@@ -1433,6 +1436,15 @@ func (a *API) githubInstallationStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	destination, err := a.integrations.StartGitHubInstallation(r.Context(), claims.Subject)
+	if errors.Is(err, integration.ErrGitHubAccountNotConfigured) {
+		manifest, manifestErr := a.integrations.StartGitHubManifest(r.Context(), claims.Subject)
+		if manifestErr != nil {
+			problem(w, manifestErr)
+			return
+		}
+		a.renderGitHubManifestForm(w, manifest)
+		return
+	}
 	if err != nil {
 		http.Redirect(w, r, "/integrations?error="+url.QueryEscape(err.Error()), http.StatusFound)
 		return
@@ -2446,19 +2458,23 @@ func environmentKey(value string) bool {
 }
 
 type applicationServiceInput struct {
-	Name           string `json:"name"`
-	SourceType     string `json:"sourceType"`
-	ImageURL       string `json:"imageUrl"`
-	RegistryID     string `json:"registryId"`
-	ConnectionID   string `json:"connectionId"`
-	Repository     string `json:"repository"`
-	Branch         string `json:"branch"`
-	DockerfilePath string `json:"dockerfilePath"`
-	BuildContext   string `json:"buildContext"`
-	BuildStrategy  string `json:"buildStrategy"`
-	ContainerPort  int    `json:"containerPort"`
-	Command        string `json:"command"`
-	Environment    string `json:"environment"`
+	Name                      string `json:"name"`
+	SourceType                string `json:"sourceType"`
+	ImageURL                  string `json:"imageUrl"`
+	RegistryID                string `json:"registryId"`
+	ConnectionID              string `json:"connectionId"`
+	Repository                string `json:"repository"`
+	Branch                    string `json:"branch"`
+	DockerfilePath            string `json:"dockerfilePath"`
+	BuildContext              string `json:"buildContext"`
+	BuildStrategy             string `json:"buildStrategy"`
+	ContainerPort             int    `json:"containerPort"`
+	Command                   string `json:"command"`
+	HealthCheckType           string `json:"healthCheckType"`
+	HealthCheckPath           string `json:"healthCheckPath"`
+	HealthCheckCommand        string `json:"healthCheckCommand"`
+	HealthCheckTimeoutSeconds int    `json:"healthCheckTimeoutSeconds"`
+	Environment               string `json:"environment"`
 }
 
 func cleanApplicationServiceInput(in applicationServiceInput) (applicationServiceInput, error) {
@@ -2476,6 +2492,9 @@ func cleanApplicationServiceInput(in applicationServiceInput) (applicationServic
 	in.BuildContext = strings.TrimSpace(in.BuildContext)
 	in.BuildStrategy = strings.TrimSpace(in.BuildStrategy)
 	in.Command = strings.TrimSpace(in.Command)
+	in.HealthCheckType = strings.TrimSpace(in.HealthCheckType)
+	in.HealthCheckPath = strings.TrimSpace(in.HealthCheckPath)
+	in.HealthCheckCommand = strings.TrimSpace(in.HealthCheckCommand)
 	if in.Name == "" || len(in.Name) > 63 {
 		return in, errors.New("service name is required and must be at most 63 characters")
 	}
@@ -2486,7 +2505,12 @@ func cleanApplicationServiceInput(in applicationServiceInput) (applicationServic
 		if in.ImageURL == "" || strings.ContainsAny(in.ImageURL, " \t\r\n") {
 			return in, errors.New("enter a valid container image")
 		}
-		in.ConnectionID, in.Repository, in.Branch, in.DockerfilePath, in.BuildContext, in.BuildStrategy = "", "", "", "", "", ""
+		// build_strategy is irrelevant for a prebuilt image, but the database
+		// deliberately keeps it constrained to the supported strategy values.
+		// Preserve the schema default instead of writing an empty string, which
+		// would reject every image service before its deployment can start.
+		in.ConnectionID, in.Repository, in.Branch, in.DockerfilePath, in.BuildContext = "", "", "", "", ""
+		in.BuildStrategy = "dockerfile"
 	} else {
 		if in.ConnectionID == "" {
 			return in, errors.New("choose a connected GitHub or GitLab account")
@@ -2532,6 +2556,37 @@ func cleanApplicationServiceInput(in applicationServiceInput) (applicationServic
 	}
 	if len(in.Command) > 4096 || strings.ContainsRune(in.Command, '\x00') {
 		return in, errors.New("container command must be at most 4096 characters and cannot contain null characters")
+	}
+	if in.HealthCheckType == "" {
+		in.HealthCheckType = "none"
+	}
+	if in.HealthCheckTimeoutSeconds == 0 {
+		in.HealthCheckTimeoutSeconds = 60
+	}
+	if in.HealthCheckTimeoutSeconds < 5 || in.HealthCheckTimeoutSeconds > 600 {
+		return in, errors.New("health check timeout must be between 5 and 600 seconds")
+	}
+	switch in.HealthCheckType {
+	case "none":
+		in.HealthCheckPath, in.HealthCheckCommand = "", ""
+	case "http":
+		if in.HealthCheckPath == "" {
+			in.HealthCheckPath = "/"
+		}
+		if !strings.HasPrefix(in.HealthCheckPath, "/") || len(in.HealthCheckPath) > 2048 || strings.ContainsAny(in.HealthCheckPath, " \t\r\n") {
+			return in, errors.New("health check path must start with / and cannot contain spaces")
+		}
+		in.HealthCheckCommand = ""
+	case "command":
+		if in.HealthCheckCommand == "" {
+			return in, errors.New("enter a health check command")
+		}
+		if len(in.HealthCheckCommand) > 4096 || strings.ContainsRune(in.HealthCheckCommand, '\x00') {
+			return in, errors.New("health check command must be at most 4096 characters and cannot contain null characters")
+		}
+		in.HealthCheckPath = ""
+	default:
+		return in, errors.New("choose container running, HTTP path, or command health verification")
 	}
 	return in, nil
 }
@@ -2600,7 +2655,7 @@ func (a *API) createApplicationService(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	service := store.ApplicationService{ID: newID("svc"), ProjectID: projectID, Name: in.Name, SourceType: in.SourceType, ImageURL: in.ImageURL, RegistryID: in.RegistryID, ConnectionID: in.ConnectionID, Repository: in.Repository, Branch: in.Branch, DockerfilePath: in.DockerfilePath, BuildContext: in.BuildContext, BuildStrategy: in.BuildStrategy, ContainerPort: in.ContainerPort, Command: in.Command, EnvironmentEncrypted: environmentEncrypted, Status: "created"}
+	service := store.ApplicationService{ID: newID("svc"), ProjectID: projectID, Name: in.Name, SourceType: in.SourceType, ImageURL: in.ImageURL, RegistryID: in.RegistryID, ConnectionID: in.ConnectionID, Repository: in.Repository, Branch: in.Branch, DockerfilePath: in.DockerfilePath, BuildContext: in.BuildContext, BuildStrategy: in.BuildStrategy, ContainerPort: in.ContainerPort, Command: in.Command, HealthCheckType: in.HealthCheckType, HealthCheckPath: in.HealthCheckPath, HealthCheckCommand: in.HealthCheckCommand, HealthCheckTimeout: in.HealthCheckTimeoutSeconds, EnvironmentEncrypted: environmentEncrypted, Status: "created"}
 	if err := a.store.CreateApplicationService(r.Context(), service); err != nil {
 		problem(w, err)
 		return
@@ -2675,6 +2730,10 @@ func (a *API) updateApplicationService(w http.ResponseWriter, r *http.Request) {
 	service.BuildStrategy = clean.BuildStrategy
 	service.ContainerPort = clean.ContainerPort
 	service.Command = clean.Command
+	service.HealthCheckType = clean.HealthCheckType
+	service.HealthCheckPath = clean.HealthCheckPath
+	service.HealthCheckCommand = clean.HealthCheckCommand
+	service.HealthCheckTimeout = clean.HealthCheckTimeoutSeconds
 	if err := a.store.UpdateApplicationService(r.Context(), service); err != nil {
 		problem(w, err)
 		return
@@ -3132,6 +3191,7 @@ func (a *API) runApplicationServiceDeployment(deployment store.Deployment, servi
 	}
 	var runtimeService runtime.Service
 	var err error
+	healthCheck := runtime.ApplicationHealthCheck{Type: service.HealthCheckType, Path: service.HealthCheckPath, Command: service.HealthCheckCommand, Timeout: time.Duration(service.HealthCheckTimeout) * time.Second}
 	if service.SourceType == "repository" {
 		workspace, workspaceErr := os.MkdirTemp("", "selfhost-build-"+service.ID+"-")
 		if workspaceErr != nil {
@@ -3145,12 +3205,12 @@ func (a *API) runApplicationServiceDeployment(deployment store.Deployment, servi
 				var image string
 				image, err = a.docker.BuildApplicationImage(ctx, service.ID, workspace, service.BuildStrategy, service.DockerfilePath, service.BuildContext, progress)
 				if err == nil {
-					runtimeService, err = a.docker.DeployApplicationBuiltImage(ctx, service.ID, service.ProjectID, service.Name, image, service.ContainerPort, service.Environment, service.Command, progress)
+					runtimeService, err = a.docker.DeployApplicationBuiltImage(ctx, service.ID, service.ProjectID, service.Name, image, service.ContainerPort, service.Environment, service.Command, healthCheck, progress)
 				}
 			}
 		}
 	} else {
-		runtimeService, err = a.docker.DeployApplicationImage(ctx, service.ID, service.ProjectID, service.Name, service.ImageURL, service.ContainerPort, service.Environment, service.Command, registryAuth, progress)
+		runtimeService, err = a.docker.DeployApplicationImage(ctx, service.ID, service.ProjectID, service.Name, service.ImageURL, service.ContainerPort, service.Environment, service.Command, healthCheck, registryAuth, progress)
 	}
 	duration := int(time.Since(started).Round(time.Second).Seconds())
 	if err != nil {

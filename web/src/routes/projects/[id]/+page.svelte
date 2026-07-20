@@ -24,18 +24,18 @@
   let serviceModal = false;
   let serviceSaving = false;
   let serviceError = '';
-  let serviceForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '', environment: '' };
+  let serviceForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '', healthCheckType: 'none', healthCheckPath: '/', healthCheckCommand: '', healthCheckTimeoutSeconds: 60, environment: '' };
   let serviceRepositories = [];
   let serviceRepositoriesLoading = false;
   let serviceRepositoriesError = '';
   let serviceRepositoryQuery = '';
   let serviceRepositoryPickerOpen = false;
   let serviceSettingsService = null;
-  let serviceSettingsForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '' };
+  let serviceSettingsForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '', healthCheckType: 'none', healthCheckPath: '/', healthCheckCommand: '', healthCheckTimeoutSeconds: 60 };
   let serviceSettingsSaving = false;
   let serviceSettingsError = '';
   let runtimeSettingsServiceId = '';
-  let runtimeSettingsForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '' };
+  let runtimeSettingsForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '', healthCheckType: 'none', healthCheckPath: '/', healthCheckCommand: '', healthCheckTimeoutSeconds: 60 };
   let runtimeSettingsBusy = '';
   let runtimeSettingsError = '';
   let runtimeSettingsNotice = '';
@@ -121,6 +121,7 @@
   let metricsRefreshing = false;
   let metricsError = '';
   let metricsTimer;
+  let projectPollTimer;
 
   $: project = data.project;
   $: service = data.services[0];
@@ -165,11 +166,12 @@
     stopDatabaseLogPolling();
     stopApplicationLogPolling();
     stopMetricsPolling();
+    clearTimeout(projectPollTimer);
     clearTimeout(logsCopyTimer);
   });
 
-  async function loadProject() {
-    loading = true;
+  async function loadProject(silent = false) {
+    if (!silent) loading = true;
     error = '';
     try {
       const response = await api('/api/projects/' + page.params.id);
@@ -195,10 +197,14 @@
       if (runtimeServices.length > 0 && !runtimeServices.some((item) => item.id === runtimeSettingsServiceId)) {
         selectRuntimeSettingsService(runtimeServices[0]);
       }
+      clearTimeout(projectPollTimer);
+      if ((payload.deployments || []).some((item) => ['deploying', 'building'].includes(item.status))) {
+        projectPollTimer = setTimeout(() => loadProject(true), 1200);
+      }
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not load project';
     } finally {
-      loading = false;
+      if (!silent) loading = false;
     }
   }
 
@@ -632,7 +638,7 @@
     serviceRepositoriesError = '';
     serviceRepositoryQuery = '';
     serviceRepositoryPickerOpen = false;
-    serviceForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '', environment: '' };
+    serviceForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '', healthCheckType: 'none', healthCheckPath: '/', healthCheckCommand: '', healthCheckTimeoutSeconds: 60, environment: '' };
     serviceModal = true;
   }
 
@@ -694,7 +700,7 @@
   function openServiceSettings(item) {
     serviceSettingsService = item;
     serviceSettingsError = '';
-    serviceSettingsForm = { name: item.name, sourceType: item.sourceType || 'image', imageUrl: item.imageUrl || '', containerPort: item.containerPort || 80, registryId: item.registryId || '', connectionId: item.connectionId || '', repository: item.repository || '', branch: item.branch || 'main', dockerfilePath: item.dockerfilePath || 'Dockerfile', buildContext: item.buildContext || '.', buildStrategy: item.buildStrategy || 'dockerfile', command: item.command || '' };
+    serviceSettingsForm = { name: item.name, sourceType: item.sourceType || 'image', imageUrl: item.imageUrl || '', containerPort: item.containerPort || 80, registryId: item.registryId || '', connectionId: item.connectionId || '', repository: item.repository || '', branch: item.branch || 'main', dockerfilePath: item.dockerfilePath || 'Dockerfile', buildContext: item.buildContext || '.', buildStrategy: item.buildStrategy || 'dockerfile', command: item.command || '', healthCheckType: item.healthCheckType || 'none', healthCheckPath: item.healthCheckPath || '/', healthCheckCommand: item.healthCheckCommand || '', healthCheckTimeoutSeconds: item.healthCheckTimeoutSeconds || 60 };
   }
 
   async function saveServiceSettings() {
@@ -730,7 +736,11 @@
       dockerfilePath: item.dockerfilePath || 'Dockerfile',
       buildContext: item.buildContext || '.',
       buildStrategy: item.buildStrategy || 'dockerfile',
-      command: item.command || ''
+      command: item.command || '',
+      healthCheckType: item.healthCheckType || 'none',
+      healthCheckPath: item.healthCheckPath || '/',
+      healthCheckCommand: item.healthCheckCommand || '',
+      healthCheckTimeoutSeconds: item.healthCheckTimeoutSeconds || 60
     };
     runtimeSettingsError = '';
     runtimeSettingsNotice = '';
@@ -829,7 +839,11 @@
         dockerfilePath: payload.service.dockerfilePath || 'Dockerfile',
         buildContext: payload.service.buildContext || '.',
         buildStrategy: payload.service.buildStrategy || 'dockerfile',
-        command: payload.service.command || ''
+        command: payload.service.command || '',
+        healthCheckType: payload.service.healthCheckType || 'none',
+        healthCheckPath: payload.service.healthCheckPath || '/',
+        healthCheckCommand: payload.service.healthCheckCommand || '',
+        healthCheckTimeoutSeconds: payload.service.healthCheckTimeoutSeconds || 60
       };
       if (deployAfterSave) {
         const deployResponse = await api('/api/services/' + runtimeSettingsService.id + '/deploy', { method: 'POST' });
@@ -859,9 +873,7 @@
       if (!deployResponse.ok) throw new Error(deployed.error || 'Service was created but could not start deployment');
       serviceModal = false;
       notice = created.service.sourceType === 'repository' ? `${created.service.name} was added. Its repository is being cloned and built in the background.` : `${created.service.name} was added. Its image is being pulled in the background.`;
-      await loadProject();
-      setTimeout(loadProject, 2500);
-      setTimeout(loadProject, 6000);
+      await loadProject(true);
     } catch (cause) {
       serviceError = cause instanceof Error ? cause.message : 'Could not create service';
     } finally {
@@ -878,9 +890,7 @@
       return;
     }
     notice = item.sourceType === 'repository' ? `${item.name} is cloning ${item.repository} and building a new image.` : `${item.name} is pulling ${item.imageUrl}.`;
-    await loadProject();
-    setTimeout(loadProject, 2500);
-    setTimeout(loadProject, 6000);
+    await loadProject(true);
   }
 
   function openApplicationLogs(item) {
@@ -1551,6 +1561,15 @@
                   <label class="settings-field"><span>Container image</span><input bind:value={runtimeSettingsForm.imageUrl} required spellcheck="false" placeholder="quay.io/keycloak/keycloak:26.7.0" /></label>
                 {/if}
                 <label class="settings-field wide runtime-command-field"><span>Container command <em>optional</em></span><input bind:value={runtimeSettingsForm.command} maxlength="4096" placeholder="start-dev" spellcheck="false" /><small>Arguments passed to the image ENTRYPOINT. For Keycloak use <code>start-dev</code>. Quoted arguments are supported.</small></label>
+                <label class="settings-field"><span>Health verification</span><select bind:value={runtimeSettingsForm.healthCheckType}><option value="none">Container running</option><option value="http">HTTP path</option><option value="command">Command</option></select></label>
+                <label class="settings-field"><span>Health timeout</span><input bind:value={runtimeSettingsForm.healthCheckTimeoutSeconds} type="number" min="5" max="600" required /><small>Seconds to wait before deployment fails.</small></label>
+                {#if runtimeSettingsForm.healthCheckType === 'http'}
+                  <label class="settings-field wide"><span>Health path</span><input bind:value={runtimeSettingsForm.healthCheckPath} required maxlength="2048" placeholder="/health" spellcheck="false" /><small>Requested on private port <code>{runtimeSettingsForm.containerPort}</code> until it returns HTTP 2xx or 3xx.</small></label>
+                {:else if runtimeSettingsForm.healthCheckType === 'command'}
+                  <label class="settings-field wide runtime-command-field"><span>Health command</span><input bind:value={runtimeSettingsForm.healthCheckCommand} required maxlength="4096" placeholder="wget -qO- http://127.0.0.1:8080/health >/dev/null" spellcheck="false" /><small>Executed inside the container with <code>/bin/sh -c</code>. Exit code 0 means healthy.</small></label>
+                {:else}
+                  <div class="settings-field wide health-check-note"><strong>Container-state check</strong><small>The deployment succeeds when Docker confirms that the main process is running.</small></div>
+                {/if}
               </div>
               <div class="runtime-apply-note"><Icon name="settings" size={16}/><div><strong>Saving does not interrupt the running container.</strong><span>Choose Save & deploy to recreate this service immediately with the updated command. Docker reuses cached image layers when available.</span></div></div>
               <section class="deployment-triggers" aria-labelledby="deployment-triggers-title">
@@ -1697,6 +1716,15 @@
             <label><span>Container image</span><input bind:value={serviceSettingsForm.imageUrl} required spellcheck="false" /></label>
           {/if}
           <label class="wide command-field"><span>Container command <em>optional</em></span><input bind:value={serviceSettingsForm.command} maxlength="4096" placeholder="start-dev" spellcheck="false" /><small>Arguments passed to the image ENTRYPOINT. Quotes are supported, for example <code>serve --message "hello world"</code>.</small></label>
+          <label><span>Health verification</span><select bind:value={serviceSettingsForm.healthCheckType}><option value="none">Container running</option><option value="http">HTTP path</option><option value="command">Command</option></select></label>
+          <label><span>Health timeout</span><input bind:value={serviceSettingsForm.healthCheckTimeoutSeconds} type="number" min="5" max="600" required /><small>Seconds before verification fails.</small></label>
+          {#if serviceSettingsForm.healthCheckType === 'http'}
+            <label class="wide"><span>Health path</span><input bind:value={serviceSettingsForm.healthCheckPath} required maxlength="2048" placeholder="/health" spellcheck="false" /><small>Checked over the private network on container port <code>{serviceSettingsForm.containerPort}</code>.</small></label>
+          {:else if serviceSettingsForm.healthCheckType === 'command'}
+            <label class="wide command-field"><span>Health command</span><input bind:value={serviceSettingsForm.healthCheckCommand} required maxlength="4096" placeholder="wget -qO- http://127.0.0.1:8080/health >/dev/null" spellcheck="false" /><small>Runs inside the container. Exit code 0 means healthy.</small></label>
+          {:else}
+            <div class="wide health-check-note"><strong>Container-state check</strong><small>Docker only verifies that the main process remains running.</small></div>
+          {/if}
         </div>
         <footer><span>Environment variables are managed separately in the Environment tab.</span><button type="button" onclick={() => serviceSettingsService = null} disabled={serviceSettingsSaving}>Cancel</button><button class="primary" type="submit" disabled={serviceSettingsSaving}>{serviceSettingsSaving ? 'Saving…' : 'Save configuration'}</button></footer>
       </form>
@@ -1773,6 +1801,15 @@
             {/if}
           {/if}
           <label class="wide command-field"><span>Container command <em>optional</em></span><input bind:value={serviceForm.command} maxlength="4096" placeholder="start-dev" spellcheck="false" /><small>Arguments passed to the image ENTRYPOINT. For Keycloak, enter <code>start-dev</code>.</small></label>
+          <label><span>Health verification</span><select bind:value={serviceForm.healthCheckType}><option value="none">Container running</option><option value="http">HTTP path</option><option value="command">Command</option></select></label>
+          <label><span>Health timeout</span><input bind:value={serviceForm.healthCheckTimeoutSeconds} type="number" min="5" max="600" required /><small>Seconds before the deployment fails.</small></label>
+          {#if serviceForm.healthCheckType === 'http'}
+            <label class="wide"><span>Health path</span><input bind:value={serviceForm.healthCheckPath} required maxlength="2048" placeholder="/health" spellcheck="false" /><small>Selfhost calls this path on private port <code>{serviceForm.containerPort}</code>. HTTP 2xx or 3xx is healthy.</small></label>
+          {:else if serviceForm.healthCheckType === 'command'}
+            <label class="wide command-field"><span>Health command</span><input bind:value={serviceForm.healthCheckCommand} required maxlength="4096" placeholder="wget -qO- http://127.0.0.1:8080/health >/dev/null" spellcheck="false" /><small>Runs inside the container with <code>/bin/sh -c</code>. Exit code 0 is healthy.</small></label>
+          {:else}
+            <div class="wide health-check-note"><strong>Container-state check</strong><small>Fastest option. Docker only confirms that the main process is running.</small></div>
+          {/if}
           <label class="wide service-environment"><span>Environment variables <em>optional</em></span><textarea bind:value={serviceForm.environment} placeholder={'# One KEY=value per line\nPMA_ARBITRARY=1\nAPI_ENV=production'} spellcheck="false"></textarea><small>Use the private container names shown by database credentials when a service needs a database host.</small></label>
         </div>
         <footer><span>The service stays private until you assign it in Domain routing.</span><button type="button" onclick={() => serviceModal = false} disabled={serviceSaving}>Cancel</button><button class="primary" type="submit" disabled={serviceSaving}>{serviceSaving ? (serviceForm.sourceType === 'repository' ? 'Starting build…' : 'Adding service…') : 'Add & deploy'}</button></footer>
@@ -2252,6 +2289,9 @@
   .build-pack-help strong { font-size: 10px; }
   .build-pack-help small { color: var(--color-muted); font-size: 9px; line-height: 1.5; }
   .build-pack-help code { color: var(--color-accent); font: 9px var(--font-mono); }
+  .health-check-note { min-height: 64px; padding: var(--space-3); display: grid; align-content: center; gap: 4px; border: 1px dashed var(--color-rule-strong); border-radius: var(--radius-sm); background: var(--color-paper-subtle); }
+  .health-check-note strong { color: var(--color-ink); font-size: 10px; }
+  .health-check-note small { color: var(--color-muted); font-size: 10px; font-weight: 500; line-height: 1.5; }
   .source-choice { margin: var(--space-5) 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); border: 0; }
   .source-choice legend { margin-bottom: var(--space-2); color: var(--color-ink); font-size: 11px; font-weight: 700; }
   .source-choice button { min-height: 64px; padding: var(--space-3); display: flex; align-items: center; gap: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-paper-subtle); color: var(--color-muted); text-align: left; cursor: pointer; }

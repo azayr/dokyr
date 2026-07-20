@@ -37,7 +37,7 @@
   $: steps = stageDefinitions.map((definition) => {
     const events = data.events.filter((event) => event.stage === definition.id);
     const failed = events.some((event) => event.type === 'error');
-    const complete = events.some((event) => event.type === 'complete');
+    const complete = events.some((event) => event.type === 'complete') || (definition.id === 'verify' && data.deployment.status === 'healthy');
     const started = events.length > 0;
     const startedAt = events[0]?.createdAt;
     const endedAt = events[events.length - 1]?.createdAt;

@@ -84,6 +84,7 @@ type githubOAuthCredentials struct {
 }
 
 var ErrGitHubAccountNotConfigured = errors.New("GitHub account authorization is not configured")
+var errGitHubAppRemoved = errors.New("the configured GitHub App no longer exists")
 
 func New(s *store.Store, box *secretbox.Box, cfg Config) *Service {
 	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
@@ -124,6 +125,11 @@ func (s *Service) StartGitHubAccountOAuth(ctx context.Context, userID, mode stri
 	}
 	if credentials.clientID == "" || credentials.clientSecret == "" {
 		return "", ErrGitHubAccountNotConfigured
+	}
+	if credentials.managed {
+		if err := s.ensureGitHubAppAvailable(ctx); err != nil {
+			return "", err
+		}
 	}
 	if mode != "login" && mode != "link" {
 		return "", errors.New("invalid GitHub OAuth mode")
@@ -243,6 +249,9 @@ func (s *Service) StartGitHubInstallation(ctx context.Context, userID string) (s
 		return "", ErrGitHubAccountNotConfigured
 	}
 	if err != nil {
+		return "", err
+	}
+	if err := s.ensureGitHubAppAvailable(ctx); err != nil {
 		return "", err
 	}
 	stateValue, err := randomToken(32)
@@ -802,6 +811,47 @@ func (s *Service) githubAppJWT(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature), nil
+}
+
+func (s *Service) ensureGitHubAppAvailable(ctx context.Context) error {
+	jwt, err := s.githubAppJWT(ctx)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/app", nil)
+	if err != nil {
+		return err
+	}
+	s.bearer(req, jwt, "github")
+	response, err := s.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("verify GitHub App: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if err != nil {
+		return err
+	}
+	if err := githubAppResponseError(response.StatusCode, response.Status, body); err != nil {
+		if errors.Is(err, errGitHubAppRemoved) {
+			if resetErr := s.store.ResetProviderAppConfig(ctx, "github"); resetErr != nil {
+				return fmt.Errorf("reset removed GitHub App: %w", resetErr)
+			}
+			return ErrGitHubAccountNotConfigured
+		}
+		return err
+	}
+	return nil
+}
+
+func githubAppResponseError(statusCode int, status string, body []byte) error {
+	if statusCode >= 200 && statusCode < 300 {
+		return nil
+	}
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusNotFound {
+		return errGitHubAppRemoved
+	}
+	return fmt.Errorf("verify GitHub App returned %s: %s", status, strings.TrimSpace(string(bytes.TrimSpace(body))))
 }
 
 func (s *Service) gitlabRepositories(ctx context.Context, baseURL, token string) ([]Repository, error) {

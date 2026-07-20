@@ -294,6 +294,14 @@ Disable with `DELETE /api/account/2fa`:
 
 GitHub account linking uses the redirect returned by `GET /api/account/github/start`; unlink with `DELETE /api/account/github`.
 
+For a managed private GitHub App, the login/link endpoint performs a signed
+`GET /app` preflight before returning GitHub's OAuth URL. If GitHub returns 401
+or 404 because the App was deleted, the server removes the stale provider
+credentials and GitHub installation connections. An authenticated link request
+immediately starts a fresh App Manifest flow. An unauthenticated login request
+returns to `/login` with instructions to use password login and reconnect the
+App in Settings. Other GitHub or network failures do not erase configuration.
+
 ### SMTP
 
 `GET /api/settings/smtp` returns settings without the password:

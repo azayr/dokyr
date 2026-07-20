@@ -8,6 +8,26 @@ import (
 	"time"
 )
 
+func TestDecodeImagePullConsumesCompleteJSONStream(t *testing.T) {
+	events := []string{}
+	err := decodeImagePull(strings.NewReader("{\"status\":\"Pulling\",\"id\":\"layer-one\"}\n{\"status\":\"Download complete\",\"id\":\"layer-one\"}\n"), func(stage, eventType, message string) {
+		events = append(events, stage+":"+eventType+":"+message)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || !strings.Contains(events[1], "Download complete") {
+		t.Fatalf("unexpected pull events: %#v", events)
+	}
+}
+
+func TestDecodeImagePullReturnsRegistryError(t *testing.T) {
+	err := decodeImagePull(strings.NewReader("{\"errorDetail\":{\"message\":\"denied\"}}\n"), nil)
+	if err == nil || err.Error() != "denied" {
+		t.Fatalf("error = %v, want denied", err)
+	}
+}
+
 func TestImagePullQuery(t *testing.T) {
 	tests := []struct {
 		name      string
