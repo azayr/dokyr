@@ -12,8 +12,8 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  PACKAGE_NAME: selfhost
-  IMAGE_NAME: ${{ github.repository_owner }}/selfhost
+  PACKAGE_NAME: dokyr
+  IMAGE_NAME: ${{ github.repository_owner }}/dokyr
 
 jobs:
   publish:
