@@ -1,10 +1,10 @@
-# Selfhost architecture
+# Dokyr architecture
 
-This document describes the system that is implemented in this repository today. It is intended both for people operating Selfhost and for AI agents changing the code. It separates current behavior from planned capabilities so that the code is not mistaken for a more complete platform than it is.
+This document describes the system that is implemented in this repository today. It is intended both for people operating Dokyr and for AI agents changing the code. It separates current behavior from planned capabilities so that the code is not mistaken for a more complete platform than it is.
 
 ## 1. Purpose and current scope
 
-Selfhost is a lightweight, single-node deployment control plane. It runs as one Go process with an embedded static Svelte application, stores control-plane data in PostgreSQL, controls the host Docker Engine through its Unix socket, and configures a separate Caddy container through Caddy's admin API.
+Dokyr is a lightweight, single-node deployment control plane. It runs as one Go process with an embedded static Svelte application, stores control-plane data in PostgreSQL, controls the host Docker Engine through its Unix socket, and configures a separate Caddy container through Caddy's admin API.
 
 The current release can:
 
@@ -34,7 +34,7 @@ flowchart LR
 
     subgraph Host["Docker host / VPS"]
         Caddy["Caddy edge proxy"]
-        App["Selfhost control plane<br/>Go API + Svelte static UI"]
+        App["Dokyr control plane<br/>Go API + Svelte static UI"]
         PG["Control-plane PostgreSQL"]
         Docker["Docker Engine"]
         Workloads["Managed application containers"]
@@ -54,7 +54,7 @@ flowchart LR
     Docker --> Databases
 ```
 
-The key architectural decision is that Selfhost does not embed a Docker daemon or a reverse proxy. It is a control plane over the host's existing Docker Engine, while Caddy remains the data-plane entry point for HTTP traffic.
+The key architectural decision is that Dokyr does not embed a Docker daemon or a reverse proxy. It is a control plane over the host's existing Docker Engine, while Caddy remains the data-plane entry point for HTTP traffic.
 
 ## 3. Containers, networks, ports, and volumes
 
@@ -65,7 +65,7 @@ flowchart TB
     Internet["Client traffic"]
     HostSocket["/var/run/docker.sock"]
 
-    subgraph Compose["Selfhost Compose application"]
+    subgraph Compose["Dokyr Compose application"]
         Caddy["caddy<br/>host 8080→80<br/>host 8443→443"]
         Control["selfhost<br/>listens on 8080 internally"]
         MetaDB["postgres:17-alpine<br/>not published"]
@@ -96,10 +96,10 @@ flowchart TB
 
 | Resource | Purpose | Exposure |
 |---|---|---|
-| `control` network | Private communication among Selfhost, Caddy, and metadata PostgreSQL | Docker-internal network |
+| `control` network | Private communication among Dokyr, Caddy, and metadata PostgreSQL | Docker-internal network |
 | `selfhost-proxy` network | Caddy-to-workload and workload-to-database communication | Docker bridge network, not itself public |
-| `/var/run/docker.sock` | Lets Selfhost call the Docker Engine API | Mounted only in the Selfhost container |
-| `caddy_admin` | Shares Caddy's admin Unix socket with Selfhost | No TCP admin port |
+| `/var/run/docker.sock` | Lets Dokyr call the Docker Engine API | Mounted only in the Dokyr container |
+| `caddy_admin` | Shares Caddy's admin Unix socket with Dokyr | No TCP admin port |
 | `postgres_data` | Persists control-plane records | Docker volume |
 | `caddy_data`, `caddy_config` | Persists certificates and Caddy state | Docker volumes |
 | `selfhost-db-*` volumes | Persist managed database data | One named volume per database service |
@@ -402,7 +402,7 @@ Keep `SELFHOST_ENCRYPTION_KEY` stable. Losing or changing it makes saved provide
 
 ## 13. Security and trust boundaries
 
-The Docker socket is the most important boundary in this architecture. Access to it is effectively root-equivalent access to the Docker host. Compromising the Selfhost process may therefore compromise the VPS, regardless of the container's dropped capabilities.
+The Docker socket is the most important boundary in this architecture. Access to it is effectively root-equivalent access to the Docker host. Compromising the Dokyr process may therefore compromise the VPS, regardless of the container's dropped capabilities.
 
 Operational requirements:
 
@@ -416,7 +416,7 @@ Operational requirements:
 - review image provenance because deployed images run on the same Docker host;
 - treat public database exposure as exceptional and firewall published ports at the VPS layer.
 
-AES-GCM protects secrets at rest in PostgreSQL, but the encryption key is present in the Selfhost container environment and plaintext is necessarily passed to Docker/provider APIs at runtime. This is application-level encryption, not protection from a fully compromised control plane.
+AES-GCM protects secrets at rest in PostgreSQL, but the encryption key is present in the Dokyr container environment and plaintext is necessarily passed to Docker/provider APIs at runtime. This is application-level encryption, not protection from a fully compromised control plane.
 
 ## 14. Build, run, and verify
 
@@ -445,7 +445,7 @@ services:
     build: null
 ```
 
-The image contains only the Selfhost process and built web application. It still requires PostgreSQL, a reachable Docker Unix socket, and Caddy with the shared admin socket. The repository's `compose.yaml` is the canonical description of those dependencies.
+The image contains only the Dokyr process and built web application. It still requires PostgreSQL, a reachable Docker Unix socket, and Caddy with the shared admin socket. The repository's `compose.yaml` is the canonical description of those dependencies.
 
 Useful runtime checks:
 

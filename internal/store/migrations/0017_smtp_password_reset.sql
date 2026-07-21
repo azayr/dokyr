@@ -6,7 +6,7 @@ CREATE TABLE smtp_settings (
     encryption TEXT NOT NULL DEFAULT 'starttls' CHECK (encryption IN ('starttls', 'tls', 'none')),
     username TEXT NOT NULL DEFAULT '',
     password_encrypted TEXT NOT NULL DEFAULT '',
-    from_name TEXT NOT NULL DEFAULT 'DeployForge',
+    from_name TEXT NOT NULL DEFAULT 'Dokyr',
     from_email TEXT NOT NULL DEFAULT '',
     notify_deployment_failures BOOLEAN NOT NULL DEFAULT TRUE,
     notify_deployment_successes BOOLEAN NOT NULL DEFAULT FALSE,

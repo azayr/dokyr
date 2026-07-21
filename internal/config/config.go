@@ -62,7 +62,7 @@ func Load() Config {
 			Encryption:                env("SMTP_ENCRYPTION", "starttls"),
 			Username:                  strings.TrimSpace(os.Getenv("SMTP_USERNAME")),
 			Password:                  os.Getenv("SMTP_PASSWORD"),
-			FromName:                  env("SMTP_FROM_NAME", "DeployForge"),
+			FromName:                  env("SMTP_FROM_NAME", "Dokyr"),
 			FromEmail:                 smtpFromEmail,
 			NotifyDeploymentFailures:  envBool("SMTP_NOTIFY_DEPLOYMENT_FAILURES", true),
 			NotifyDeploymentSuccesses: envBool("SMTP_NOTIFY_DEPLOYMENT_SUCCESSES", false),

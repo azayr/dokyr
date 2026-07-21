@@ -1,4 +1,4 @@
-# Selfhost
+# Dokyr
 
 A lightweight, self-hosted deployment control plane. The foundation combines a Go API, an embedded Svelte interface, a small PostgreSQL container, Docker Engine discovery through the host socket, and a separate Caddy reverse proxy.
 
@@ -12,7 +12,7 @@ The prebuilt control-plane image is available as `brahoul/selfhost:latest`. It c
 docker compose up --build
 ```
 
-Open `http://localhost:8080`. The non-standard default avoids conflicts with local tools such as Laravel Herd. On the first visit, Selfhost asks you to create the owner account; public registration closes immediately afterward. PostgreSQL persists in the `postgres_data` volume and the control plane reads the host Docker Engine through `/var/run/docker.sock`.
+Open `http://localhost:8080`. The non-standard default avoids conflicts with local tools such as Laravel Herd. On the first visit, Dokyr asks you to create the owner account; public registration closes immediately afterward. PostgreSQL persists in the `postgres_data` volume and the control plane reads the host Docker Engine through `/var/run/docker.sock`.
 
 Caddy rejects unknown hostnames with a 404 instead of forwarding them to the control panel. Direct IPv4 access is allowed automatically, so a fresh installation remains reachable at the VPS IP and published HTTP port. `CONTROL_HOSTS` is the allowlist for additional control-panel domain names. For example, on a VPS:
 
@@ -45,7 +45,7 @@ once through `.env`/Docker Compose. To bootstrap it, set at least
 `SMTP_HOST` and `SMTP_FROM_EMAIL`; the remaining options are documented in
 `.env.example`.
 
-On startup, Selfhost imports a complete environment configuration only when
+On startup, Dokyr imports a complete environment configuration only when
 the `smtp_settings` row does not exist. The SMTP password is encrypted before
 the row is created. From that point onward PostgreSQL is the only source of
 truth: restarting the Compose stack—or changing/removing the `SMTP_*`

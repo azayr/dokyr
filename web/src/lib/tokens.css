@@ -1,37 +1,70 @@
+/* Dokyr design tokens — light and dark themes. */
 :root {
-  --color-paper: #f7f3ed;
+  /* Surfaces */
+  --color-paper: #f5f7fa;
   --color-paper-raised: #ffffff;
-  --color-paper-subtle: #f1eee8;
-  --color-surface-subtle: #faf8f4;
-  --color-ink: #101820;
-  --color-ink-secondary: #5d6672;
-  --color-muted: #7a828c;
-  --color-faint: #a2a7ad;
-  --color-rule: #ddd7cd;
-  --color-rule-strong: #c9c1b4;
-  --color-accent: #059669;
-  --color-accent-hover: #047857;
+  --color-paper-subtle: #eceff4;
+  --color-surface-subtle: #f8fafc;
+  --color-sidebar: #ffffff;
+
+  /* Text */
+  --color-ink: #0e1621;
+  --color-ink-secondary: #3c4756;
+  --color-muted: #66727f;
+  --color-faint: #9aa5b1;
+
+  /* Borders */
+  --color-rule: #e3e8ee;
+  --color-rule-strong: #cbd3dc;
+
+  /* Brand accent — Dokyr blue */
+  --color-accent: #0b63e5;
+  --color-accent-hover: #0a52bd;
   --color-accent-ink: #ffffff;
-  --color-accent-soft: #ddf7ea;
+  --color-accent-soft: #e6effd;
+  --color-accent-softer: #f2f7fe;
+
+  /* Status */
+  --color-success: #0e9f5b;
+  --color-success-soft: #e1f6ec;
   --color-warning: #b45309;
-  --color-warning-soft: #fef3c7;
-  --color-danger: #dc2626;
-  --color-danger-soft: #fee2e2;
-  --color-info: #2563eb;
-  --color-info-soft: #dbeafe;
-  --color-debug: #7c3aed;
-  --color-log-bg: #101820;
-  --color-log-surface: #18222d;
-  --color-log-rule: #2c3743;
-  --color-log-text: #e5e9ed;
-  --color-log-muted: #929ca7;
-  --color-focus: #2563eb;
-  --shadow-whisper: 0 1px 2px rgb(16 24 32 / 0.06);
-  --shadow-panel: 0 1px 3px rgb(16 24 32 / 0.05);
-  --font-sans: 'Geist', system-ui, sans-serif;
+  --color-warning-soft: #fdf1dd;
+  --color-danger: #d92d20;
+  --color-danger-soft: #fdecea;
+  --color-info: #0077b6;
+  --color-info-soft: #e2f2fa;
+  --color-debug: #6d5bd0;
+
+  /* Terminal / code surfaces */
+  --color-log-bg: #0d1520;
+  --color-log-surface: #131e2c;
+  --color-log-rule: #24303f;
+  --color-log-text: #dbe4ec;
+  --color-log-muted: #7f8ea0;
+
+  --color-focus: #0b63e5;
+
+  /* Elevation */
+  --shadow-whisper: 0 1px 2px rgb(14 22 33 / 0.05);
+  --shadow-panel: 0 1px 2px rgb(14 22 33 / 0.04), 0 1px 3px rgb(14 22 33 / 0.03);
+  --shadow-popover: 0 4px 6px -2px rgb(14 22 33 / 0.06), 0 12px 28px -4px rgb(14 22 33 / 0.14);
+  --shadow-modal: 0 24px 70px -12px rgb(14 22 33 / 0.28);
+
+  /* Typography */
+  --font-sans: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-display: var(--font-sans);
   --font-body: var(--font-sans);
-  --font-mono: 'Geist Mono', ui-monospace, monospace;
+  --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+
+  /* Spacing */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -41,16 +74,20 @@
   --space-8: 32px;
   --space-10: 40px;
   --space-12: 48px;
-  --radius-sm: 8px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+
+  /* Radius */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+
   --duration-fast: 140ms;
   --duration-base: 220ms;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 
-  /* Compatibility aliases for existing screens while they migrate to the system. */
+  /* Compatibility aliases for screens built on the previous token names. */
   --base: var(--color-paper);
-  --sidebar: var(--color-paper-raised);
+  --sidebar: var(--color-sidebar);
   --surface: var(--color-paper-raised);
   --surface2: var(--color-paper-subtle);
   --line: var(--color-rule);
@@ -58,11 +95,60 @@
   --ink: var(--color-ink);
   --muted: var(--color-muted);
   --faint: var(--color-faint);
-  --green: var(--color-accent);
+  --green: var(--color-success);
   --amber: var(--color-warning);
   --red: var(--color-danger);
   --accent: var(--color-accent);
   --accent-soft: var(--color-accent-soft);
+
+  color-scheme: light;
+}
+
+:root.theme-dark {
+  --color-paper: #0c1117;
+  --color-paper-raised: #121922;
+  --color-paper-subtle: #1a2330;
+  --color-surface-subtle: #101720;
+  --color-sidebar: #0f161e;
+
+  --color-ink: #e7edf3;
+  --color-ink-secondary: #b3bfcc;
+  --color-muted: #8494a5;
+  --color-faint: #5c6b7c;
+
+  --color-rule: #223040;
+  --color-rule-strong: #34465a;
+
+  --color-accent: #4d9fff;
+  --color-accent-hover: #79b8ff;
+  --color-accent-ink: #061626;
+  --color-accent-soft: #14293f;
+  --color-accent-softer: #101f30;
+
+  --color-success: #3fbf82;
+  --color-success-soft: #10291f;
+  --color-warning: #e5a13c;
+  --color-warning-soft: #2f240e;
+  --color-danger: #f2615b;
+  --color-danger-soft: #33191c;
+  --color-info: #3fb0d8;
+  --color-info-soft: #102834;
+  --color-debug: #a391f0;
+
+  --color-log-bg: #080e15;
+  --color-log-surface: #0e1620;
+  --color-log-rule: #1f2c3b;
+  --color-log-text: #dbe4ec;
+  --color-log-muted: #7f8ea0;
+
+  --color-focus: #4d9fff;
+
+  --shadow-whisper: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-panel: 0 1px 2px rgb(0 0 0 / 0.28), 0 1px 3px rgb(0 0 0 / 0.2);
+  --shadow-popover: 0 4px 6px -2px rgb(0 0 0 / 0.4), 0 12px 28px -4px rgb(0 0 0 / 0.5);
+  --shadow-modal: 0 24px 70px -12px rgb(0 0 0 / 0.6);
+
+  color-scheme: dark;
 }
 
 html,
@@ -79,47 +165,6 @@ pre,
 kbd,
 samp {
   font-family: var(--font-mono);
-}
-
-:root.theme-dark,
-.app.dark {
-  --color-paper: #10151b;
-  --color-paper-raised: #161d25;
-  --color-paper-subtle: #1c252f;
-  --color-surface-subtle: #131a22;
-  --color-ink: #f4f6f8;
-  --color-ink-secondary: #c5cbd2;
-  --color-muted: #929ca7;
-  --color-faint: #68737f;
-  --color-rule: #2c3743;
-  --color-rule-strong: #43505d;
-  --color-accent: #34d399;
-  --color-accent-hover: #6ee7b7;
-  --color-accent-ink: #07120e;
-  --color-accent-soft: #123b2f;
-  --color-warning: #fbbf24;
-  --color-warning-soft: #3d2d0e;
-  --color-danger: #f87171;
-  --color-danger-soft: #3f1d22;
-  --color-info: #60a5fa;
-  --color-info-soft: #172f52;
-  --color-debug: #c4b5fd;
-  --color-log-bg: #0b1118;
-  --color-log-surface: #101820;
-  --color-log-rule: #27323d;
-  --color-log-text: #e5e9ed;
-  --color-log-muted: #929ca7;
-  --color-focus: #60a5fa;
-  --shadow-whisper: 0 1px 2px rgb(0 0 0 / 0.22);
-  --shadow-panel: 0 1px 3px rgb(0 0 0 / 0.18);
-}
-
-:root {
-  color-scheme: light;
-}
-
-:root.theme-dark {
-  color-scheme: dark;
 }
 
 html,

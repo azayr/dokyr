@@ -1,3 +1,79 @@
-<script>export let value='healthy';const labels={healthy:'Healthy',ready:'Ready',deploying:'Deploying',building:'Building',degraded:'Degraded',failed:'Failed'};</script>
-<span class:good={['healthy','ready'].includes(value)} class:busy={['deploying','building'].includes(value)} class:bad={['degraded','failed'].includes(value)}><i></i>{labels[value]||value}</span>
-<style>span{display:inline-flex;align-items:center;gap:7px;font:600 11px var(--font-mono);letter-spacing:.01em;color:var(--color-muted)}i{width:7px;height:7px;border-radius:50%;background:currentColor}.good{color:var(--color-accent)}.busy{color:var(--color-warning)}.busy i{box-shadow:0 0 0 4px color-mix(in oklch,var(--color-warning) 16%,transparent);animation:pulse 1.6s infinite}.bad{color:var(--color-danger)}@keyframes pulse{50%{box-shadow:0 0 0 7px transparent}}@media(prefers-reduced-motion:reduce){.busy i{animation:none}}</style>
+<script>
+  export let value = 'healthy';
+  const labels = {
+    healthy: 'Healthy',
+    ready: 'Ready',
+    running: 'Running',
+    deploying: 'Deploying',
+    building: 'Building',
+    queued: 'Queued',
+    degraded: 'Degraded',
+    failed: 'Failed',
+    cancelled: 'Cancelled',
+    stopped: 'Stopped'
+  };
+</script>
+
+<span
+  class="status"
+  class:good={['healthy', 'ready'].includes(value)}
+  class:busy={['deploying', 'building', 'running', 'queued'].includes(value)}
+  class:bad={value === 'failed'}
+  class:warn={value === 'degraded'}
+>
+  <i></i>{labels[value] || value}
+</span>
+
+<style>
+  .status {
+    padding: 3px 9px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    width: max-content;
+    max-width: 100%;
+    border-radius: 999px;
+    background: var(--color-paper-subtle);
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    line-height: 1.5;
+    white-space: nowrap;
+  }
+  i {
+    width: 6px;
+    height: 6px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .good {
+    background: var(--color-success-soft);
+    color: var(--color-success);
+  }
+  .busy {
+    background: var(--color-info-soft);
+    color: var(--color-info);
+  }
+  .busy i {
+    animation: dokyr-status-pulse 1.6s ease-out infinite;
+  }
+  .bad {
+    background: var(--color-danger-soft);
+    color: var(--color-danger);
+  }
+  .warn {
+    background: var(--color-warning-soft);
+    color: var(--color-warning);
+  }
+  @keyframes dokyr-status-pulse {
+    50% {
+      box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 12%, transparent);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .busy i {
+      animation: none;
+    }
+  }
+</style>

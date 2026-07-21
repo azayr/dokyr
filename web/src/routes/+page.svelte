@@ -3,6 +3,7 @@
   import Shell from '$lib/components/Shell.svelte';
   import Status from '$lib/components/Status.svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import EmptyState from '$lib/components/EmptyState.svelte';
   import { api } from '$lib/auth.js';
 
   let data = { projects: [], deployments: [], docker: {} };
@@ -38,6 +39,8 @@
   $: diskAvailable = hostDiskAvailable ? metrics.global.disk?.available || 0 : metrics.global.disk?.reclaimable || 0;
   $: displayedDiskTotal = hostDiskAvailable ? diskTotal : diskUsed + diskAvailable;
   $: diskPercent = displayedDiskTotal > 0 ? clamp((diskUsed / displayedDiskTotal) * 100) : 0;
+  $: activeDeployments = data.deployments.filter((item) => ['queued', 'building', 'deploying', 'running'].includes(item.status));
+  $: failedDeployment = data.deployments.find((item) => item.status === 'failed');
 
   onMount(async () => {
     await Promise.all([loadDashboard(), loadMetrics()]);
@@ -78,6 +81,7 @@
   function ago(value) {
     if (!value) return 'not yet';
     const minutes = Math.max(1, Math.round((Date.now() - new Date(value).getTime()) / 60000));
+    if (minutes >= 60) return `${Math.floor(minutes / 60)}h ago`;
     return `${minutes}m ago`;
   }
 
@@ -99,112 +103,195 @@
 </script>
 
 <Shell
-  eyebrow="Northstar Labs"
-  title="Main Dashboard"
-  subtitle="Production health, deployment velocity, and infrastructure signals for this control plane."
-  meta={['production', 'main', metrics.engineName || 'local', 'live']}
+  eyebrow="Workspace"
+  title="Overview"
+  subtitle="System health, deployment activity, and infrastructure signals for this control plane."
+  meta={[metrics.engineName || 'local-docker', engineOnline ? 'live' : 'offline']}
 >
+  <a slot="actions" class="btn btn-primary" href="/projects?new=1"><Icon name="plus" size={14} /> New project</a>
+
   <section class="metrics" aria-label="Workspace metrics">
-    <article><small>Projects</small><b>{loading ? '—' : data.projects.length}</b><em class="positive">↗ live workspace</em></article>
-    <article><small>Running services</small><b>{metricsLoading ? '—' : metrics.global.running}</b><em class:positive={engineOnline}>{engineOnline ? 'All healthy' : 'Monitoring unavailable'}</em></article>
-    <article><small>Active deployments</small><b>{loading ? '—' : data.deployments.filter((item) => ['queued', 'building', 'deploying', 'running'].includes(item.status)).length}</b><em class="info">{data.deployments.some((item) => ['queued', 'building', 'deploying', 'running'].includes(item.status)) ? '1 building' : 'Pipeline idle'}</em></article>
-    <article><small>Node pressure</small><b>{metricsLoading ? '—' : formatPercent(nodePressure)}</b><em>{metricsLoading ? 'Sampling host' : `${metrics.global.running} containers running`}</em></article>
+    <article>
+      <span class="metric-label">Projects</span>
+      {#if loading}<span class="skeleton metric-skeleton"></span>{:else}<strong>{data.projects.length}</strong>{/if}
+      <small><a href="/projects">View all projects</a></small>
+    </article>
+    <article>
+      <span class="metric-label">Running services</span>
+      {#if metricsLoading}<span class="skeleton metric-skeleton"></span>{:else}<strong>{metrics.global.running}</strong>{/if}
+      <small class={engineOnline ? 'tone-success' : 'tone-danger'}>{engineOnline ? 'All systems normal' : 'Monitoring unavailable'}</small>
+    </article>
+    <article>
+      <span class="metric-label">Active deployments</span>
+      {#if loading}<span class="skeleton metric-skeleton"></span>{:else}<strong>{activeDeployments.length}</strong>{/if}
+      <small class={activeDeployments.length ? 'tone-info' : ''}>{activeDeployments.length ? 'Pipeline running' : 'Pipeline idle'}</small>
+    </article>
+    <article>
+      <span class="metric-label">Node pressure</span>
+      {#if metricsLoading}<span class="skeleton metric-skeleton"></span>{:else}<strong>{formatPercent(nodePressure)}</strong>{/if}
+      <small>{metricsLoading ? 'Sampling host' : `${metrics.global.containers} containers on this node`}</small>
+    </article>
   </section>
 
-  {#if data.deployments.some((item) => item.status === 'failed')}
-    <a class="alert" href={'/deployments/' + data.deployments.find((item) => item.status === 'failed')?.id}>
-      <span aria-hidden="true">△</span>
-      <strong>{data.deployments.find((item) => item.status === 'failed')?.message || 'A recent deployment failed.'}</strong>
-      <b>View deployment</b>
+  {#if failedDeployment}
+    <a class="failure-strip" href={'/deployments/' + failedDeployment.id}>
+      <Icon name="alert" size={15} />
+      <span><strong>Deployment failed</strong> · {failedDeployment.projectId}{failedDeployment.commit ? ` · ${failedDeployment.commit}` : ''}</span>
+      <em>View deployment <Icon name="arrow-right" size={13} /></em>
     </a>
   {/if}
 
-  <section class="monitoring" aria-label="Live host monitoring">
-    <div class="monitoring-head">
-      <div><small>Live monitoring</small><h2>Host resources</h2></div>
-      <a href="/servers"><span class:refreshing={metricsRefreshing}>●</span>{metricsRefreshing ? 'Refreshing' : `Updated ${ago(metrics.checkedAt)}`} · View infrastructure →</a>
-    </div>
-    <div class="monitor-cards">
+  <section class="panel resources" aria-label="Live host monitoring">
+    <header class="panel-header">
+      <div>
+        <span class="eyebrow">Live monitoring</span>
+        <h2>Host resources</h2>
+      </div>
+      <a class="resources-link" href="/servers">
+        <i class:refreshing={metricsRefreshing}></i>{metricsRefreshing ? 'Refreshing' : `Updated ${ago(metrics.checkedAt)}`}
+        <span class="resources-link-more">· Servers <Icon name="arrow-right" size={12} /></span>
+      </a>
+    </header>
+    <div class="resource-grid">
       <article>
-        <div class="monitor-title"><span class="monitor-icon cpu">CPU</span><small>Processor</small></div>
+        <div class="resource-title"><span class="resource-icon tone-accent"><Icon name="cpu" size={14} /></span><span>CPU</span></div>
         <strong>{metricsLoading ? '—' : formatPercent(cpuPercent)}</strong>
-        <div class="progress"><i style={'width:' + cpuPercent + '%'}></i></div>
-        <p>{metrics.global.cpuCores || '—'} cores · host load</p>
+        <div class="meter"><i style={'width:' + cpuPercent + '%'}></i></div>
+        <small>{metrics.global.cpuCores || '—'} cores · host load</small>
       </article>
       <article>
-        <div class="monitor-title"><span class="monitor-icon memory">RAM</span><small>Memory</small></div>
+        <div class="resource-title"><span class="resource-icon tone-info"><Icon name="activity" size={14} /></span><span>Memory</span></div>
         <strong>{metricsLoading ? '—' : formatPercent(memoryPercent)}</strong>
-        <div class="progress"><i style={'width:' + memoryPercent + '%'}></i></div>
-        <p>{formatBytes(metrics.global.memoryUsage)} / {formatBytes(metrics.global.memoryLimit)}</p>
+        <div class="meter"><i style={'width:' + memoryPercent + '%'}></i></div>
+        <small>{formatBytes(metrics.global.memoryUsage)} / {formatBytes(metrics.global.memoryLimit)}</small>
       </article>
       <article>
-        <div class="monitor-title"><span class="monitor-icon disk">DSK</span><small>Disk space</small></div>
+        <div class="resource-title"><span class="resource-icon tone-warning"><Icon name="hard-drive" size={14} /></span><span>Disk</span></div>
         <strong>{metricsLoading ? '—' : formatPercent(diskPercent)}</strong>
-        <div class="progress"><i style={'width:' + diskPercent + '%'}></i></div>
-        <p>{formatBytes(diskUsed)} used · {formatBytes(diskAvailable)} free</p>
+        <div class="meter"><i style={'width:' + diskPercent + '%'}></i></div>
+        <small>{formatBytes(diskUsed)} used · {formatBytes(diskAvailable)} free</small>
       </article>
       <article>
-        <div class="monitor-title"><span class="monitor-icon io">I/O</span><small>Disk I/O</small></div>
+        <div class="resource-title"><span class="resource-icon tone-muted"><Icon name="layers" size={14} /></span><span>Disk I/O</span></div>
         <strong>{metricsLoading ? '—' : formatBytes((metrics.global.diskIo?.read || 0) + (metrics.global.diskIo?.write || 0))}</strong>
         <dl><div><dt>Read</dt><dd>{formatBytes(metrics.global.diskIo?.read || 0)}</dd></div><div><dt>Write</dt><dd>{formatBytes(metrics.global.diskIo?.write || 0)}</dd></div></dl>
       </article>
       <article>
-        <div class="monitor-title"><span class="monitor-icon network">NET</span><small>Network I/O</small></div>
+        <div class="resource-title"><span class="resource-icon tone-success"><Icon name="network" size={14} /></span><span>Network</span></div>
         <strong>{metricsLoading ? '—' : formatBytes((metrics.global.networkIo?.receive || 0) + (metrics.global.networkIo?.transmit || 0))}</strong>
-        <dl><div><dt>Down</dt><dd>{formatBytes(metrics.global.networkIo?.receive || 0)}</dd></div><div><dt>Up</dt><dd>{formatBytes(metrics.global.networkIo?.transmit || 0)}</dd></div></dl>
+        <dl><div><dt>In</dt><dd>{formatBytes(metrics.global.networkIo?.receive || 0)}</dd></div><div><dt>Out</dt><dd>{formatBytes(metrics.global.networkIo?.transmit || 0)}</dd></div></dl>
       </article>
     </div>
   </section>
 
   <div class="dashboard-grid">
-    <section class="panel deployments" id="deployments">
-      <div class="panelhead"><h2>Recent deployments</h2><a href="/deployments">View all</a></div>
-      <div class="table-head"><span>Project</span><span>Commit</span><span>Duration</span><span>Time</span><span>Status</span></div>
+    <section class="panel" aria-label="Recent deployments">
+      <header class="panel-header">
+        <div>
+          <span class="eyebrow">Delivery</span>
+          <h2>Recent deployments</h2>
+        </div>
+        <a class="panel-more" href="/deployments">View all <Icon name="arrow-right" size={12} /></a>
+      </header>
       {#if loading}
-        <p class="empty">Contacting control plane…</p>
+        <div class="rows-loading" aria-label="Loading deployments">
+          {#each Array(4) as _}<div class="row-skeleton"><span class="skeleton" style="width:32px;height:32px"></span><span class="skeleton" style="height:14px;flex:1"></span><span class="skeleton" style="width:64px;height:22px"></span></div>{/each}
+        </div>
       {:else if data.deployments.length === 0}
-        <p class="empty">No deployments yet. Create a project to start the pipeline.</p>
+        <EmptyState icon="rocket" title="No deployments yet" description="Create a project and ship its first release to see the pipeline here.">
+          <a class="btn btn-primary btn-sm" href="/projects?new=1"><Icon name="plus" size={13} /> Create a project</a>
+        </EmptyState>
       {:else}
-        {#each data.deployments.slice(0, 8) as deployment}
-          <a href={'/deployments/' + deployment.id} class="deployment">
-            <span class="deployment-project"><i><Icon name="box" size={12} /></i><strong>{deployment.message || deployment.projectId}</strong></span>
-            <code>{deployment.commit || 'image'}</code>
-            <span>{deployment.duration ? `${deployment.duration}s` : '—'}</span>
-            <time>{ago(deployment.createdAt)}</time>
-            <Status value={deployment.status} />
-          </a>
-        {/each}
+        <div class="table-scroll">
+          <table class="data-table deployment-table">
+            <thead><tr><th>Deployment</th><th>Commit</th><th>Duration</th><th>Time</th><th>Status</th></tr></thead>
+            <tbody>
+              {#each data.deployments.slice(0, 8) as deployment}
+                <tr onclick={() => (location.href = '/deployments/' + deployment.id)} class="clickable">
+                  <td>
+                    <span class="deployment-name">
+                      <span class="deployment-icon"><Icon name="box" size={13} /></span>
+                      <strong>{deployment.message || deployment.projectId}</strong>
+                    </span>
+                  </td>
+                  <td><code>{deployment.commit || 'image'}</code></td>
+                  <td><span class="muted">{deployment.duration ? `${deployment.duration}s` : '—'}</span></td>
+                  <td><time>{ago(deployment.createdAt)}</time></td>
+                  <td><Status value={deployment.status} /></td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {/if}
     </section>
 
     <aside class="rail">
-      <section class="panel health" id="servers">
-        <div class="panelhead"><h2>Infrastructure health</h2><span class:offline={!engineOnline}>{engineOnline ? '● 1/1 online' : '● offline'}</span></div>
+      <section class="panel" aria-label="Infrastructure health">
+        <header class="panel-header">
+          <div>
+            <span class="eyebrow">Infrastructure</span>
+            <h2>Node health</h2>
+          </div>
+          <span class="badge" class:badge-success={engineOnline} class:badge-danger={!engineOnline}><i></i>{engineOnline ? 'Online' : 'Offline'}</span>
+        </header>
         {#if metricsLoading}
-          <div class="server-loading"><i></i><span>Sampling Docker host…</span></div>
+          <div class="rail-loading"><span class="spinner"></span><span>Sampling Docker host…</span></div>
         {:else if metricsError && !metrics.checkedAt}
-          <div class="server-error"><span>{metricsError}</span><button onclick={() => loadMetrics()}>Retry</button></div>
+          <div class="rail-error">
+            <Icon name="alert" size={16} />
+            <p>{metricsError}</p>
+            <button class="btn btn-sm" onclick={() => loadMetrics()}>Retry</button>
+          </div>
         {:else}
-          <div class="health-row"><div><strong>{metrics.engineName || 'local-docker'}</strong><small>CPU</small></div><b>{formatPercent(cpuPercent)}</b><span>● Online</span></div>
-          <div class="health-row"><div><strong>Host memory</strong><small>{formatBytes(metrics.global.memoryUsage)} used</small></div><b>{formatPercent(memoryPercent)}</b><span>● Healthy</span></div>
-          <div class="health-row"><div><strong>Docker storage</strong><small>{formatBytes(diskAvailable)} available</small></div><b>{formatPercent(diskPercent)}</b><span>● Healthy</span></div>
+          <div class="health-rows">
+            <div class="health-row">
+              <div><strong>{metrics.engineName || 'local-docker'}</strong><small>CPU load</small></div>
+              <b>{formatPercent(cpuPercent)}</b>
+            </div>
+            <div class="health-row">
+              <div><strong>Host memory</strong><small>{formatBytes(metrics.global.memoryUsage)} used</small></div>
+              <b>{formatPercent(memoryPercent)}</b>
+            </div>
+            <div class="health-row">
+              <div><strong>Storage</strong><small>{formatBytes(diskAvailable)} available</small></div>
+              <b>{formatPercent(diskPercent)}</b>
+            </div>
+          </div>
+          <footer class="panel-footer">
+            <span>{metrics.global.running} running · {metrics.global.containers} total</span>
+            <a href="/servers">Details <Icon name="arrow-right" size={12} /></a>
+          </footer>
         {/if}
       </section>
 
-      <section class="panel project-list" id="projects">
-        <div class="panelhead"><h2>Projects</h2><a href="/projects">View all</a></div>
+      <section class="panel" aria-label="Projects">
+        <header class="panel-header">
+          <div>
+            <span class="eyebrow">Workspace</span>
+            <h2>Projects</h2>
+          </div>
+          <a class="panel-more" href="/projects">View all <Icon name="arrow-right" size={12} /></a>
+        </header>
         {#if loading}
-          <p class="empty">Loading projects…</p>
+          <div class="rows-loading">
+            {#each Array(3) as _}<div class="row-skeleton"><span class="skeleton" style="width:28px;height:28px"></span><span class="skeleton" style="height:14px;flex:1"></span></div>{/each}
+          </div>
         {:else if data.projects.length === 0}
-          <p class="empty">No projects yet.</p>
+          <div class="rail-empty">
+            <p>No projects yet.</p>
+            <a class="btn btn-sm" href="/projects?new=1"><Icon name="plus" size={13} /> New project</a>
+          </div>
         {:else}
-          {#each data.projects.slice(0, 5) as project}
-            <a class="project" href={'/projects/' + project.id}>
-              <div><strong>{project.name}</strong><span>{project.status === 'healthy' ? '1 service' : project.status}</span></div>
-              <small>{project.branch || 'main'} · {project.repository || 'container image'}</small>
-              <code>latest {project.updatedAt ? ago(project.updatedAt) : 'not deployed'}</code>
-            </a>
-          {/each}
+          <div class="project-rows">
+            {#each data.projects.slice(0, 5) as project}
+              <a class="project-row" href={'/projects/' + project.id}>
+                <span class="deployment-icon"><Icon name="box" size={13} /></span>
+                <span class="project-row-text"><strong>{project.name}</strong><small>{project.branch || 'main'} · {project.repository || 'container image'}</small></span>
+                <code>{project.updatedAt ? ago(project.updatedAt) : '—'}</code>
+              </a>
+            {/each}
+          </div>
         {/if}
       </section>
     </aside>
@@ -212,85 +299,471 @@
 </Shell>
 
 <style>
-  :global(.panel) { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-panel); }
-  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); border-radius: 10px; background: var(--surface); margin-bottom: 12px; box-shadow: var(--shadow-panel); }
-  .metrics article { min-height: 88px; padding: 16px; border-right: 1px solid var(--line); display: grid; align-content: center; gap: 5px; }
-  .metrics article:last-child { border: 0; }
-  .metrics small { font: 9px var(--font-mono); color: var(--muted); }
-  .metrics b { font: 600 25px var(--font-sans); letter-spacing: -.04em; }
-  .metrics em { font-style: normal; font-size: 9px; color: var(--muted); }
-  .metrics .positive { color: var(--green); }
-  .metrics .info { color: var(--color-info); }
-  .alert { min-height: 42px; margin-bottom: 12px; padding: 0 13px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; border: 1px solid color-mix(in srgb, var(--red) 30%, var(--line)); border-radius: 8px; background: color-mix(in srgb, var(--red) 4%, var(--surface)); color: inherit; text-decoration: none; }
-  .alert > span { color: var(--red); }
-  .alert strong { overflow: hidden; font-size: 10px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-  .alert b { padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--red); font-size: 9px; }
-  .monitoring { margin-bottom: 12px; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow-panel); }
-  .monitoring-head { min-height: 48px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); }
-  .monitoring-head > div { display: grid; gap: 2px; }
-  .monitoring-head small { color: var(--muted); font: 8px var(--font-mono); text-transform: uppercase; letter-spacing: .08em; }
-  .monitoring-head h2 { margin: 0; font-size: 12px; letter-spacing: -.02em; }
-  .monitoring-head a { color: var(--muted); text-decoration: none; font: 8px var(--font-mono); }
-  .monitoring-head a:hover { color: var(--green); }
-  .monitoring-head a span { margin-right: 5px; color: var(--green); }
-  .monitoring-head a span.refreshing { animation: pulse 1s ease-in-out infinite; }
-  .monitor-cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
-  .monitor-cards article { min-width: 0; min-height: 116px; padding: 13px; display: grid; align-content: start; gap: 7px; border-right: 1px solid var(--line); }
-  .monitor-cards article:last-child { border-right: 0; }
-  .monitor-title { display: flex; align-items: center; gap: 7px; }
-  .monitor-title small { overflow: hidden; color: var(--muted); font: 8px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
-  .monitor-icon { width: 28px; height: 22px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 5px; background: var(--accent-soft); color: var(--green); font: 600 7px var(--font-mono); letter-spacing: .03em; }
-  .monitor-icon.memory { background: var(--color-info-soft); color: var(--color-info); }
-  .monitor-icon.disk { background: var(--color-warning-soft); color: var(--amber); }
-  .monitor-icon.io { background: color-mix(in srgb, var(--color-debug) 14%, transparent); color: var(--color-debug); }
-  .monitor-icon.network { background: color-mix(in srgb, var(--green) 12%, transparent); color: var(--green); }
-  .monitor-cards strong { overflow: hidden; font-size: 17px; line-height: 1.1; letter-spacing: -.035em; text-overflow: ellipsis; white-space: nowrap; }
-  .monitor-cards p { margin: 0; overflow: hidden; color: var(--muted); font: 7px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
-  .progress { height: 3px; overflow: hidden; border-radius: 3px; background: var(--line); }
-  .progress i { display: block; height: 100%; border-radius: inherit; background: var(--green); transition: width .3s ease; }
-  .monitor-cards dl { margin: 2px 0 0; display: grid; gap: 4px; }
-  .monitor-cards dl div { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font: 7px var(--font-mono); }
-  .monitor-cards dt, .monitor-cards dd { margin: 0; }
-  .monitor-cards dd { overflow: hidden; color: var(--ink); text-overflow: ellipsis; white-space: nowrap; }
-  .dashboard-grid { display: grid; grid-template-columns: minmax(0, 2.15fr) minmax(260px, .95fr); gap: 12px; align-items: stretch; }
-  .panel { overflow: hidden; }
-  .panelhead { height: 48px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
-  .panelhead h2 { margin: 0; font-size: 12px; letter-spacing: -.02em; }
-  .panelhead a { color: var(--green); text-decoration: none; font-size: 9px; font-weight: 600; }
-  .table-head, .deployment { display: grid; grid-template-columns: minmax(150px,1.5fr) minmax(70px,.8fr) 64px 64px 82px; gap: 9px; align-items: center; }
-  .table-head { height: 32px; padding: 0 13px; border-bottom: 1px solid var(--line); color: var(--muted); font: 8px var(--font-mono); }
-  .deployment { min-height: 48px; padding: 0 13px; border-bottom: 1px solid var(--line); color: inherit; text-decoration: none; }
-  .deployment:last-child { border: 0; }
-  .deployment:hover, .project:hover { background: var(--surface2); }
-  .deployment-project { min-width: 0; display: flex; align-items: center; gap: 8px; }
-  .deployment-project i { width: 25px; height: 25px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-style: normal; }
-  .deployment-project strong { overflow: hidden; font-size: 9px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-  .deployment code, .deployment > span, .deployment time { overflow: hidden; color: var(--muted); font: 8px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
-  .rail { display: grid; grid-template-rows: auto 1fr; gap: 12px; }
-  .panelhead > span { color: var(--green); font: 8px var(--font-mono); }
-  .panelhead > span.offline { color: var(--red); }
-  .health-row { min-height: 48px; padding: 8px 12px; display: grid; grid-template-columns: minmax(0,1fr) 44px 61px; gap: 7px; align-items: center; border-bottom: 1px solid var(--line); }
-  .health-row:last-child { border-bottom: 0; }
-  .health-row div { min-width: 0; display: grid; gap: 2px; }
-  .health-row strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-  .health-row small, .health-row b { color: var(--muted); font: 8px var(--font-mono); }
-  .health-row b { font-weight: 500; }
-  .health-row > span { color: var(--green); font: 7px var(--font-mono); }
-  .project { padding: 10px 12px; display: grid; gap: 4px; border-bottom: 1px solid var(--line); color: inherit; text-decoration: none; }
-  .project:last-child { border: 0; }
-  .project div { display: flex; justify-content: space-between; gap: 10px; }
-  .project strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-  .project div span { color: var(--muted); font: 8px var(--font-mono); }
-  .project small { overflow: hidden; color: var(--muted); font: 8px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
-  .project code { color: var(--green); font-size: 8px; }
-  .server-loading, .server-error { min-height: 144px; padding: 20px; display: grid; place-content: center; justify-items: center; gap: 8px; text-align: center; }
-  .server-loading i { width: 22px; height: 22px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
-  .server-loading span, .server-error span { color: var(--muted); font: 10px var(--font-mono); }
-  .server-error button { border: 0; background: transparent; color: var(--accent); font-size: 11px; font-weight: 700; cursor: pointer; }
-  .empty { padding: 28px 14px; color: var(--muted); font: 9px var(--font-mono); }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  @keyframes pulse { 50% { opacity: .35; } }
-  @media(max-width: 1120px) { .monitor-cards { grid-template-columns: repeat(3, 1fr); } .monitor-cards article:nth-child(3) { border-right: 0; } .monitor-cards article:nth-child(-n+3) { border-bottom: 1px solid var(--line); } .dashboard-grid { grid-template-columns: 1fr; } .rail { grid-template-columns: repeat(2,minmax(0,1fr)); grid-template-rows: none; } }
-  @media(max-width: 760px) { .metrics { grid-template-columns: repeat(2,1fr); } .metrics article:nth-child(2) { border-right: 0; } .metrics article:nth-child(-n+2) { border-bottom: 1px solid var(--line); } .monitor-cards { grid-template-columns: repeat(2, 1fr); } .monitor-cards article, .monitor-cards article:nth-child(3) { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); } .monitor-cards article:nth-child(even) { border-right: 0; } .monitor-cards article:last-child { border-bottom: 0; } .monitoring-head a { font-size: 0; } .monitoring-head a::after { content: 'View infrastructure →'; font-size: 8px; } .rail { grid-template-columns: 1fr; } .table-head { display:none; } .deployment { grid-template-columns: minmax(130px,1fr) 65px 82px; } .deployment code, .deployment time { display:none; } }
-  @media(max-width: 480px) { .metrics { grid-template-columns: 1fr; } .metrics article { min-height: 75px; border-right: 0; border-bottom: 1px solid var(--line); } .monitor-cards { grid-template-columns: 1fr; } .monitor-cards article, .monitor-cards article:nth-child(3), .monitor-cards article:nth-child(even) { min-height: 98px; border-right: 0; border-bottom: 1px solid var(--line); } .monitor-cards article:last-child { border-bottom: 0; } .alert { grid-template-columns: auto 1fr; } .alert b { display:none; } .deployment { grid-template-columns: minmax(120px,1fr) 78px; } .deployment > span { display:none; } }
+  .metrics {
+    margin-bottom: var(--space-4);
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    overflow: hidden;
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-lg);
+    background: var(--color-paper-raised);
+    box-shadow: var(--shadow-panel);
+  }
+  .metrics article {
+    min-height: 104px;
+    padding: var(--space-4) var(--space-5);
+    display: grid;
+    align-content: center;
+    gap: var(--space-1);
+    border-right: 1px solid var(--color-rule);
+  }
+  .metrics article:last-child {
+    border-right: 0;
+  }
+  .metric-label {
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    font-weight: 600;
+  }
+  .metrics strong {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    line-height: 1.1;
+  }
+  .metrics small {
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .metrics small a {
+    color: var(--color-accent);
+    text-decoration: none;
+  }
+  .metrics small a:hover {
+    text-decoration: underline;
+  }
+  .metric-skeleton {
+    width: 56px;
+    height: 26px;
+    margin-block: 3px;
+  }
+  .tone-success { color: var(--color-success) !important; }
+  .tone-danger { color: var(--color-danger) !important; }
+  .tone-info { color: var(--color-info) !important; }
+
+  .failure-strip {
+    margin-bottom: var(--space-4);
+    padding: var(--space-3) var(--space-4);
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--color-danger) 32%, var(--color-rule));
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--color-danger) 5%, var(--color-paper-raised));
+    color: var(--color-danger);
+    font-size: var(--text-sm);
+    text-decoration: none;
+  }
+  .failure-strip span {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    color: var(--color-ink);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .failure-strip strong {
+    color: var(--color-danger);
+  }
+  .failure-strip em {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: var(--text-xs);
+    font-style: normal;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .resources {
+    margin-bottom: var(--space-4);
+  }
+  .resources-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    text-decoration: none;
+  }
+  .resources-link:hover {
+    color: var(--color-accent);
+  }
+  .resources-link i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-success);
+  }
+  .resources-link i.refreshing {
+    animation: dokyr-status-pulse 1s ease-in-out infinite;
+  }
+  .resources-link-more {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .resource-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .resource-grid article {
+    min-width: 0;
+    min-height: 128px;
+    padding: var(--space-4);
+    display: grid;
+    align-content: start;
+    gap: var(--space-2);
+    border-right: 1px solid var(--color-rule);
+  }
+  .resource-grid article:last-child {
+    border-right: 0;
+  }
+  .resource-title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    font-weight: 600;
+  }
+  .resource-icon {
+    width: 26px;
+    height: 26px;
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    border-radius: var(--radius-sm);
+  }
+  .resource-icon.tone-accent { background: var(--color-accent-soft); color: var(--color-accent); }
+  .resource-icon.tone-info { background: var(--color-info-soft); color: var(--color-info); }
+  .resource-icon.tone-warning { background: var(--color-warning-soft); color: var(--color-warning); }
+  .resource-icon.tone-muted { background: var(--color-paper-subtle); color: var(--color-muted); }
+  .resource-icon.tone-success { background: var(--color-success-soft); color: var(--color-success); }
+  .resource-grid strong {
+    overflow: hidden;
+    font-size: var(--text-xl);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .resource-grid small {
+    overflow: hidden;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .meter {
+    height: 4px;
+    overflow: hidden;
+    border-radius: 4px;
+    background: var(--color-paper-subtle);
+  }
+  .meter i {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--color-accent);
+    transition: width var(--duration-base) var(--ease-out);
+  }
+  .resource-grid dl {
+    margin: 2px 0 0;
+    display: grid;
+    gap: 4px;
+  }
+  .resource-grid dl div {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-2);
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .resource-grid dt,
+  .resource-grid dd {
+    margin: 0;
+  }
+  .resource-grid dd {
+    color: var(--color-ink);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+  }
+
+  .dashboard-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
+    gap: var(--space-4);
+    align-items: start;
+  }
+  .panel-more {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--color-accent);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .panel-more:hover {
+    text-decoration: underline;
+  }
+  .deployment-table .deployment-name {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .deployment-icon {
+    width: 28px;
+    height: 28px;
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-subtle);
+    color: var(--color-muted);
+  }
+  .deployment-name strong {
+    overflow: hidden;
+    max-width: 300px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .deployment-table code {
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .deployment-table .muted,
+  .deployment-table time {
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+    white-space: nowrap;
+  }
+  .clickable {
+    cursor: pointer;
+  }
+
+  .rail {
+    display: grid;
+    gap: var(--space-4);
+  }
+  .health-rows {
+    display: grid;
+  }
+  .health-row {
+    min-height: 52px;
+    padding: var(--space-2) var(--space-5);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    border-bottom: 1px solid var(--color-rule);
+  }
+  .health-row div {
+    min-width: 0;
+    display: grid;
+    gap: 1px;
+  }
+  .health-row strong {
+    overflow: hidden;
+    font-size: var(--text-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .health-row small {
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .health-row b {
+    color: var(--color-ink-secondary);
+    font: 500 var(--text-sm) var(--font-mono);
+  }
+  .panel-footer {
+    font-size: var(--text-xs);
+    color: var(--color-muted);
+  }
+  .panel-footer a {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--color-accent);
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .rail-loading,
+  .rail-error {
+    min-height: 150px;
+    padding: var(--space-5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+  }
+  .rail-error {
+    flex-direction: column;
+    gap: var(--space-2);
+    text-align: center;
+  }
+  .rail-error :global(svg) {
+    color: var(--color-danger);
+  }
+  .rail-error p {
+    margin: 0;
+    font-size: var(--text-sm);
+  }
+  .rail-empty {
+    min-height: 120px;
+    display: grid;
+    place-content: center;
+    justify-items: center;
+    gap: var(--space-3);
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+  }
+  .rail-empty p {
+    margin: 0;
+  }
+
+  .project-rows {
+    display: grid;
+  }
+  .project-row {
+    min-height: 54px;
+    padding: var(--space-2) var(--space-5);
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-3);
+    border-bottom: 1px solid var(--color-rule);
+    color: inherit;
+    text-decoration: none;
+  }
+  .project-row:last-child {
+    border-bottom: 0;
+  }
+  .project-row:hover {
+    background: var(--color-surface-subtle);
+  }
+  .project-row-text {
+    min-width: 0;
+    display: grid;
+    gap: 1px;
+  }
+  .project-row-text strong {
+    overflow: hidden;
+    font-size: var(--text-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .project-row-text small {
+    overflow: hidden;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .project-row code {
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+
+  .rows-loading {
+    padding: var(--space-3) var(--space-5);
+    display: grid;
+    gap: var(--space-3);
+  }
+  .row-skeleton {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  @media (max-width: 70rem) {
+    .resource-grid {
+      grid-template-columns: repeat(3, 1fr);
+    }
+    .resource-grid article:nth-child(3) {
+      border-right: 0;
+    }
+    .resource-grid article:nth-child(-n + 3) {
+      border-bottom: 1px solid var(--color-rule);
+    }
+    .dashboard-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+  @media (max-width: 46rem) {
+    .metrics {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .metrics article:nth-child(2) {
+      border-right: 0;
+    }
+    .metrics article:nth-child(-n + 2) {
+      border-bottom: 1px solid var(--color-rule);
+    }
+    .resource-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .resource-grid article,
+    .resource-grid article:nth-child(3) {
+      border-right: 1px solid var(--color-rule);
+      border-bottom: 1px solid var(--color-rule);
+    }
+    .resource-grid article:nth-child(even) {
+      border-right: 0;
+    }
+    .resource-grid article:last-child {
+      border-bottom: 0;
+    }
+    .failure-strip em {
+      display: none;
+    }
+    .deployment-table th:nth-child(2),
+    .deployment-table td:nth-child(2),
+    .deployment-table th:nth-child(3),
+    .deployment-table td:nth-child(3) {
+      display: none;
+    }
+  }
+  @media (max-width: 30rem) {
+    .metrics {
+      grid-template-columns: 1fr;
+    }
+    .metrics article {
+      min-height: 88px;
+      border-right: 0;
+      border-bottom: 1px solid var(--color-rule);
+    }
+    .metrics article:last-child {
+      border-bottom: 0;
+    }
+    .resource-grid {
+      grid-template-columns: 1fr;
+    }
+    .resource-grid article,
+    .resource-grid article:nth-child(3),
+    .resource-grid article:nth-child(even) {
+      min-height: 112px;
+      border-right: 0;
+      border-bottom: 1px solid var(--color-rule);
+    }
+    .resource-grid article:last-child {
+      border-bottom: 0;
+    }
+  }
 </style>

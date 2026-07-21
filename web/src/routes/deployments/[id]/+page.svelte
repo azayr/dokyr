@@ -3,6 +3,7 @@
   import { page } from '$app/state';
   import Shell from '$lib/components/Shell.svelte';
   import Status from '$lib/components/Status.svelte';
+  import Icon from '$lib/components/Icon.svelte';
   import { api } from '$lib/auth.js';
 
   const imageStages = [
@@ -121,33 +122,56 @@
     await writeClipboard(output);
     outputCopied = true;
     clearTimeout(copyTimer);
-    copyTimer = setTimeout(() => outputCopied = false, 1600);
+    copyTimer = setTimeout(() => (outputCopied = false), 1600);
   }
 </script>
 
 <Shell eyebrow="Deployment" title={data.deployment.id}>
+  <a slot="actions" class="btn" href={'/projects/' + data.project.id}><Icon name="arrow-left" size={14} /> Back to project</a>
+
   <section class="release-head" aria-busy={loading}>
     <div class="release-copy">
-      <div class="status-line"><Status value={data.deployment.status} /><span class:live={isLive}>{isLive ? 'LIVE' : 'RECORDED'}</span></div>
+      <div class="status-line">
+        <Status value={data.deployment.status} />
+        <span class="badge" class:badge-info={isLive}><i></i>{isLive ? 'Live' : 'Recorded'}</span>
+      </div>
       <h2>{data.deployment.message || 'Preparing deployment'}</h2>
       <p>{data.project.name} <i>·</i> {data.deployment.serviceName || data.project.name} <i>·</i> <code>{data.deployment.commit}</code></p>
     </div>
-    <div class="release-actions">
-      <div class="timer"><small>{isLive ? 'ELAPSED' : 'DURATION'}</small><strong>{formatDuration(elapsed)}</strong></div>
-      <a href={'/projects/' + data.project.id}>Back to project</a>
+    <div class="timer">
+      <small>{isLive ? 'Elapsed' : 'Duration'}</small>
+      <strong>{formatDuration(elapsed)}</strong>
     </div>
   </section>
 
-  {#if error}<div class="error-banner"><strong>Live updates interrupted</strong><span>{error}. Retrying automatically…</span></div>{/if}
+  {#if error}
+    <div class="alert alert-error"><Icon name="x-circle" size={15} /><div><strong>Live updates interrupted</strong><span>{error}. Retrying automatically…</span></div></div>
+  {/if}
 
   <div class="workbench">
-    <section class="pipeline" aria-label="Deployment pipeline">
-      <header><div><span>Execution path</span><h3>Deployment progress</h3></div><code>{steps.filter((step) => step.state === 'complete').length}/{steps.length}</code></header>
+    <section class="panel pipeline" aria-label="Deployment pipeline">
+      <header class="panel-header">
+        <div>
+          <span class="eyebrow">Execution path</span>
+          <h2>Deployment progress</h2>
+        </div>
+        <span class="badge">{steps.filter((step) => step.state === 'complete').length}/{steps.length}</span>
+      </header>
       <div class="stage-list">
         {#each steps as step, index}
           <article class:active={step.state === 'active'} class:complete={step.state === 'complete'} class:failed={step.state === 'failed'}>
-            <div class="rail"><span>{step.state === 'complete' ? '✓' : step.state === 'failed' ? '!' : index + 1}</span><i></i></div>
-            <div class="stage-copy"><strong>{step.label}</strong><small>{step.state === 'active' ? data.events.filter((event) => event.stage === step.id).at(-1)?.message : step.detail}</small></div>
+            <div class="rail">
+              <span>
+                {#if step.state === 'complete'}<Icon name="check" size={12} />
+                {:else if step.state === 'failed'}<Icon name="x" size={12} />
+                {:else}{index + 1}{/if}
+              </span>
+              <i></i>
+            </div>
+            <div class="stage-copy">
+              <strong>{step.label}</strong>
+              <small>{step.state === 'active' ? data.events.filter((event) => event.stage === step.id).at(-1)?.message : step.detail}</small>
+            </div>
             <div class="stage-state">
               {#if step.state === 'active'}<i class="spinner"></i><b>Running</b>
               {:else if step.state === 'complete'}<b>{step.duration ? step.duration + 's' : 'Done'}</b>
@@ -159,8 +183,13 @@
       </div>
     </section>
 
-    <aside class="release-meta">
-      <header><span>Release</span><h3>Runtime metadata</h3></header>
+    <aside class="panel release-meta">
+      <header class="panel-header">
+        <div>
+          <span class="eyebrow">Release</span>
+          <h2>Runtime metadata</h2>
+        </div>
+      </header>
       <dl>
         <div><dt>Project</dt><dd>{data.project.name}</dd></div>
         <div><dt>Service</dt><dd>{data.deployment.serviceName || data.project.name}</dd></div>
@@ -175,10 +204,16 @@
 
   <section class="terminal" aria-label="Live deployment output">
     <header>
-      <div class="terminal-title"><span class="lights"><i></i><i></i><i></i></span><strong>Deployment output</strong><em class:live={isLive}>{isLive ? 'streaming' : 'complete'}</em></div>
+      <div class="terminal-title">
+        <span class="lights"><i></i><i></i><i></i></span>
+        <strong>Deployment output</strong>
+        <em class:live={isLive}>{isLive ? 'streaming' : 'complete'}</em>
+      </div>
       <div class="terminal-actions">
-        <button class="terminal-copy" class:copied={outputCopied} onclick={copyVisibleOutput} disabled={visibleEvents.length === 0} aria-live="polite">{outputCopied ? 'Copied ✓' : 'Copy output'}</button>
-        <label><input type="checkbox" bind:checked={autoScroll}/> Auto-scroll</label>
+        <button class="terminal-copy" class:copied={outputCopied} onclick={copyVisibleOutput} disabled={visibleEvents.length === 0} aria-live="polite">
+          <Icon name={outputCopied ? 'check' : 'copy'} size={12} />{outputCopied ? 'Copied' : 'Copy output'}
+        </button>
+        <label><input type="checkbox" bind:checked={autoScroll} /> Auto-scroll</label>
       </div>
     </header>
     <div class="terminal-body" bind:this={terminalBody}>
@@ -187,34 +222,447 @@
       {:else}
         {#each visibleEvents as event}
           <div class="log-line" class:error={event.type === 'error'} class:success={event.type === 'complete'} class:command={event.type === 'start'}>
-            <time>{formatTime(event.createdAt)}</time><span class="stage-tag">{event.stage}</span><i>{event.type === 'start' ? '›' : event.type === 'complete' ? '✓' : event.type === 'error' ? '×' : '·'}</i><code>{event.message}</code>
+            <time>{formatTime(event.createdAt)}</time>
+            <span class="stage-tag">{event.stage}</span>
+            <i class="log-glyph">{event.type === 'start' ? '›' : event.type === 'complete' ? '✓' : event.type === 'error' ? '×' : '·'}</i>
+            <code>{event.message}</code>
           </div>
         {/each}
       {/if}
     </div>
-    <footer><span>⌕</span><input aria-label="Filter deployment output" bind:value={filter} placeholder="Filter output by layer, stage, or message…"/><code>{visibleEvents.length} events</code></footer>
+    <footer>
+      <Icon name="search" size={13} />
+      <input aria-label="Filter deployment output" bind:value={filter} placeholder="Filter output by layer, stage, or message…" />
+      <code>{visibleEvents.length} events</code>
+    </footer>
   </section>
 </Shell>
 
 <style>
-  .release-head{display:flex;justify-content:space-between;align-items:flex-end;gap:var(--space-6);padding:0 0 var(--space-6);border-bottom:1px solid var(--color-rule);margin-bottom:var(--space-5)}
-  .status-line{display:flex;align-items:center;gap:var(--space-3)}.status-line>span{padding:3px 6px;border:1px solid var(--color-rule);border-radius:4px;color:var(--color-muted);font:700 9px var(--font-mono);letter-spacing:.1em}.status-line>span.live{color:var(--color-warning);border-color:color-mix(in oklch,var(--color-warning) 38%,var(--color-rule));background:color-mix(in oklch,var(--color-warning) 9%,transparent)}
-  .release-copy h2{margin:var(--space-3) 0 var(--space-2);font-size:21px;letter-spacing:-.025em}.release-copy p{margin:0;color:var(--color-muted);font-size:12px}.release-copy p i{margin:0 var(--space-2);font-style:normal}.release-copy code{font-size:11px}
-  .release-actions{display:flex;align-items:center;gap:var(--space-4)}.release-actions>a{height:36px;display:flex;align-items:center;padding:0 var(--space-4);border:1px solid var(--color-rule-strong);border-radius:var(--radius-sm);color:var(--color-ink);text-decoration:none;font-size:11px;font-weight:700;background:var(--color-paper-raised)}.release-actions>a:hover{border-color:var(--color-accent);color:var(--color-accent)}
-  .timer{min-width:76px;text-align:right}.timer small{display:block;color:var(--color-muted);font:700 9px var(--font-mono);letter-spacing:.1em}.timer strong{font:500 18px var(--font-mono)}
-  .error-banner{display:flex;gap:var(--space-3);padding:var(--space-3) var(--space-4);margin-bottom:var(--space-4);border:1px solid color-mix(in oklch,var(--color-danger) 42%,var(--color-rule));border-radius:var(--radius-sm);background:color-mix(in oklch,var(--color-danger) 8%,var(--color-paper-raised));font-size:11px}.error-banner strong{color:var(--color-danger)}.error-banner span{color:var(--color-muted)}
-  .workbench{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:var(--space-4);margin-bottom:var(--space-4)}
-  .pipeline,.release-meta{border:1px solid var(--color-rule);border-radius:var(--radius-lg);background:var(--color-paper-raised);box-shadow:var(--shadow-whisper);overflow:hidden}.pipeline>header,.release-meta>header{min-height:68px;padding:0 var(--space-5);display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--color-rule)}.pipeline header span,.release-meta header span{display:block;color:var(--color-muted);font:700 9px var(--font-mono);text-transform:uppercase;letter-spacing:.1em}.pipeline h3,.release-meta h3{margin:4px 0 0;font-size:14px}.pipeline>header>code{color:var(--color-muted);font-size:11px}
-  .stage-list{padding:var(--space-2) 0}.stage-list article{min-height:66px;display:grid;grid-template-columns:42px minmax(0,1fr) 76px;align-items:center;padding:0 var(--space-5);position:relative}.stage-list article.active{background:linear-gradient(90deg,var(--color-accent-soft),transparent 72%)}.rail{align-self:stretch;display:flex;align-items:center;position:relative}.rail>span{position:relative;z-index:1;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--color-rule-strong);background:var(--color-paper-raised);color:var(--color-muted);font:700 10px var(--font-mono)}.rail>i{position:absolute;left:12px;top:0;bottom:0;width:1px;background:var(--color-rule)}.stage-list article:first-child .rail>i{top:50%}.stage-list article:last-child .rail>i{bottom:50%}.complete .rail>span{border-color:var(--color-accent);background:var(--color-accent);color:var(--color-accent-ink)}.active .rail>span{border-color:var(--color-warning);color:var(--color-warning);box-shadow:0 0 0 4px color-mix(in oklch,var(--color-warning) 12%,transparent)}.failed .rail>span{border-color:var(--color-danger);background:var(--color-danger);color:white}.complete .rail>i{background:var(--color-accent)}
-  .stage-copy{min-width:0;display:grid;gap:4px}.stage-copy strong{font-size:11px}.stage-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-muted);font:10px var(--font-mono)}.stage-state{display:flex;justify-content:flex-end;align-items:center;gap:7px}.stage-state b{color:var(--color-muted);font:700 9px var(--font-mono);text-transform:uppercase;letter-spacing:.04em}.active .stage-state b{color:var(--color-warning)}.complete .stage-state b{color:var(--color-accent)}.failed .stage-state b{color:var(--color-danger)}
-  .spinner{width:11px;height:11px;border:2px solid color-mix(in oklch,var(--color-warning) 26%,transparent);border-top-color:var(--color-warning);border-radius:50%;animation:spin .75s linear infinite}
-  .release-meta dl{margin:0;padding:var(--space-2) var(--space-5)}.release-meta dl>div{min-height:47px;display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);border-bottom:1px solid var(--color-rule)}.release-meta dl>div:last-child{border:0}.release-meta dt{color:var(--color-muted);font-size:10px}.release-meta dd{margin:0;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;font:10px var(--font-mono)}
-  .terminal{border:1px solid var(--color-log-rule);border-radius:var(--radius-lg);background:var(--color-log-bg);color:var(--color-log-text);overflow:hidden;box-shadow:0 12px 30px oklch(10% .01 150/.12)}.terminal>header{height:50px;display:flex;align-items:center;justify-content:space-between;padding:0 var(--space-4);border-bottom:1px solid var(--color-log-rule);background:var(--color-log-surface)}.terminal-title{display:flex;align-items:center;gap:var(--space-3)}.lights{display:flex;gap:5px}.lights i{width:7px;height:7px;border-radius:50%;background:#55605a}.lights i:first-child{background:#d9665d}.lights i:nth-child(2){background:#d9aa4d}.lights i:last-child{background:#5fb879}.terminal-title strong{font:500 10px var(--font-mono)}.terminal-title em{padding:3px 6px;border-radius:4px;background:var(--color-log-rule);color:var(--color-log-muted);font:normal 8px var(--font-mono);text-transform:uppercase;letter-spacing:.08em}.terminal-title em.live{color:#7ee29a;background:#193823}.terminal label{display:flex;align-items:center;gap:7px;color:var(--color-log-muted);font:9px var(--font-mono)}.terminal label input{accent-color:var(--color-accent)}
-  .terminal-actions{display:flex;align-items:center;gap:var(--space-3)}.terminal-copy{height:28px;padding:0 9px;border:1px solid var(--color-log-rule);border-radius:4px;background:transparent;color:var(--color-log-muted);font:500 9px var(--font-mono);cursor:pointer}.terminal-copy:hover:not(:disabled){border-color:#68736b;color:var(--color-log-text)}.terminal-copy.copied{border-color:#356847;color:#7ee29a}.terminal-copy:disabled{opacity:.45;cursor:not-allowed}
-  .terminal-body{height:310px;overflow:auto;padding:var(--space-3) 0;scrollbar-color:var(--color-log-rule) transparent}.log-line{min-height:26px;display:grid;grid-template-columns:70px 68px 14px minmax(0,1fr);align-items:start;padding:4px var(--space-4);font:10px/1.7 var(--font-mono)}.log-line:hover{background:color-mix(in oklch,var(--color-log-surface) 70%,transparent)}.log-line time{color:var(--color-log-muted)}.stage-tag{width:max-content;max-width:62px;overflow:hidden;text-overflow:ellipsis;padding:1px 5px;border:1px solid var(--color-log-rule);border-radius:3px;color:#8c9a90;text-transform:uppercase;font-size:8px;letter-spacing:.05em}.log-line>i{color:#68736b;font-style:normal}.log-line>code{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--color-log-text)}.log-line.command>i,.log-line.command>code{color:#8bc7ff}.log-line.success>i,.log-line.success>code{color:#7ee29a}.log-line.error>i,.log-line.error>code{color:#ff8178}.empty-output{height:100%;display:flex;align-items:center;justify-content:center;gap:var(--space-3);color:var(--color-log-muted);font:10px var(--font-mono)}
-  .terminal>footer{height:43px;display:flex;align-items:center;gap:var(--space-3);padding:0 var(--space-4);border-top:1px solid var(--color-log-rule);background:var(--color-log-surface);color:#7ee29a}.terminal>footer input{min-width:0;flex:1;border:0;outline:0;background:transparent;color:var(--color-log-text);font:10px var(--font-mono)}.terminal>footer input::placeholder{color:var(--color-log-muted)}.terminal>footer code{color:var(--color-log-muted);font-size:9px}
-  @keyframes spin{to{transform:rotate(360deg)}}
-  @media(max-width:900px){.workbench{grid-template-columns:1fr}.release-meta{display:none}}
-  @media(max-width:680px){.release-head{align-items:flex-start;flex-direction:column}.release-actions{width:100%;justify-content:space-between}.stage-list article{padding:0 var(--space-3)}.log-line{grid-template-columns:58px 14px minmax(0,1fr)}.stage-tag{display:none}}
-  @media(prefers-reduced-motion:reduce){.spinner{animation:none}}
+  .release-head {
+    margin-bottom: var(--space-4);
+    padding: var(--space-5);
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--space-5);
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-lg);
+    background: var(--color-paper-raised);
+    box-shadow: var(--shadow-panel);
+  }
+  .release-copy {
+    min-width: 0;
+  }
+  .status-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .release-copy h2 {
+    margin: var(--space-3) 0 var(--space-1);
+    font-size: var(--text-xl);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .release-copy p {
+    margin: 0;
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+  }
+  .release-copy p i {
+    margin: 0 var(--space-1);
+    font-style: normal;
+  }
+  .release-copy code {
+    font-size: var(--text-sm);
+  }
+  .timer {
+    flex: 0 0 auto;
+    text-align: right;
+  }
+  .timer small {
+    display: block;
+    color: var(--color-muted);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .timer strong {
+    font: 600 var(--text-xl) var(--font-mono);
+  }
+
+  .workbench {
+    margin-bottom: var(--space-4);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    gap: var(--space-4);
+    align-items: start;
+  }
+  .stage-list {
+    padding: var(--space-2) 0;
+  }
+  .stage-list article {
+    min-height: 62px;
+    padding: 0 var(--space-5);
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr) 84px;
+    align-items: center;
+    position: relative;
+  }
+  .stage-list article.active {
+    background: linear-gradient(90deg, var(--color-accent-soft), transparent 72%);
+  }
+  .rail {
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+    position: relative;
+  }
+  .rail > span {
+    position: relative;
+    z-index: 1;
+    width: 26px;
+    height: 26px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--color-rule-strong);
+    border-radius: 50%;
+    background: var(--color-paper-raised);
+    color: var(--color-muted);
+    font: 600 var(--text-2xs) var(--font-mono);
+  }
+  .rail > i {
+    position: absolute;
+    left: 12px;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--color-rule);
+  }
+  .stage-list article:first-child .rail > i {
+    top: 50%;
+  }
+  .stage-list article:last-child .rail > i {
+    bottom: 50%;
+  }
+  .complete .rail > span {
+    border-color: var(--color-success);
+    background: var(--color-success);
+    color: #fff;
+  }
+  .active .rail > span {
+    border-color: var(--color-info);
+    color: var(--color-info);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-info) 14%, transparent);
+  }
+  .failed .rail > span {
+    border-color: var(--color-danger);
+    background: var(--color-danger);
+    color: #fff;
+  }
+  .complete .rail > i {
+    background: var(--color-success);
+  }
+  .stage-copy {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+  .stage-copy strong {
+    font-size: var(--text-sm);
+  }
+  .stage-copy small {
+    overflow: hidden;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .stage-state {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 7px;
+  }
+  .stage-state b {
+    color: var(--color-muted);
+    font: 600 var(--text-2xs) var(--font-mono);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .active .stage-state b {
+    color: var(--color-info);
+  }
+  .complete .stage-state b {
+    color: var(--color-success);
+  }
+  .failed .stage-state b {
+    color: var(--color-danger);
+  }
+  .stage-state .spinner {
+    width: 12px;
+    height: 12px;
+    border-color: color-mix(in srgb, var(--color-info) 26%, transparent);
+    border-top-color: var(--color-info);
+  }
+
+  .release-meta dl {
+    margin: 0;
+    padding: var(--space-2) var(--space-5);
+  }
+  .release-meta dl > div {
+    min-height: 46px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    border-bottom: 1px solid var(--color-rule);
+  }
+  .release-meta dl > div:last-child {
+    border-bottom: 0;
+  }
+  .release-meta dt {
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .release-meta dd {
+    margin: 0;
+    max-width: 170px;
+    overflow: hidden;
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .terminal {
+    overflow: hidden;
+    border: 1px solid var(--color-log-rule);
+    border-radius: var(--radius-lg);
+    background: var(--color-log-bg);
+    color: var(--color-log-text);
+  }
+  .terminal > header {
+    min-height: 48px;
+    padding: 0 var(--space-4);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    border-bottom: 1px solid var(--color-log-rule);
+    background: var(--color-log-surface);
+  }
+  .terminal-title {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+  .lights {
+    display: flex;
+    gap: 5px;
+  }
+  .lights i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-log-rule);
+  }
+  .lights i:first-child {
+    background: #d9665d;
+  }
+  .lights i:nth-child(2) {
+    background: #d9aa4d;
+  }
+  .lights i:last-child {
+    background: #5fb879;
+  }
+  .terminal-title strong {
+    font: 500 var(--text-xs) var(--font-mono);
+    white-space: nowrap;
+  }
+  .terminal-title em {
+    padding: 2px 7px;
+    border-radius: var(--radius-xs);
+    background: var(--color-log-rule);
+    color: var(--color-log-muted);
+    font: 500 var(--text-2xs) var(--font-mono);
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+  }
+  .terminal-title em.live {
+    background: color-mix(in srgb, var(--color-success) 20%, transparent);
+    color: var(--color-success);
+  }
+  .terminal label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--color-log-muted);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+  }
+  .terminal label input {
+    accent-color: var(--color-accent);
+  }
+  .terminal-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+  .terminal-copy {
+    height: 28px;
+    padding: 0 var(--space-2);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 1px solid var(--color-log-rule);
+    border-radius: var(--radius-xs);
+    background: transparent;
+    color: var(--color-log-muted);
+    font: 500 var(--text-2xs) var(--font-mono);
+    cursor: pointer;
+  }
+  .terminal-copy:hover:not(:disabled) {
+    border-color: var(--color-log-muted);
+    color: var(--color-log-text);
+  }
+  .terminal-copy.copied {
+    border-color: color-mix(in srgb, var(--color-success) 45%, transparent);
+    color: var(--color-success);
+  }
+  .terminal-copy:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .terminal-body {
+    height: 320px;
+    padding: var(--space-3) 0;
+    overflow: auto;
+    scrollbar-color: var(--color-log-rule) transparent;
+  }
+  .log-line {
+    min-height: 26px;
+    padding: 3px var(--space-4);
+    display: grid;
+    grid-template-columns: 70px 68px 14px minmax(0, 1fr);
+    align-items: start;
+    font: var(--text-xs)/1.7 var(--font-mono);
+  }
+  .log-line:hover {
+    background: color-mix(in srgb, var(--color-log-surface) 70%, transparent);
+  }
+  .log-line time {
+    color: var(--color-log-muted);
+  }
+  .stage-tag {
+    width: max-content;
+    max-width: 62px;
+    padding: 1px 5px;
+    overflow: hidden;
+    border: 1px solid var(--color-log-rule);
+    border-radius: var(--radius-xs);
+    color: var(--color-log-muted);
+    font-size: 9px;
+    letter-spacing: 0.05em;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+  }
+  .log-glyph {
+    color: var(--color-log-muted);
+    font-style: normal;
+  }
+  .log-line > code {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    color: var(--color-log-text);
+  }
+  .log-line.command > .log-glyph,
+  .log-line.command > code {
+    color: var(--color-info);
+  }
+  .log-line.success > .log-glyph,
+  .log-line.success > code {
+    color: var(--color-success);
+  }
+  .log-line.error > .log-glyph,
+  .log-line.error > code {
+    color: var(--color-danger);
+  }
+  .empty-output {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+    color: var(--color-log-muted);
+    font-size: var(--text-sm);
+  }
+  .empty-output .spinner {
+    border-color: var(--color-log-rule);
+    border-top-color: var(--color-accent);
+  }
+  .terminal > footer {
+    height: 42px;
+    padding: 0 var(--space-4);
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    border-top: 1px solid var(--color-log-rule);
+    background: var(--color-log-surface);
+    color: var(--color-log-muted);
+  }
+  .terminal > footer input {
+    min-width: 0;
+    flex: 1;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--color-log-text);
+    font: var(--text-xs) var(--font-mono);
+  }
+  .terminal > footer input::placeholder {
+    color: var(--color-log-muted);
+  }
+  .terminal > footer code {
+    color: var(--color-log-muted);
+    font-size: var(--text-2xs);
+    white-space: nowrap;
+  }
+
+  @media (max-width: 56rem) {
+    .workbench {
+      grid-template-columns: 1fr;
+    }
+    .release-meta {
+      display: none;
+    }
+  }
+  @media (max-width: 42rem) {
+    .release-head {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .timer {
+      text-align: left;
+    }
+    .stage-list article {
+      padding: 0 var(--space-3);
+    }
+    .log-line {
+      grid-template-columns: 58px 14px minmax(0, 1fr);
+    }
+    .stage-tag {
+      display: none;
+    }
+    .terminal > header {
+      align-items: flex-start;
+      flex-direction: column;
+      padding-block: var(--space-2);
+      gap: var(--space-2);
+    }
+  }
 </style>

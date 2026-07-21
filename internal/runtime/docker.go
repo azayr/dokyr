@@ -562,7 +562,7 @@ func (d *Docker) buildWithPack(ctx context.Context, pack, image, sourceDir strin
 	if err := command.Run(); err != nil {
 		writer.Flush()
 		if errors.Is(err, exec.ErrNotFound) {
-			return "", fmt.Errorf("%s is not installed in this Selfhost image; rebuild Selfhost with the build-pack tools enabled", pack)
+			return "", fmt.Errorf("%s is not installed in this Dokyr image; rebuild Dokyr with the build-pack tools enabled", pack)
 		}
 		return "", fmt.Errorf("%s build: %w", pack, err)
 	}

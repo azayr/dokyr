@@ -1,93 +1,168 @@
 <script>
   import { onMount } from 'svelte';
-  import Icon from './Icon.svelte';
   import { page } from '$app/state';
+  import Icon from './Icon.svelte';
+  import Logo from './Logo.svelte';
+  import Toaster from './Toaster.svelte';
+  import CommandMenu from './CommandMenu.svelte';
   import { currentUser, logout } from '$lib/auth.js';
+  import { themeMode, resolvedTheme, initTheme, setTheme } from '$lib/theme.js';
 
   export let eyebrow = 'Workspace';
   export let title = 'Overview';
   export let subtitle = '';
   export let meta = [];
 
-  let dark = false;
-  const nav = [
-    ['/', 'grid', 'Overview'],
-    ['/projects', 'box', 'Projects'],
-    ['/deployments', 'rocket', 'Deployments'],
-    ['/integrations', 'git', 'Sources'],
-    ['/proxy', 'globe', 'Proxy'],
-    ['/servers', 'server', 'Infrastructure']
+  const navGroups = [
+    {
+      label: 'Workspace',
+      items: [
+        { href: '/', icon: 'grid', label: 'Overview' },
+        { href: '/projects', icon: 'box', label: 'Projects' },
+        { href: '/deployments', icon: 'rocket', label: 'Deployments' }
+      ]
+    },
+    {
+      label: 'Infrastructure',
+      items: [
+        { href: '/servers', icon: 'server', label: 'Servers' },
+        { href: '/proxy', icon: 'globe', label: 'Proxy' },
+        { href: '/integrations', icon: 'git', label: 'Sources' }
+      ]
+    },
+    {
+      label: 'Administration',
+      items: [{ href: '/settings', icon: 'settings', label: 'Settings' }]
+    }
   ];
 
+  let drawerOpen = false;
+  let commandOpen = false;
+  let userMenuOpen = false;
+  let themeMenuOpen = false;
+
   onMount(() => {
-    const syncStoredTheme = () => applyTheme(localStorage.getItem('selfhost-theme') === 'dark');
-    syncStoredTheme();
-    window.addEventListener('storage', syncStoredTheme);
-    return () => window.removeEventListener('storage', syncStoredTheme);
+    initTheme();
   });
 
-  const initials = (name = 'Owner') => name.split(' ').map((value) => value[0]).slice(0, 2).join('').toUpperCase();
-  const isActive = (href) => href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);
-
-  function applyTheme(value) {
-    dark = value;
-    document.documentElement.classList.toggle('theme-dark', value);
-    const themeColor = document.querySelector('meta[name="theme-color"]');
-    if (themeColor) themeColor.setAttribute('content', value ? '#10151b' : '#f7f3ed');
+  $: if (page.url.pathname) {
+    drawerOpen = false;
+    userMenuOpen = false;
+    themeMenuOpen = false;
   }
 
-  function toggleTheme() {
-    const next = !dark;
-    localStorage.setItem('selfhost-theme', next ? 'dark' : 'light');
-    applyTheme(next);
+  const initials = (name = 'Owner') => name.split(' ').map((value) => value[0]).slice(0, 2).join('').toUpperCase();
+  const isActive = (href) => (href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href));
+
+  const themeIcons = { light: 'sun', dark: 'moon', system: 'monitor' };
+
+  function chooseTheme(mode) {
+    setTheme(mode);
+    themeMenuOpen = false;
+  }
+
+  function closeMenus() {
+    userMenuOpen = false;
+    themeMenuOpen = false;
   }
 </script>
 
-<svelte:head><meta name="description" content="A lightweight self-hosted deployment control plane" /></svelte:head>
+<svelte:head>
+  <meta name="description" content="Dokyr — a calm, self-hosted deployment control plane for projects, servers, and proxies." />
+</svelte:head>
 
-<div class:dark class="app">
-  <aside>
-    <a class="brand" href="/" aria-label="DeployForge overview">
-      <span class="mark"><span></span><span></span></span>
-      <strong>DeployForge</strong>
-    </a>
+<svelte:window onclick={(event) => {
+  if (!event.target.closest?.('[data-menu]')) closeMenus();
+}} />
+
+<div class="app">
+  <aside class="sidebar" class:open={drawerOpen} aria-label="Primary">
+    <div class="sidebar-top">
+      <a class="brand" href="/" aria-label="Dokyr overview">
+        <Logo size={28} />
+      </a>
+      <button class="icon-btn drawer-close" type="button" aria-label="Close navigation" onclick={() => (drawerOpen = false)}>
+        <Icon name="x" size={16} />
+      </button>
+    </div>
 
     <nav aria-label="Primary navigation">
-      {#each nav as item}
-        <a href={item[0]} class:active={isActive(item[0])} aria-current={isActive(item[0]) ? 'page' : undefined}>
-          <Icon name={item[1]} size={16} /><span>{item[2]}</span>
-        </a>
+      {#each navGroups as group}
+        <div class="nav-group">
+          <span class="nav-label">{group.label}</span>
+          {#each group.items as item}
+            <a href={item.href} class:active={isActive(item.href)} aria-current={isActive(item.href) ? 'page' : undefined}>
+              <Icon name={item.icon} size={16} /><span>{item.label}</span>
+            </a>
+          {/each}
+        </div>
       {/each}
     </nav>
 
-    <div class="bottom">
-      <a href="/settings" class:active={page.url.pathname.startsWith('/settings')}>
-        <Icon name="settings" size={16} /><span>Settings</span>
-      </a>
-      <a href="/settings" class="docs"><span aria-hidden="true">▤</span><span>Documentation</span></a>
-      <button class="identity" onclick={logout} title="Sign out">
-        <span>{initials($currentUser?.name)}</span>
-        <div><b>{$currentUser?.name || 'Owner'}</b><small>{$currentUser?.email || 'Sign out'}</small></div>
-        <em aria-hidden="true">···</em>
-      </button>
+    <div class="sidebar-bottom">
+      <div class="user-menu-wrap" data-menu>
+        {#if userMenuOpen}
+          <div class="menu" role="menu">
+            <div class="menu-head">
+              <b>{$currentUser?.name || 'Owner'}</b>
+              <small>{$currentUser?.email || ''}</small>
+            </div>
+            <a href="/settings" role="menuitem" onclick={() => (userMenuOpen = false)}><Icon name="settings" size={14} /> Settings</a>
+            <button type="button" role="menuitem" onclick={logout}><Icon name="logout" size={14} /> Sign out</button>
+          </div>
+        {/if}
+        <button class="identity" type="button" aria-haspopup="menu" aria-expanded={userMenuOpen} onclick={() => { userMenuOpen = !userMenuOpen; themeMenuOpen = false; }}>
+          <span class="avatar">{initials($currentUser?.name)}</span>
+          <span class="identity-text"><b>{$currentUser?.name || 'Owner'}</b><small>{$currentUser?.email || 'Account'}</small></span>
+          <Icon name="chevron-down" size={14} />
+        </button>
+      </div>
     </div>
   </aside>
+  {#if drawerOpen}<button class="drawer-scrim" aria-label="Close navigation" onclick={() => (drawerOpen = false)}></button>{/if}
 
   <div class="workspace-view">
     <header class="topbar">
-      <a class="mobile-brand" href="/" aria-label="DeployForge overview"><span class="mark"><span></span><span></span></span><strong>DeployForge</strong></a>
-      <p><span>{eyebrow}</span><b>/</b><strong>{title}</strong></p>
+      <button class="icon-btn menu-btn" type="button" aria-label="Open navigation" onclick={() => (drawerOpen = true)}>
+        <Icon name="menu" size={17} />
+      </button>
+      <a class="mobile-brand" href="/" aria-label="Dokyr overview"><Logo size={24} compact /></a>
+      <nav class="crumbs" aria-label="Breadcrumbs">
+        <span>{eyebrow}</span>
+        <Icon name="chevron-right" size={12} />
+        <strong>{title}</strong>
+      </nav>
       <div class="top-actions">
-        <button class="search" type="button"><Icon name="search" size={14}/><span>Search or run command</span><kbd>⌘K</kbd></button>
-        <button class="icon-button" onclick={toggleTheme} aria-label="Toggle color theme"><Icon name={dark ? 'sun' : 'moon'} size={16}/></button>
-        <button class="avatar" type="button" title={$currentUser?.name || 'Owner'}>{initials($currentUser?.name)}</button>
+        <button class="command-trigger" type="button" onclick={() => (commandOpen = true)}>
+          <Icon name="search" size={14} /><span>Search or command</span><kbd>⌘K</kbd>
+        </button>
+        <button class="icon-btn command-trigger-mobile" type="button" aria-label="Open command menu" onclick={() => (commandOpen = true)}>
+          <Icon name="search" size={16} />
+        </button>
+        <div class="theme-wrap" data-menu>
+          <button class="icon-btn" type="button" aria-label="Change theme" aria-haspopup="menu" aria-expanded={themeMenuOpen} data-tip="Theme" onclick={() => { themeMenuOpen = !themeMenuOpen; userMenuOpen = false; }}>
+            <Icon name={themeIcons[$themeMode] || 'sun'} size={16} />
+          </button>
+          {#if themeMenuOpen}
+            <div class="menu theme-menu" role="menu">
+              {#each ['light', 'dark', 'system'] as mode}
+                <button type="button" role="menuitemradio" aria-checked={$themeMode === mode} class:active={$themeMode === mode} onclick={() => chooseTheme(mode)}>
+                  <Icon name={themeIcons[mode]} size={14} />
+                  <span>{mode[0].toUpperCase() + mode.slice(1)}</span>
+                  {#if $themeMode === mode}<Icon name="check" size={13} />{/if}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+        <a class="icon-btn" href="/settings" data-tip="Settings" aria-label="Open settings"><Icon name="settings" size={16} /></a>
       </div>
     </header>
 
     <nav class="mobile-nav" aria-label="Mobile navigation">
-      {#each nav as item}
-        <a href={item[0]} class:active={isActive(item[0])} aria-label={item[2]}>
-          <Icon name={item[1]} size={17} /><span>{item[2]}</span>
+      {#each navGroups.flatMap((group) => group.items) as item}
+        <a href={item.href} class:active={isActive(item.href)} aria-label={item.label}>
+          <Icon name={item.icon} size={15} /><span>{item.label}</span>
         </a>
       {/each}
     </nav>
@@ -101,84 +176,481 @@
             <div class="scope">{#each meta as item}<span>{item}</span>{/each}</div>
           {/if}
         </div>
+        {#if $$slots.actions}
+          <div class="page-actions"><slot name="actions" /></div>
+        {/if}
       </header>
       <slot />
     </main>
   </div>
 </div>
 
+<CommandMenu bind:open={commandOpen} />
+<Toaster />
+
 <style>
-  :global(*) { box-sizing: border-box; }
-  :global(html) { overflow-x: clip; background: var(--color-paper); }
-  :global(body) { margin: 0; min-width: 320px; overflow-x: clip; font-family: var(--font-body); color: var(--color-ink); background: var(--color-paper); }
-  :global(button), :global(input), :global(select), :global(textarea) { font: inherit; }
-  :global(button), :global(a) { -webkit-tap-highlight-color: transparent; }
-  :global(:focus-visible) { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+  .app {
+    min-height: 100vh;
+    background: var(--color-paper);
+    color: var(--color-ink);
+  }
 
-  .app { min-height: 100vh; background: var(--color-paper); color: var(--color-ink); }
-  aside { display: none; }
-  .workspace-view { min-width: 0; }
-  .brand, .mobile-brand { display: flex; align-items: center; gap: 9px; color: var(--color-ink); text-decoration: none; }
-  .brand strong, .mobile-brand strong { font-size: 14px; letter-spacing: -0.025em; }
-  .mark { position: relative; width: 28px; height: 28px; flex: 0 0 auto; border-radius: 7px; display: grid; place-items: center; overflow: hidden; background: var(--color-log-bg); }
-  .mark span:first-child { position: absolute; width: 11px; height: 11px; border: 2px solid var(--color-accent); border-radius: 3px; transform: translate(-3px, -3px); }
-  .mark span:last-child { position: absolute; width: 6px; height: 6px; border-radius: 2px; background: var(--color-accent); transform: translate(4px, 4px); }
+  /* ---------- Sidebar ---------- */
+  .sidebar {
+    position: fixed;
+    z-index: 120;
+    inset: 0 auto 0 0;
+    width: 264px;
+    padding: var(--space-4) var(--space-3);
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--color-rule);
+    background: var(--color-sidebar);
+    transform: translateX(-100%);
+    transition: transform var(--duration-base) var(--ease-out);
+  }
+  .sidebar.open {
+    transform: none;
+    box-shadow: var(--shadow-modal);
+  }
+  .drawer-scrim {
+    position: fixed;
+    z-index: 110;
+    inset: 0;
+    border: 0;
+    background: rgb(6 12 20 / 0.45);
+    cursor: default;
+  }
+  .sidebar-top {
+    height: 40px;
+    padding: 0 var(--space-2);
+    margin-bottom: var(--space-5);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .brand {
+    color: var(--color-ink);
+    text-decoration: none;
+  }
+  .drawer-close {
+    display: grid;
+  }
+  .sidebar nav {
+    flex: 1;
+    display: grid;
+    align-content: start;
+    gap: var(--space-5);
+    overflow-y: auto;
+  }
+  .nav-group {
+    display: grid;
+    gap: 2px;
+  }
+  .nav-label {
+    padding: 0 var(--space-2) var(--space-1);
+    color: var(--color-faint);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .nav-group a {
+    height: 34px;
+    padding: 0 var(--space-2);
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    border-radius: var(--radius-sm);
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    text-decoration: none;
+    transition: color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out);
+  }
+  .nav-group a:hover {
+    background: var(--color-paper-subtle);
+    color: var(--color-ink);
+  }
+  .nav-group a.active {
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    font-weight: 600;
+  }
 
-  .topbar { height: 64px; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--color-rule); background: var(--color-paper-raised); }
-  .topbar > p { display: none; min-width: 0; margin: 0; align-items: center; gap: 7px; color: var(--color-muted); font-size: 11px; white-space: nowrap; }
-  .topbar > p span, .topbar > p strong { overflow: hidden; text-overflow: ellipsis; }
-  .topbar > p b { color: var(--color-faint); font-weight: 400; }
-  .topbar > p strong { color: var(--color-ink-secondary); font-weight: 500; }
-  .mobile-brand { min-width: 0; }
-  .top-actions { display: flex; align-items: center; gap: 7px; }
-  .search { display: none; width: 260px; height: 34px; padding: 0 9px; align-items: center; gap: 8px; border: 1px solid var(--color-rule); border-radius: 7px; background: var(--color-surface-subtle); color: var(--color-muted); text-align: left; font-size: 10px; cursor: pointer; }
-  .search span:nth-child(2) { flex: 1; }
-  .search kbd { padding: 2px 5px; border: 1px solid var(--color-rule); border-radius: 4px; background: var(--color-paper-raised); color: var(--color-faint); font: 9px var(--font-mono); }
-  .icon-button, .avatar { width: 32px; height: 32px; border: 1px solid var(--color-rule); border-radius: 7px; display: grid; place-items: center; background: var(--color-paper-raised); color: var(--color-ink-secondary); cursor: pointer; }
-  .icon-button:hover { background: var(--color-paper-subtle); }
-  .avatar { border-color: var(--color-log-bg); border-radius: 50%; background: var(--color-log-bg); color: white; font: 600 9px var(--font-mono); }
+  .sidebar-bottom {
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--color-rule);
+  }
+  .user-menu-wrap {
+    position: relative;
+  }
+  .identity {
+    width: 100%;
+    min-height: 44px;
+    padding: var(--space-1) var(--space-2);
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 9px;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--color-ink);
+    text-align: left;
+    cursor: pointer;
+  }
+  .identity:hover {
+    background: var(--color-paper-subtle);
+  }
+  .avatar {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--color-accent);
+    color: var(--color-accent-ink);
+    font: 600 var(--text-2xs) var(--font-mono);
+  }
+  .identity-text {
+    min-width: 0;
+    display: grid;
+  }
+  .identity-text b,
+  .identity-text small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .identity-text b {
+    font-size: var(--text-sm);
+    font-weight: 600;
+  }
+  .identity-text small {
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .identity > :global(svg) {
+    color: var(--color-faint);
+  }
 
-  .mobile-nav { padding: 7px 12px; display: flex; gap: 3px; overflow-x: auto; border-bottom: 1px solid var(--color-rule); background: var(--color-paper-raised); }
-  .mobile-nav a { min-width: max-content; height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 7px; border-radius: 7px; color: var(--color-muted); text-decoration: none; font-size: 11px; font-weight: 500; }
-  .mobile-nav a.active { background: var(--color-accent-soft); color: var(--color-accent); }
+  .menu {
+    position: absolute;
+    z-index: 60;
+    min-width: 190px;
+    padding: var(--space-1);
+    display: grid;
+    border: 1px solid var(--color-rule-strong);
+    border-radius: var(--radius-md);
+    background: var(--color-paper-raised);
+    box-shadow: var(--shadow-popover);
+  }
+  .menu a,
+  .menu button {
+    min-height: 34px;
+    padding: 0 var(--space-2);
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-ink);
+    font-size: var(--text-sm);
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .menu a:hover,
+  .menu button:hover {
+    background: var(--color-paper-subtle);
+  }
+  .menu button :global(svg:last-child) {
+    margin-left: auto;
+    color: var(--color-accent);
+  }
+  .menu .active {
+    color: var(--color-accent);
+    font-weight: 600;
+  }
+  .menu-head {
+    padding: var(--space-2) var(--space-2) var(--space-3);
+    display: grid;
+    gap: 1px;
+    border-bottom: 1px solid var(--color-rule);
+    margin-bottom: var(--space-1);
+  }
+  .menu-head b {
+    font-size: var(--text-sm);
+  }
+  .menu-head small {
+    overflow: hidden;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .user-menu-wrap .menu {
+    bottom: calc(100% + 8px);
+    left: 0;
+    right: 0;
+  }
+  .theme-wrap {
+    position: relative;
+  }
+  .theme-menu {
+    top: calc(100% + 8px);
+    right: 0;
+  }
 
-  main { width: 100%; max-width: 1440px; margin: 0 auto; padding: 0 16px 40px; }
-  .page-header { min-height: 112px; padding: 23px 0 18px; display: flex; align-items: flex-start; gap: 18px; }
-  .heading { min-width: 0; }
-  h1 { min-width: 0; margin: 0; overflow-wrap: anywhere; font-family: var(--font-display); font-size: clamp(24px, 4vw, 29px); line-height: 1.08; letter-spacing: -0.04em; }
-  .heading > p { max-width: 720px; margin: 8px 0 0; color: var(--color-ink-secondary); font-size: 12px; line-height: 1.45; }
-  .scope { margin-top: 9px; display: flex; flex-wrap: wrap; gap: 12px; color: var(--color-muted); font: 9px var(--font-mono); }
-  .scope span + span::before { content: '·'; margin-right: 12px; color: var(--color-rule-strong); }
+  /* ---------- Topbar ---------- */
+  .workspace-view {
+    min-width: 0;
+  }
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 90;
+    height: 56px;
+    padding: 0 var(--space-4);
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    border-bottom: 1px solid var(--color-rule);
+    background: color-mix(in srgb, var(--color-paper) 82%, transparent);
+    backdrop-filter: blur(10px);
+  }
+  .icon-btn {
+    width: 32px;
+    height: 32px;
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-sm);
+    background: var(--color-paper-raised);
+    color: var(--color-ink-secondary);
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .icon-btn:hover {
+    background: var(--color-paper-subtle);
+    color: var(--color-ink);
+  }
+  .crumbs {
+    min-width: 0;
+    display: none;
+    align-items: center;
+    gap: 7px;
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+    white-space: nowrap;
+  }
+  .crumbs strong {
+    overflow: hidden;
+    color: var(--color-ink);
+    font-weight: 600;
+    text-overflow: ellipsis;
+  }
+  .mobile-brand {
+    color: var(--color-ink);
+    text-decoration: none;
+  }
+  .top-actions {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .command-trigger {
+    width: 230px;
+    height: 32px;
+    padding: 0 var(--space-2);
+    display: none;
+    align-items: center;
+    gap: var(--space-2);
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-sm);
+    background: var(--color-paper-raised);
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+    cursor: pointer;
+  }
+  .command-trigger:hover {
+    border-color: var(--color-rule-strong);
+    background: var(--color-surface-subtle);
+  }
+  .command-trigger span {
+    flex: 1;
+    overflow: hidden;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .command-trigger kbd {
+    padding: 1px 5px;
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-xs);
+    background: var(--color-paper-subtle);
+    color: var(--color-faint);
+    font: 500 var(--text-2xs) var(--font-mono);
+  }
+  .command-trigger-mobile {
+    display: grid;
+  }
+
+  /* ---------- Mobile nav ---------- */
+  .mobile-nav {
+    padding: var(--space-2) var(--space-3);
+    display: flex;
+    gap: 2px;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--color-rule);
+    background: var(--color-paper);
+    scrollbar-width: none;
+  }
+  .mobile-nav::-webkit-scrollbar {
+    display: none;
+  }
+  .mobile-nav a {
+    min-width: max-content;
+    height: 34px;
+    padding: 0 var(--space-3);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    border-radius: var(--radius-sm);
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    text-decoration: none;
+  }
+  .mobile-nav a.active {
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    font-weight: 600;
+  }
+
+  /* ---------- Main ---------- */
+  main {
+    width: 100%;
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 0 var(--space-4) var(--space-10);
+  }
+  .page-header {
+    min-height: 96px;
+    padding: var(--space-6) 0 var(--space-5);
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-5);
+  }
+  .heading {
+    min-width: 0;
+  }
+  h1 {
+    margin: 0;
+    overflow-wrap: anywhere;
+    font-family: var(--font-display);
+    font-size: var(--text-2xl);
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.03em;
+  }
+  .heading > p {
+    max-width: 720px;
+    margin: var(--space-2) 0 0;
+    color: var(--color-muted);
+    font-size: var(--text-md);
+    line-height: 1.5;
+  }
+  .scope {
+    margin-top: var(--space-2);
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    color: var(--color-muted);
+    font: 500 var(--text-xs) var(--font-mono);
+  }
+  .scope span + span::before {
+    content: '·';
+    margin-right: var(--space-3);
+    color: var(--color-rule-strong);
+  }
+  .page-actions {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
   @media (min-width: 46rem) {
-    .topbar { padding-inline: 24px; }
-    .topbar > p { display: flex; }
-    .mobile-brand { display: none; }
-    .search { display: flex; }
-    main { padding-inline: 24px; }
+    .topbar {
+      padding-inline: var(--space-6);
+    }
+    .crumbs {
+      display: flex;
+    }
+    .mobile-brand {
+      display: none;
+    }
+    .command-trigger {
+      display: flex;
+    }
+    .command-trigger-mobile {
+      display: none;
+    }
+    main {
+      padding-inline: var(--space-6);
+    }
   }
 
   @media (min-width: 64rem) {
-    .app { display: grid; grid-template-columns: 232px minmax(0, 1fr); }
-    aside { position: sticky; top: 0; height: 100vh; padding: 18px 16px 16px; display: flex; flex-direction: column; border-right: 1px solid var(--color-rule); background: var(--color-paper-raised); }
-    aside .brand { padding: 0 6px; margin-bottom: 17px; }
-    aside nav, .bottom { display: grid; gap: 3px; }
-    aside nav a, .bottom > a { height: 34px; padding: 0 9px; display: flex; align-items: center; gap: 9px; border-radius: 7px; color: var(--color-muted); text-decoration: none; font-size: 11px; font-weight: 500; transition: color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out); }
-    aside nav a:hover, .bottom > a:hover { background: var(--color-paper-subtle); color: var(--color-ink); }
-    aside nav a.active, .bottom > a.active { background: var(--color-accent-soft); color: var(--color-accent); }
-    .bottom { margin-top: auto; }
-    .docs > span:first-child { width: 16px; text-align: center; font: 12px var(--font-mono); }
-    .identity { width: 100%; margin-top: 9px; padding: 10px 7px 0; display: grid; grid-template-columns: 29px minmax(0, 1fr) auto; gap: 8px; align-items: center; border: 0; border-top: 1px solid var(--color-rule); background: transparent; color: var(--color-ink); text-align: left; cursor: pointer; }
-    .identity > span { width: 29px; height: 29px; border-radius: 50%; display: grid; place-items: center; background: var(--color-log-bg); color: white; font: 600 8px var(--font-mono); }
-    .identity div { min-width: 0; display: grid; gap: 1px; }
-    .identity b { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-    .identity small { overflow: hidden; color: var(--color-muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
-    .identity em { color: var(--color-faint); font-style: normal; }
-    .mobile-nav { display: none; }
+    .app {
+      display: grid;
+      grid-template-columns: 248px minmax(0, 1fr);
+    }
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      width: auto;
+      transform: none;
+      box-shadow: none;
+      transition: none;
+    }
+    .drawer-close,
+    .drawer-scrim,
+    .menu-btn {
+      display: none;
+    }
+    .mobile-nav {
+      display: none;
+    }
   }
 
   @media (max-width: 34rem) {
-    .page-header { min-height: auto; padding-block: 20px; }
+    .page-header {
+      min-height: auto;
+      padding-block: var(--space-5) var(--space-4);
+      flex-direction: column;
+    }
+    .page-actions {
+      width: 100%;
+    }
+    .page-actions > :global(*) {
+      flex: 1;
+    }
   }
 
-  @media (prefers-reduced-motion: reduce) { aside nav a, .bottom > a { transition: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar {
+      transition: none;
+    }
+    .nav-group a {
+      transition: none;
+    }
+  }
 </style>

@@ -3,6 +3,8 @@
   import Shell from '$lib/components/Shell.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import { api, currentUser, logout } from '$lib/auth.js';
+  import { themeMode, setTheme } from '$lib/theme.js';
+  import { toast } from '$lib/toast.js';
 
   let section = 'profile';
   let loading = true;
@@ -32,16 +34,25 @@
   let unlinkPassword = '';
   let unlinkCode = '';
   let githubBusy = false;
-  let smtp = { enabled: false, host: '', port: 587, encryption: 'starttls', username: '', password: '', hasPassword: false, fromName: 'DeployForge', fromEmail: '', notifyDeploymentFailures: true, notifyDeploymentSuccesses: false };
+
+  let smtp = { enabled: false, host: '', port: 587, encryption: 'starttls', username: '', password: '', hasPassword: false, fromName: 'Dokyr', fromEmail: '', notifyDeploymentFailures: true, notifyDeploymentSuccesses: false };
   let smtpLoaded = false;
   let smtpLoading = false;
   let smtpSaving = false;
   let smtpTesting = false;
   let smtpTestRecipient = '';
 
+  const sections = [
+    { id: 'profile', label: 'Profile', icon: 'user' },
+    { id: 'security', label: 'Security', icon: 'shield' },
+    { id: 'appearance', label: 'Appearance', icon: 'sun' },
+    { id: 'platform', label: 'Platform', icon: 'server' },
+    { id: 'smtp', label: 'SMTP', icon: 'mail' }
+  ];
+
   onMount(async () => {
     const query = new URLSearchParams(location.search);
-    if (['profile', 'security', 'platform', 'smtp'].includes(query.get('section'))) section = query.get('section');
+    if (sections.some((item) => item.id === query.get('section'))) section = query.get('section');
     if (query.get('github') === 'linked') notice = 'GitHub account linked. You can now use it to sign in.';
     if (query.get('error')) error = query.get('error');
     await loadSecurity();
@@ -89,13 +100,24 @@
   async function saveSMTP() {
     smtpSaving = true;
     try {
-      const data = await request('/api/settings/smtp', { method: 'PUT', body: JSON.stringify({
-        enabled: smtp.enabled, host: smtp.host, port: Number(smtp.port), encryption: smtp.encryption,
-        username: smtp.username, password: smtp.password, fromName: smtp.fromName, fromEmail: smtp.fromEmail,
-        notifyDeploymentFailures: smtp.notifyDeploymentFailures, notifyDeploymentSuccesses: smtp.notifyDeploymentSuccesses
-      }) });
+      const data = await request('/api/settings/smtp', {
+        method: 'PUT',
+        body: JSON.stringify({
+          enabled: smtp.enabled,
+          host: smtp.host,
+          port: Number(smtp.port),
+          encryption: smtp.encryption,
+          username: smtp.username,
+          password: smtp.password,
+          fromName: smtp.fromName,
+          fromEmail: smtp.fromEmail,
+          notifyDeploymentFailures: smtp.notifyDeploymentFailures,
+          notifyDeploymentSuccesses: smtp.notifyDeploymentSuccesses
+        })
+      });
       smtp = { ...smtp, ...data.settings, password: '' };
       notice = data.message;
+      toast.success('SMTP settings saved');
     } catch (cause) {
       error = cause.message;
     } finally {
@@ -108,6 +130,7 @@
     try {
       const data = await request('/api/settings/smtp/test', { method: 'POST', body: JSON.stringify({ recipient: smtpTestRecipient }) });
       notice = data.message;
+      toast.success('Test email sent');
     } catch (cause) {
       error = cause.message;
     } finally {
@@ -140,6 +163,7 @@
       confirmPassword = '';
       passwordCode = '';
       notice = data.message;
+      toast.success('Password updated');
     } catch (cause) {
       error = cause.message;
     } finally {
@@ -165,12 +189,14 @@
     twoFactorBusy = true;
     try {
       const data = await request('/api/account/2fa/confirm', {
-        method: 'POST', body: JSON.stringify({ code: confirmCode })
+        method: 'POST',
+        body: JSON.stringify({ code: confirmCode })
       });
       confirmCode = '';
       setupSecret = '';
       setupURI = '';
       notice = data.message;
+      toast.success('Two-factor authentication enabled');
       await loadSecurity();
     } catch (cause) {
       error = cause.message;
@@ -183,12 +209,14 @@
     twoFactorBusy = true;
     try {
       const data = await request('/api/account/2fa', {
-        method: 'DELETE', body: JSON.stringify({ password: disablePassword, code: disableCode })
+        method: 'DELETE',
+        body: JSON.stringify({ password: disablePassword, code: disableCode })
       });
       disablePassword = '';
       disableCode = '';
       showDisableTwoFactor = false;
       notice = data.message;
+      toast.success('Two-factor authentication disabled');
       await loadSecurity();
     } catch (cause) {
       error = cause.message;
@@ -201,12 +229,14 @@
     githubBusy = true;
     try {
       const data = await request('/api/account/github', {
-        method: 'DELETE', body: JSON.stringify({ password: unlinkPassword, code: unlinkCode })
+        method: 'DELETE',
+        body: JSON.stringify({ password: unlinkPassword, code: unlinkCode })
       });
       unlinkPassword = '';
       unlinkCode = '';
       showUnlinkGitHub = false;
       notice = data.message;
+      toast.success('GitHub account unlinked');
       await loadSecurity();
     } catch (cause) {
       error = cause.message;
@@ -221,134 +251,253 @@
   }
 </script>
 
-<Shell eyebrow="Control plane" title="Settings">
+<Shell eyebrow="Administration" title="Settings" subtitle="Account, security, appearance, and control-plane configuration.">
   <div class="settings-layout">
-    <div class="settings-nav" aria-label="Settings sections" role="tablist">
-      <button role="tab" aria-selected={section === 'profile'} aria-controls="settings-panel" class:active={section === 'profile'} onclick={() => selectSection('profile')}><Icon name="settings" size={15}/>Profile</button>
-      <button role="tab" aria-selected={section === 'security'} aria-controls="settings-panel" class:active={section === 'security'} onclick={() => selectSection('security')}><Icon name="shield" size={15}/>Security</button>
-      <button role="tab" aria-selected={section === 'platform'} aria-controls="settings-panel" class:active={section === 'platform'} onclick={() => selectSection('platform')}><Icon name="server" size={15}/>Platform</button>
-      <button role="tab" aria-selected={section === 'smtp'} aria-controls="settings-panel" class:active={section === 'smtp'} onclick={() => selectSection('smtp')}><Icon name="mail" size={15}/>SMTP</button>
-    </div>
+    <nav class="settings-nav" aria-label="Settings sections">
+      {#each sections as item}
+        <button class:active={section === item.id} aria-current={section === item.id ? 'page' : undefined} onclick={() => selectSection(item.id)}>
+          <Icon name={item.icon} size={15} /><span>{item.label}</span>
+        </button>
+      {/each}
+    </nav>
 
-    <div class="settings-content" id="settings-panel" role="tabpanel">
-      {#if notice}<div class="feedback success"><Icon name="check" size={16}/><span>{notice}</span><button aria-label="Dismiss message" onclick={() => notice = ''}>×</button></div>{/if}
-      {#if error}<div class="feedback danger"><span>!</span><span>{error}</span><button aria-label="Dismiss error" onclick={() => error = ''}>×</button></div>{/if}
+    <div class="settings-content">
+      {#if notice}
+        <div class="alert alert-success"><Icon name="check-circle" size={15} /><div><span>{notice}</span></div><button class="alert-close" aria-label="Dismiss message" onclick={() => (notice = '')}>×</button></div>
+      {/if}
+      {#if error}
+        <div class="alert alert-error"><Icon name="x-circle" size={15} /><div><span>{error}</span></div><button class="alert-close" aria-label="Dismiss error" onclick={() => (error = '')}>×</button></div>
+      {/if}
 
       {#if section === 'profile'}
         <section class="panel">
           <header class="panel-header">
-            <div class="header-icon"><Icon name="settings" size={19}/></div>
-            <div><small>Account</small><h2>Profile</h2><p>The owner identity used for administrative actions.</p></div>
+            <div>
+              <span class="eyebrow">Account</span>
+              <h2>Profile</h2>
+            </div>
           </header>
           <dl class="identity-list">
             <div><dt>Name</dt><dd>{$currentUser?.name}</dd></div>
             <div><dt>Email</dt><dd>{$currentUser?.email}</dd></div>
-            <div><dt>Role</dt><dd><span class="role">{$currentUser?.role}</span></dd></div>
+            <div><dt>Role</dt><dd><span class="badge badge-accent">{$currentUser?.role}</span></dd></div>
+            <div><dt>Authentication</dt><dd>Password{security.twoFactorEnabled ? ' + authenticator' : ''}{security.github?.linked ? ' · GitHub linked' : ''}</dd></div>
           </dl>
-          <footer class="panel-footer"><button class="danger-button" onclick={logout}>Sign out of Selfhost</button></footer>
+          <footer class="panel-footer">
+            <span>Signing out ends the session on this device.</span>
+            <button class="btn btn-danger" onclick={logout}><Icon name="logout" size={14} /> Sign out of Dokyr</button>
+          </footer>
         </section>
       {:else if section === 'security'}
         {#if loading}
-          <div class="loading">Loading account security…</div>
+          <div class="panel loading-block"><span class="spinner"></span><span>Loading account security…</span></div>
         {:else}
-          <div class="security-heading"><small>Account protection</small><h2>Security</h2><p>Manage the credentials and identity providers that can access this control plane.</p></div>
-
-          <section class="panel security-panel">
-            <header class="security-card-header">
-              <div class="header-icon"><Icon name="lock" size={19}/></div>
-              <div><h3>Password</h3><p>Use a unique password with at least 12 characters.</p></div>
-              <span class="state neutral">Configured</span>
-            </header>
-            <form class="form-grid" onsubmit={(event) => { event.preventDefault(); updatePassword(); }}>
-              <label>Current password<input bind:value={currentPassword} type="password" autocomplete="current-password" required/></label>
-              <div class="two-columns">
-                <label>New password<input bind:value={newPassword} type="password" autocomplete="new-password" minlength="12" required/></label>
-                <label>Confirm new password<input bind:value={confirmPassword} type="password" autocomplete="new-password" minlength="12" required/></label>
+          <section class="panel">
+            <header class="panel-header">
+              <div>
+                <span class="eyebrow">Account protection</span>
+                <h2>Password</h2>
               </div>
-              {#if security.twoFactorEnabled}<label class="code-field">Authentication code<input bind:value={passwordCode} inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" required/></label>{/if}
-              <div class="form-actions"><button class="primary" disabled={passwordBusy}>{passwordBusy ? 'Updating…' : 'Update password'}</button></div>
+              <span class="badge badge-success"><i></i>Configured</span>
+            </header>
+            <form class="panel-body form-stack" onsubmit={(event) => { event.preventDefault(); updatePassword(); }}>
+              <p class="panel-note">Use a unique password with at least 12 characters.</p>
+              <label class="field"><span>Current password</span><input class="input" bind:value={currentPassword} type="password" autocomplete="current-password" required /></label>
+              <div class="two-columns">
+                <label class="field"><span>New password</span><input class="input" bind:value={newPassword} type="password" autocomplete="new-password" minlength="12" required /></label>
+                <label class="field"><span>Confirm new password</span><input class="input" bind:value={confirmPassword} type="password" autocomplete="new-password" minlength="12" required /></label>
+              </div>
+              {#if security.twoFactorEnabled}
+                <label class="field code-field"><span>Authentication code</span><input class="input input-mono" bind:value={passwordCode} inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" required /></label>
+              {/if}
+              <div class="form-actions"><button class="btn btn-primary" disabled={passwordBusy}>{passwordBusy ? 'Updating…' : 'Update password'}</button></div>
             </form>
           </section>
 
-          <section class="panel security-panel">
-            <header class="security-card-header">
-              <div class="header-icon"><Icon name="shield" size={19}/></div>
-              <div><h3>Two-factor authentication</h3><p>Require a time-based code from your authenticator after sign-in.</p></div>
-              <span class:enabled={security.twoFactorEnabled} class="state">{security.twoFactorEnabled ? 'Enabled' : 'Not enabled'}</span>
+          <section class="panel">
+            <header class="panel-header">
+              <div>
+                <span class="eyebrow">Second factor</span>
+                <h2>Two-factor authentication</h2>
+              </div>
+              <span class="badge" class:badge-success={security.twoFactorEnabled}><i></i>{security.twoFactorEnabled ? 'Enabled' : 'Not enabled'}</span>
             </header>
             {#if security.twoFactorEnabled}
-              <div class="card-body split-row">
+              <div class="panel-body split-row">
                 <div class="explanation"><b>Your account has a second factor.</b><p>Password and GitHub sign-ins both require a current authenticator code.</p></div>
-                <button class="danger-button" onclick={() => showDisableTwoFactor = !showDisableTwoFactor}>Disable 2FA</button>
+                <button class="btn btn-danger" onclick={() => (showDisableTwoFactor = !showDisableTwoFactor)}>Disable 2FA</button>
               </div>
               {#if showDisableTwoFactor}
                 <form class="confirm-box" onsubmit={(event) => { event.preventDefault(); disableTwoFactor(); }}>
                   <div><b>Confirm two-factor removal</b><p>Enter your password and a current authenticator code.</p></div>
-                  <div class="two-columns"><label>Password<input bind:value={disablePassword} type="password" autocomplete="current-password" required/></label><label>Authentication code<input bind:value={disableCode} inputmode="numeric" maxlength="6" autocomplete="one-time-code" required/></label></div>
-                  <div class="form-actions"><button type="button" class="secondary" onclick={() => showDisableTwoFactor = false}>Cancel</button><button class="danger-solid" disabled={twoFactorBusy}>{twoFactorBusy ? 'Disabling…' : 'Disable 2FA'}</button></div>
+                  <div class="two-columns">
+                    <label class="field"><span>Password</span><input class="input" bind:value={disablePassword} type="password" autocomplete="current-password" required /></label>
+                    <label class="field"><span>Authentication code</span><input class="input input-mono" bind:value={disableCode} inputmode="numeric" maxlength="6" autocomplete="one-time-code" required /></label>
+                  </div>
+                  <div class="form-actions">
+                    <button type="button" class="btn" onclick={() => (showDisableTwoFactor = false)}>Cancel</button>
+                    <button class="btn btn-danger-solid" disabled={twoFactorBusy}>{twoFactorBusy ? 'Disabling…' : 'Disable 2FA'}</button>
+                  </div>
                 </form>
               {/if}
             {:else if setupSecret}
-              <div class="setup-flow">
-                <div class="step-copy"><span>1</span><div><b>Add Selfhost to your authenticator</b><p>Choose “enter a setup key,” then use the account email and secret below.</p></div></div>
-                <div class="secret-row"><code>{setupSecret}</code><button class="icon-button" aria-label="Copy authenticator secret" onclick={() => copy(setupSecret, 'Authenticator secret')}><Icon name="copy" size={16}/></button></div>
-                <details><summary>Advanced: copy provisioning URI</summary><div class="secret-row uri"><code>{setupURI}</code><button class="icon-button" aria-label="Copy provisioning URI" onclick={() => copy(setupURI, 'Provisioning URI')}><Icon name="copy" size={16}/></button></div></details>
+              <div class="panel-body setup-flow">
+                <div class="step-copy"><span>1</span><div><b>Add Dokyr to your authenticator</b><p>Choose “enter a setup key,” then use the account email and secret below.</p></div></div>
+                <div class="secret-row"><code>{setupSecret}</code><button class="icon-copy" aria-label="Copy authenticator secret" onclick={() => copy(setupSecret, 'Authenticator secret')}><Icon name="copy" size={15} /></button></div>
+                <details><summary>Advanced: copy provisioning URI</summary><div class="secret-row uri"><code>{setupURI}</code><button class="icon-copy" aria-label="Copy provisioning URI" onclick={() => copy(setupURI, 'Provisioning URI')}><Icon name="copy" size={15} /></button></div></details>
                 <div class="step-copy"><span>2</span><div><b>Verify the connection</b><p>Enter the six-digit code currently shown by your authenticator.</p></div></div>
-                <form class="verify-row" onsubmit={(event) => { event.preventDefault(); confirmTwoFactor(); }}><label>Authentication code<input bind:value={confirmCode} inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" required/></label><button class="primary" disabled={twoFactorBusy}>{twoFactorBusy ? 'Verifying…' : 'Verify and enable'}</button></form>
+                <form class="verify-row" onsubmit={(event) => { event.preventDefault(); confirmTwoFactor(); }}>
+                  <label class="field"><span>Authentication code</span><input class="input input-mono" bind:value={confirmCode} inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" required /></label>
+                  <button class="btn btn-primary" disabled={twoFactorBusy}>{twoFactorBusy ? 'Verifying…' : 'Verify and enable'}</button>
+                </form>
               </div>
             {:else}
-              <div class="card-body split-row"><div class="explanation"><b>Add protection beyond your password.</b><p>Works with 1Password, Bitwarden, Google Authenticator, Authy, and any standard TOTP app.</p></div><button class="primary" onclick={beginTwoFactor} disabled={twoFactorBusy}>{twoFactorBusy ? 'Preparing…' : 'Set up authenticator'}</button></div>
+              <div class="panel-body split-row">
+                <div class="explanation"><b>Add protection beyond your password.</b><p>Works with 1Password, Bitwarden, Google Authenticator, Authy, and any standard TOTP app.</p></div>
+                <button class="btn btn-primary" onclick={beginTwoFactor} disabled={twoFactorBusy}>{twoFactorBusy ? 'Preparing…' : 'Set up authenticator'}</button>
+              </div>
             {/if}
           </section>
 
-          <section class="panel security-panel">
-            <header class="security-card-header">
-              <div class="header-icon github"><Icon name="github" size={20}/></div>
-              <div><h3>GitHub login</h3><p>Link your GitHub identity as an additional way to access Selfhost.</p></div>
-              <span class:enabled={security.github.linked} class="state">{security.github.linked ? 'Linked' : 'Not linked'}</span>
+          <section class="panel">
+            <header class="panel-header">
+              <div>
+                <span class="eyebrow">Identity provider</span>
+                <h2>GitHub login</h2>
+              </div>
+              <span class="badge" class:badge-success={security.github.linked}><i></i>{security.github.linked ? 'Linked' : 'Not linked'}</span>
             </header>
             {#if !security.providers.github.configured}
-              <div class="card-body split-row"><div class="explanation configuration-note" style="margin:0;padding:0;border:0;background:transparent;display:block"><b>Authorize DeployForge on GitHub.</b><p>You will be redirected to GitHub to create and authorize a private GitHub App for this server. No client ID or secret needs to be copied manually.</p></div><a class="primary button-link" href="/api/account/github/start"><Icon name="github" size={16}/>Connect GitHub</a></div>
+              <div class="panel-body split-row">
+                <div class="explanation"><b>Authorize Dokyr on GitHub.</b><p>You will be redirected to GitHub to create and authorize a private GitHub App for this server. No client ID or secret needs to be copied manually.</p></div>
+                <a class="btn btn-primary" href="/api/account/github/start"><Icon name="github" size={15} /> Connect GitHub</a>
+              </div>
             {:else if security.github.linked}
-              <div class="card-body split-row"><div class="github-account"><span class="avatar"><Icon name="github" size={18}/></span><div><b>@{security.github.login}</b><p>Linked to this Selfhost account</p></div></div><button class="danger-button" onclick={() => showUnlinkGitHub = !showUnlinkGitHub}>Unlink GitHub account</button></div>
+              <div class="panel-body split-row">
+                <div class="github-account"><span class="github-avatar"><Icon name="github" size={16} /></span><div><b>@{security.github.login}</b><p>Linked to this Dokyr account</p></div></div>
+                <button class="btn btn-danger" onclick={() => (showUnlinkGitHub = !showUnlinkGitHub)}>Unlink GitHub account</button>
+              </div>
               {#if showUnlinkGitHub}
-                <form class="confirm-box" onsubmit={(event) => { event.preventDefault(); unlinkGitHub(); }}><div><b>Unlink @{security.github.login}?</b><p>You can still sign in with your email and password.</p></div><div class="two-columns"><label>Current password<input bind:value={unlinkPassword} type="password" autocomplete="current-password" required/></label>{#if security.twoFactorEnabled}<label>Authentication code<input bind:value={unlinkCode} inputmode="numeric" maxlength="6" autocomplete="one-time-code" required/></label>{/if}</div><div class="form-actions"><button type="button" class="secondary" onclick={() => showUnlinkGitHub = false}>Cancel</button><button class="danger-solid" disabled={githubBusy}>{githubBusy ? 'Unlinking…' : 'Unlink account'}</button></div></form>
+                <form class="confirm-box" onsubmit={(event) => { event.preventDefault(); unlinkGitHub(); }}>
+                  <div><b>Unlink @{security.github.login}?</b><p>You can still sign in with your email and password.</p></div>
+                  <div class="two-columns">
+                    <label class="field"><span>Current password</span><input class="input" bind:value={unlinkPassword} type="password" autocomplete="current-password" required /></label>
+                    {#if security.twoFactorEnabled}
+                      <label class="field"><span>Authentication code</span><input class="input input-mono" bind:value={unlinkCode} inputmode="numeric" maxlength="6" autocomplete="one-time-code" required /></label>
+                    {/if}
+                  </div>
+                  <div class="form-actions">
+                    <button type="button" class="btn" onclick={() => (showUnlinkGitHub = false)}>Cancel</button>
+                    <button class="btn btn-danger-solid" disabled={githubBusy}>{githubBusy ? 'Unlinking…' : 'Unlink account'}</button>
+                  </div>
+                </form>
               {/if}
             {:else}
-              <div class="card-body split-row"><div class="explanation"><b>Use your existing GitHub identity.</b><p>{security.providers.github.managed && security.providers.github.appSlug ? `Authorize with ${security.providers.github.appSlug}.` : 'You will be redirected to GitHub to authorize this account.'} Repository access remains a separate permission.</p></div><a class="primary button-link" href="/api/account/github/start"><Icon name="link" size={15}/>Link GitHub account</a></div>
+              <div class="panel-body split-row">
+                <div class="explanation"><b>Use your existing GitHub identity.</b><p>{security.providers.github.managed && security.providers.github.appSlug ? `Authorize with ${security.providers.github.appSlug}.` : 'You will be redirected to GitHub to authorize this account.'} Repository access remains a separate permission.</p></div>
+                <a class="btn btn-primary" href="/api/account/github/start"><Icon name="link" size={14} /> Link GitHub account</a>
+              </div>
             {/if}
           </section>
         {/if}
+      {:else if section === 'appearance'}
+        <section class="panel">
+          <header class="panel-header">
+            <div>
+              <span class="eyebrow">Interface</span>
+              <h2>Appearance</h2>
+            </div>
+          </header>
+          <div class="panel-body">
+            <p class="panel-note">Choose how Dokyr looks on this device. The preference is stored locally.</p>
+            <div class="theme-options" role="radiogroup" aria-label="Color theme">
+              {#each [
+                { id: 'light', icon: 'sun', label: 'Light', text: 'Bright, neutral surfaces' },
+                { id: 'dark', icon: 'moon', label: 'Dark', text: 'Low-light control room' },
+                { id: 'system', icon: 'monitor', label: 'System', text: 'Follows the OS setting' }
+              ] as option}
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={$themeMode === option.id}
+                  class:active={$themeMode === option.id}
+                  onclick={() => setTheme(option.id)}
+                >
+                  <span class="theme-icon"><Icon name={option.icon} size={16} /></span>
+                  <span class="theme-text"><b>{option.label}</b><small>{option.text}</small></span>
+                  {#if $themeMode === option.id}<Icon name="check" size={15} />{/if}
+                </button>
+              {/each}
+            </div>
+          </div>
+        </section>
       {:else if section === 'platform'}
         <section class="panel">
-          <header class="panel-header"><div class="header-icon"><Icon name="server" size={19}/></div><div><small>Control plane</small><h2>Platform security</h2><p>Authentication endpoints derived from this Selfhost installation.</p></div></header>
-          <dl class="identity-list"><div><dt>Public URL</dt><dd><code>{location.origin}</code></dd></div><div><dt>Session</dt><dd>HTTP-only cookie · 12 hours</dd></div><div><dt>GitHub callback</dt><dd><code>{security.providers.github.callbackUrl || `${location.origin}/api/integrations/oauth/github/callback`}</code></dd></div></dl>
+          <header class="panel-header">
+            <div>
+              <span class="eyebrow">Control plane</span>
+              <h2>Platform</h2>
+            </div>
+          </header>
+          <dl class="identity-list">
+            <div><dt>Public URL</dt><dd><code>{location.origin}</code></dd></div>
+            <div><dt>Session</dt><dd>HTTP-only cookie · 12 hours</dd></div>
+            <div><dt>GitHub callback</dt><dd><code>{security.providers.github.callbackUrl || `${location.origin}/api/integrations/oauth/github/callback`}</code></dd></div>
+          </dl>
         </section>
       {:else if smtpLoading}
-        <div class="loading">Loading SMTP configuration…</div>
+        <div class="panel loading-block"><span class="spinner"></span><span>Loading SMTP configuration…</span></div>
       {:else}
-        <div class="security-heading"><small>Outbound email</small><h2>SMTP</h2><p>Send account recovery links and deployment notifications from this server.</p></div>
-        <form class="panel smtp-panel" onsubmit={(event) => { event.preventDefault(); saveSMTP(); }}>
-          <header class="security-card-header"><div class="header-icon"><Icon name="mail" size={19}/></div><div><h3>Mail server</h3><p>PostgreSQL is the source of truth. Docker Compose can create this record once, but restarts never overwrite it.</p></div><span class:enabled={smtp.configured && smtp.enabled} class="state">{smtp.configured && smtp.enabled ? 'Active' : smtp.configured ? 'Disabled' : 'Not configured'}</span></header>
-          <div class="smtp-body">
-            <label class="smtp-enable"><input type="checkbox" bind:checked={smtp.enabled}/><span><b>Enable outbound email</b><small>Password recovery and selected notifications can use this SMTP connection.</small></span></label>
-            <div class="smtp-grid">
-              <label>SMTP hostname<input bind:value={smtp.host} placeholder="smtp.example.com" spellcheck="false" required/></label>
-              <label>Port<input bind:value={smtp.port} type="number" min="1" max="65535" required/></label>
-              <label>Encryption<select bind:value={smtp.encryption}><option value="starttls">STARTTLS · usually 587</option><option value="tls">Implicit TLS · usually 465</option><option value="none">None · private networks only</option></select></label>
-              <label>Username <em>optional</em><input bind:value={smtp.username} autocomplete="username" spellcheck="false" placeholder="apikey or user@example.com"/></label>
-              <label class="wide">Password <em>optional</em><input bind:value={smtp.password} type="password" autocomplete="new-password" placeholder={smtp.hasPassword ? 'Stored securely · leave blank to keep it' : 'SMTP password or API key'}/><small>{smtp.hasPassword ? 'A password is already encrypted and stored. Enter a new value only to replace it.' : 'Leave blank when the SMTP server does not require authentication.'}</small></label>
-              <label>Sender name<input bind:value={smtp.fromName} maxlength="100" placeholder="DeployForge" required/></label>
-              <label>Sender email<input bind:value={smtp.fromEmail} type="email" autocomplete="email" placeholder="deploy@yourdomain.com" required/></label>
+        <form class="panel" onsubmit={(event) => { event.preventDefault(); saveSMTP(); }}>
+          <header class="panel-header">
+            <div>
+              <span class="eyebrow">Outbound email</span>
+              <h2>Mail server</h2>
             </div>
-            <div class="smtp-section"><div><b>Email notifications</b><p>Choose which deployment events should be delivered to the owner email.</p></div><div class="notification-toggles"><label><input type="checkbox" bind:checked={smtp.notifyDeploymentFailures}/><span><b>Failed deployments</b><small>Recommended</small></span></label><label><input type="checkbox" bind:checked={smtp.notifyDeploymentSuccesses}/><span><b>Successful deployments</b><small>Optional</small></span></label></div></div>
+            <span class="badge" class:badge-success={smtp.configured && smtp.enabled} class:badge-warning={smtp.configured && !smtp.enabled}>
+              <i></i>{smtp.configured && smtp.enabled ? 'Active' : smtp.configured ? 'Disabled' : 'Not configured'}
+            </span>
+          </header>
+          <div class="panel-body form-stack">
+            <label class="toggle-row">
+              <input class="checkbox" type="checkbox" bind:checked={smtp.enabled} />
+              <span><b>Enable outbound email</b><small>Password recovery and selected notifications can use this SMTP connection.</small></span>
+            </label>
+            <div class="smtp-grid">
+              <label class="field"><span>SMTP hostname</span><input class="input input-mono" bind:value={smtp.host} placeholder="smtp.example.com" spellcheck="false" required /></label>
+              <label class="field"><span>Port</span><input class="input input-mono" bind:value={smtp.port} type="number" min="1" max="65535" required /></label>
+              <label class="field"><span>Encryption</span><select class="select" bind:value={smtp.encryption}><option value="starttls">STARTTLS · usually 587</option><option value="tls">Implicit TLS · usually 465</option><option value="none">None · private networks only</option></select></label>
+              <label class="field"><span>Username <em>optional</em></span><input class="input input-mono" bind:value={smtp.username} autocomplete="username" spellcheck="false" placeholder="apikey or user@example.com" /></label>
+              <label class="field wide"><span>Password <em>optional</em></span><input class="input" bind:value={smtp.password} type="password" autocomplete="new-password" placeholder={smtp.hasPassword ? 'Stored securely · leave blank to keep it' : 'SMTP password or API key'} /><small>{smtp.hasPassword ? 'A password is already encrypted and stored. Enter a new value only to replace it.' : 'Leave blank when the SMTP server does not require authentication.'}</small></label>
+              <label class="field"><span>Sender name</span><input class="input" bind:value={smtp.fromName} maxlength="100" placeholder="Dokyr" required /></label>
+              <label class="field"><span>Sender email</span><input class="input input-mono" bind:value={smtp.fromEmail} type="email" autocomplete="email" placeholder="deploy@yourdomain.com" required /></label>
+            </div>
+            <div class="smtp-section">
+              <div><b>Email notifications</b><p>Choose which deployment events are delivered to the owner email.</p></div>
+              <div class="notification-toggles">
+                <label class="toggle-row"><input class="checkbox" type="checkbox" bind:checked={smtp.notifyDeploymentFailures} /><span><b>Failed deployments</b><small>Recommended</small></span></label>
+                <label class="toggle-row"><input class="checkbox" type="checkbox" bind:checked={smtp.notifyDeploymentSuccesses} /><span><b>Successful deployments</b><small>Optional</small></span></label>
+              </div>
+            </div>
           </div>
-          <footer class="smtp-footer"><span>Reset links expire after 30 minutes and can only be used once.</span><button class="primary" disabled={smtpSaving}>{smtpSaving ? 'Saving…' : 'Save SMTP settings'}</button></footer>
+          <footer class="panel-footer">
+            <span>Reset links expire after 30 minutes and can only be used once.</span>
+            <button class="btn btn-primary" disabled={smtpSaving}>{smtpSaving ? 'Saving…' : 'Save SMTP settings'}</button>
+          </footer>
         </form>
 
-        <section class="panel smtp-test-panel">
-          <header class="security-card-header"><div class="header-icon"><Icon name="check" size={19}/></div><div><h3>Test delivery</h3><p>Save the configuration first, then verify it using a real inbox.</p></div></header>
-          <form class="smtp-test" onsubmit={(event) => { event.preventDefault(); testSMTP(); }}><label>Recipient<input bind:value={smtpTestRecipient} type="email" autocomplete="email" required/></label><button class="secondary" disabled={smtpTesting || !smtp.configured}>{smtpTesting ? 'Sending…' : 'Send test email'}</button></form>
+        <section class="panel">
+          <header class="panel-header">
+            <div>
+              <span class="eyebrow">Verification</span>
+              <h2>Test delivery</h2>
+            </div>
+          </header>
+          <form class="panel-body smtp-test" onsubmit={(event) => { event.preventDefault(); testSMTP(); }}>
+            <label class="field"><span>Recipient</span><input class="input input-mono" bind:value={smtpTestRecipient} type="email" autocomplete="email" required /></label>
+            <button class="btn" disabled={smtpTesting || !smtp.configured}>{smtpTesting ? 'Sending…' : 'Send test email'}</button>
+          </form>
+          <p class="panel-note smtp-test-note">Save the configuration first, then verify it using a real inbox.</p>
         </section>
       {/if}
     </div>
@@ -356,6 +505,408 @@
 </Shell>
 
 <style>
-  .settings-layout{display:grid;gap:20px;align-items:start}.settings-nav{display:flex;align-items:flex-end;gap:24px;border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none}.settings-nav::-webkit-scrollbar{display:none}.settings-nav button{height:42px;border:0;background:transparent;color:var(--muted);padding:0 1px;display:flex;align-items:center;gap:8px;font-size:11px;font-weight:650;white-space:nowrap;cursor:pointer;position:relative}.settings-nav button::after{content:'';position:absolute;left:0;right:0;bottom:-1px;height:2px;border-radius:2px 2px 0 0;background:transparent}.settings-nav button:hover{color:var(--ink)}.settings-nav button.active{color:var(--ink)}.settings-nav button.active::after{background:var(--accent)}.settings-nav button.active :global(svg){color:var(--accent)}.settings-nav button:focus-visible{outline:2px solid var(--color-focus);outline-offset:-2px;border-radius:4px}.settings-content{min-width:0;display:grid;gap:14px}.panel{border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-panel);overflow:hidden}.panel-header{padding:22px;display:flex;align-items:flex-start;gap:13px;border-bottom:1px solid var(--line)}.header-icon{width:38px;height:38px;border-radius:9px;background:var(--surface2);color:var(--muted);display:grid;place-items:center;flex:0 0 auto}.header-icon.github{background:var(--ink);color:var(--surface)}.panel-header small,.security-heading small{font:9px var(--font-mono);color:var(--accent);text-transform:uppercase;letter-spacing:.1em}.panel h2,.security-heading h2{font-size:18px;letter-spacing:-.025em;margin:4px 0}.panel-header p,.security-heading p{font-size:11px;color:var(--muted);margin:0;line-height:1.55}.identity-list{margin:0;padding:8px 22px}.identity-list>div{min-height:53px;display:flex;align-items:center;justify-content:space-between;gap:20px;border-bottom:1px solid var(--line)}.identity-list>div:last-child{border:0}.identity-list dt{font-size:11px;color:var(--muted)}.identity-list dd{margin:0;font-size:11px;text-align:right;overflow-wrap:anywhere}.identity-list code{font:10px var(--font-mono)}.role{font:9px var(--font-mono);text-transform:uppercase;color:var(--accent);padding:4px 7px;background:var(--accent-soft);border-radius:99px}.panel-footer{padding:16px 22px;border-top:1px solid var(--line);display:flex;justify-content:flex-end}.security-heading{padding:4px 2px 5px}.security-heading h2{font-size:24px}.security-panel{overflow:visible}.security-card-header{padding:18px 20px;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:13px;border-bottom:1px solid var(--line)}.security-card-header h3{font-size:14px;margin:0 0 3px}.security-card-header p{font-size:10px;color:var(--muted);margin:0;line-height:1.45}.state{font:8px var(--font-mono);letter-spacing:.06em;text-transform:uppercase;border:1px solid var(--line);color:var(--muted);padding:5px 8px;border-radius:99px;white-space:nowrap}.state.enabled{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 35%,var(--line));background:var(--accent-soft)}.state.neutral{color:var(--ink)}.form-grid,.setup-flow{padding:18px 20px;display:grid;gap:15px}.two-columns{display:grid;grid-template-columns:1fr 1fr;gap:12px}label{display:grid;gap:7px;font-size:10px;font-weight:650;color:var(--ink)}input{height:40px;border:1px solid var(--line2);border-radius:7px;background:var(--surface);color:var(--ink);padding:0 11px;font-size:11px;outline:none}input:focus{border-color:var(--color-focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-focus) 14%,transparent)}.code-field{max-width:240px}.form-actions{display:flex;justify-content:flex-end;gap:8px}.primary,.secondary,.danger-button,.danger-solid,.icon-button{height:37px;border-radius:7px;padding:0 13px;font-size:10px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;text-decoration:none}.primary{border:1px solid var(--accent);background:var(--accent);color:var(--color-accent-ink)}.primary:hover{background:var(--color-accent-hover)}.primary:disabled,.danger-solid:disabled{opacity:.55;cursor:wait}.secondary{border:1px solid var(--line);background:var(--surface2);color:var(--ink)}.danger-button{border:1px solid color-mix(in srgb,var(--red) 40%,var(--line));background:transparent;color:var(--red)}.danger-solid{border:1px solid var(--red);background:var(--red);color:white}.button-link{white-space:nowrap}.card-body{padding:18px 20px}.split-row{display:flex;align-items:center;justify-content:space-between;gap:22px}.explanation b,.github-account b{font-size:11px}.explanation p,.github-account p,.step-copy p,.confirm-box p,.configuration-note p{font-size:10px;color:var(--muted);line-height:1.5;margin:4px 0 0}.step-copy{display:flex;gap:11px;align-items:flex-start}.step-copy>span{width:24px;height:24px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font:700 9px var(--font-mono);flex:0 0 auto}.step-copy b,.confirm-box b,.configuration-note b{font-size:11px}.secret-row{display:flex;align-items:center;border:1px solid var(--line);border-radius:8px;background:var(--surface2);min-width:0}.secret-row code{padding:12px;flex:1;font:11px var(--font-mono);letter-spacing:.08em;overflow-wrap:anywhere;min-width:0}.secret-row.uri code{font-size:9px;letter-spacing:0}.icon-button{width:38px;padding:0;border:0;border-left:1px solid var(--line);border-radius:0;background:transparent;color:var(--muted)}details{font-size:10px;color:var(--muted)}details summary{cursor:pointer;margin-bottom:8px}.verify-row{display:flex;align-items:end;gap:10px}.verify-row label{max-width:220px;flex:1}.confirm-box,.configuration-note{margin:0 20px 18px;padding:15px;border:1px solid color-mix(in srgb,var(--red) 30%,var(--line));border-radius:9px;background:color-mix(in srgb,var(--red) 4%,var(--surface));display:grid;gap:13px}.configuration-note{border-color:color-mix(in srgb,var(--amber) 35%,var(--line));background:color-mix(in srgb,var(--amber) 5%,var(--surface));margin-top:18px}.github-account{display:flex;align-items:center;gap:10px}.avatar{width:34px;height:34px;border-radius:8px;background:var(--ink);color:var(--surface);display:grid;place-items:center}.feedback{min-height:42px;padding:9px 12px;border-radius:8px;display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:9px;font-size:10px}.feedback.success{border:1px solid color-mix(in srgb,var(--accent) 35%,var(--line));background:var(--accent-soft);color:var(--accent)}.feedback.danger{border:1px solid color-mix(in srgb,var(--red) 35%,var(--line));background:var(--color-danger-soft);color:var(--red)}.feedback>button{border:0;background:transparent;color:inherit;font-size:17px;cursor:pointer}.loading{padding:50px;text-align:center;color:var(--muted);font:10px var(--font-mono)}@media(max-width:780px){.settings-nav{gap:20px}.settings-nav button{min-width:max-content}.two-columns{grid-template-columns:1fr}.split-row{align-items:flex-start;flex-direction:column}.security-card-header{grid-template-columns:auto 1fr}.security-card-header .state{grid-column:2;justify-self:start}.verify-row{align-items:stretch;flex-direction:column}.verify-row label{max-width:none}.button-link{width:100%}}
-  .smtp-panel{overflow:visible}.smtp-body{padding:20px;display:grid;gap:20px}.smtp-enable{padding:14px;display:flex;align-items:flex-start;gap:11px;border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line));border-radius:9px;background:var(--accent-soft);cursor:pointer}.smtp-enable input,.notification-toggles input{width:16px;height:16px;margin:1px 0 0;accent-color:var(--accent);flex:0 0 auto}.smtp-enable span,.notification-toggles span{display:grid;gap:3px}.smtp-enable b,.smtp-section b,.notification-toggles b{font-size:11px}.smtp-enable small,.notification-toggles small{color:var(--muted);font-size:9px;font-weight:500;line-height:1.45}.smtp-grid{display:grid;grid-template-columns:2fr .7fr;gap:14px}.smtp-grid label{align-content:start}.smtp-grid .wide{grid-column:1/-1}.smtp-grid em{color:var(--muted);font-size:9px;font-style:normal;font-weight:500}.smtp-grid select{height:40px;border:1px solid var(--line2);border-radius:7px;background:var(--surface);color:var(--ink);padding:0 10px;font-size:11px;outline:none}.smtp-grid select:focus{border-color:var(--color-focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-focus) 14%,transparent)}.smtp-grid label>small{color:var(--muted);font-size:9px;font-weight:500;line-height:1.45}.smtp-section{padding-top:18px;display:grid;grid-template-columns:minmax(180px,.7fr) minmax(0,1.3fr);gap:20px;border-top:1px solid var(--line)}.smtp-section p{margin:4px 0 0;color:var(--muted);font-size:10px;line-height:1.5}.notification-toggles{display:grid;grid-template-columns:1fr 1fr;gap:9px}.notification-toggles label{min-height:58px;padding:12px;display:flex;align-items:flex-start;gap:9px;border:1px solid var(--line);border-radius:8px;background:var(--surface2);cursor:pointer}.smtp-footer{padding:15px 20px;display:flex;align-items:center;justify-content:space-between;gap:15px;border-top:1px solid var(--line);background:var(--surface2)}.smtp-footer>span{color:var(--muted);font:9px var(--font-mono)}.smtp-test-panel{overflow:visible}.smtp-test{padding:18px 20px;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:10px}.smtp-test .secondary{min-width:140px}.smtp-test .secondary:disabled{opacity:.5;cursor:not-allowed}@media(max-width:780px){.smtp-grid,.smtp-section,.notification-toggles,.smtp-test{grid-template-columns:1fr}.smtp-grid .wide{grid-column:auto}.smtp-footer{align-items:stretch;flex-direction:column}.smtp-footer .primary,.smtp-test .secondary{width:100%}}
+  .settings-layout {
+    display: grid;
+    grid-template-columns: 200px minmax(0, 1fr);
+    gap: var(--space-6);
+    align-items: start;
+  }
+  .settings-nav {
+    display: grid;
+    gap: 2px;
+    position: sticky;
+    top: 72px;
+  }
+  .settings-nav button {
+    min-height: 34px;
+    padding: 0 var(--space-2);
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .settings-nav button:hover {
+    background: var(--color-paper-subtle);
+    color: var(--color-ink);
+  }
+  .settings-nav button.active {
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    font-weight: 600;
+  }
+  .settings-content {
+    min-width: 0;
+    display: grid;
+    align-content: start;
+    gap: var(--space-4);
+  }
+  .settings-content .alert {
+    margin-bottom: 0;
+  }
+  .loading-block {
+    min-height: 200px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+  }
+  .panel-note {
+    margin: 0;
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+    line-height: 1.55;
+  }
+  .form-stack {
+    display: grid;
+    gap: var(--space-4);
+  }
+  .form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+  }
+  .two-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-4);
+  }
+  .code-field {
+    max-width: 260px;
+  }
+  .split-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+  .explanation b {
+    font-size: var(--text-md);
+  }
+  .explanation p {
+    max-width: 56ch;
+    margin: var(--space-1) 0 0;
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+    line-height: 1.55;
+  }
+  .identity-list {
+    margin: 0;
+    padding: var(--space-2) var(--space-5);
+  }
+  .identity-list > div {
+    min-height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-5);
+    border-bottom: 1px solid var(--color-rule);
+  }
+  .identity-list > div:last-child {
+    border-bottom: 0;
+  }
+  .identity-list dt {
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+  }
+  .identity-list dd {
+    margin: 0;
+    min-width: 0;
+    overflow: hidden;
+    font-size: var(--text-sm);
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .identity-list code {
+    font-size: var(--text-sm);
+  }
+  .panel-footer {
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+
+  .confirm-box {
+    margin: 0 var(--space-5) var(--space-5);
+    padding: var(--space-4);
+    display: grid;
+    gap: var(--space-4);
+    border: 1px solid color-mix(in srgb, var(--color-danger) 30%, var(--color-rule));
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--color-danger) 4%, var(--color-paper-raised));
+  }
+  .confirm-box > div > b {
+    font-size: var(--text-sm);
+  }
+  .confirm-box > div > p {
+    margin: var(--space-1) 0 0;
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+  }
+  .setup-flow {
+    display: grid;
+    gap: var(--space-4);
+  }
+  .step-copy {
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: var(--space-3);
+    align-items: start;
+  }
+  .step-copy > span {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--color-rule-strong);
+    border-radius: 50%;
+    color: var(--color-muted);
+    font: 600 var(--text-xs) var(--font-mono);
+  }
+  .step-copy b {
+    font-size: var(--text-sm);
+  }
+  .step-copy p {
+    margin: var(--space-1) 0 0;
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+  }
+  .secret-row {
+    padding: var(--space-3);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-2);
+    border: 1px dashed var(--color-rule-strong);
+    border-radius: var(--radius-sm);
+    background: var(--color-log-bg);
+  }
+  .secret-row code {
+    overflow: hidden;
+    color: var(--color-log-text);
+    font-size: var(--text-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .icon-copy {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--color-log-rule);
+    border-radius: var(--radius-sm);
+    background: var(--color-log-surface);
+    color: var(--color-log-muted);
+    cursor: pointer;
+  }
+  .icon-copy:hover {
+    color: var(--color-log-text);
+  }
+  details summary {
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    cursor: pointer;
+  }
+  details .secret-row {
+    margin-top: var(--space-2);
+  }
+  .verify-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: var(--space-3);
+  }
+  .github-account {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+  .github-avatar {
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--color-log-bg);
+    color: var(--color-log-text);
+  }
+  .github-account b {
+    font-size: var(--text-md);
+  }
+  .github-account p {
+    margin: 1px 0 0;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+
+  .theme-options {
+    margin-top: var(--space-4);
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-3);
+  }
+  .theme-options button {
+    min-height: 64px;
+    padding: var(--space-3);
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-3);
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-md);
+    background: var(--color-paper-raised);
+    color: var(--color-muted);
+    text-align: left;
+    cursor: pointer;
+  }
+  .theme-options button:hover {
+    border-color: var(--color-rule-strong);
+  }
+  .theme-options button.active {
+    border-color: var(--color-accent);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 20%, transparent);
+  }
+  .theme-icon {
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--radius-sm);
+    background: var(--color-paper-subtle);
+  }
+  .theme-options button.active .theme-icon {
+    background: var(--color-paper-raised);
+  }
+  .theme-text {
+    display: grid;
+    gap: 1px;
+  }
+  .theme-text b {
+    color: var(--color-ink);
+    font-size: var(--text-sm);
+  }
+  .theme-text small {
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+
+  .toggle-row {
+    padding: var(--space-3);
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-subtle);
+    cursor: pointer;
+  }
+  .toggle-row input {
+    margin-top: 2px;
+  }
+  .toggle-row span {
+    display: grid;
+    gap: 2px;
+  }
+  .toggle-row b {
+    font-size: var(--text-sm);
+  }
+  .toggle-row small {
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    line-height: 1.45;
+  }
+  .smtp-grid {
+    display: grid;
+    grid-template-columns: 2fr 0.7fr;
+    gap: var(--space-4);
+  }
+  .smtp-grid .wide {
+    grid-column: 1 / -1;
+  }
+  .smtp-section {
+    padding-top: var(--space-4);
+    display: grid;
+    grid-template-columns: minmax(180px, 0.7fr) minmax(0, 1.3fr);
+    gap: var(--space-5);
+    border-top: 1px solid var(--color-rule);
+  }
+  .smtp-section > div > b {
+    font-size: var(--text-sm);
+  }
+  .smtp-section p {
+    margin: var(--space-1) 0 0;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+  }
+  .notification-toggles {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-2);
+  }
+  .smtp-test {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: var(--space-3);
+  }
+  .smtp-test-note {
+    padding: 0 var(--space-5) var(--space-4);
+  }
+
+  @media (max-width: 52rem) {
+    .settings-layout {
+      grid-template-columns: 1fr;
+      gap: var(--space-4);
+    }
+    .settings-nav {
+      position: static;
+      display: flex;
+      gap: 2px;
+      overflow-x: auto;
+      border-bottom: 1px solid var(--color-rule);
+      scrollbar-width: none;
+    }
+    .settings-nav::-webkit-scrollbar {
+      display: none;
+    }
+    .settings-nav button {
+      position: relative;
+      border-radius: 0;
+    }
+    .settings-nav button:hover {
+      background: transparent;
+    }
+    .settings-nav button.active {
+      background: transparent;
+      box-shadow: inset 0 -2px var(--color-accent);
+    }
+    .two-columns,
+    .smtp-grid,
+    .smtp-section,
+    .notification-toggles,
+    .theme-options {
+      grid-template-columns: 1fr;
+    }
+    .split-row {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .verify-row,
+    .smtp-test {
+      grid-template-columns: 1fr;
+    }
+  }
 </style>

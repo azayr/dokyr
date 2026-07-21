@@ -2,7 +2,9 @@
   import { onMount } from 'svelte';
   import Shell from '$lib/components/Shell.svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import EmptyState from '$lib/components/EmptyState.svelte';
   import { api } from '$lib/auth.js';
+  import { toast } from '$lib/toast.js';
 
   let loading = true;
   let saving = false;
@@ -60,6 +62,7 @@
       dirty = configuration !== managedConfiguration;
       connected = true;
       notice = 'Caddy accepted the runtime configuration without downtime.';
+      toast.success('Proxy configuration applied');
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Caddy rejected the configuration';
     } finally {
@@ -81,6 +84,7 @@
       dirty = false;
       connected = true;
       notice = 'Database-managed project routes have been restored.';
+      toast.success('Managed routes restored');
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not restore managed routes';
     } finally {
@@ -91,63 +95,306 @@
   async function copyConfiguration() {
     await navigator.clipboard.writeText(configuration);
     copied = true;
-    setTimeout(() => copied = false, 1500);
+    setTimeout(() => (copied = false), 1500);
   }
 </script>
 
-<Shell eyebrow="Edge network" title="Proxy & Caddy">
-  <section class="proxy-hero">
-    <div class="proxy-mark"><Icon name="globe" size={22} /></div>
-    <div><span>Ingress controller</span><h2>One public edge, private workloads.</h2><p>Caddy owns ports 80 and 443. Applications remain on the private proxy network and receive traffic on their configured container port.</p></div>
-    <div class:offline={!connected} class="connection"><i></i><span><strong>{connected ? 'Connected' : 'Unavailable'}</strong><small>Unix admin socket</small></span></div>
-  </section>
+<Shell eyebrow="Infrastructure" title="Proxy" subtitle="Caddy edge routing, domain assignments, and runtime configuration.">
+  <div slot="actions" class="connection" class:offline={!connected}>
+    <i></i>
+    <span><strong>{connected ? 'Connected' : 'Unavailable'}</strong><small>Caddy admin socket</small></span>
+  </div>
 
-  {#if error}<div class="feedback error"><strong>Configuration not applied</strong><span>{error}</span></div>{/if}
-  {#if notice}<div class="feedback success"><strong>Proxy updated</strong><span>{notice}</span></div>{/if}
-  {#if connectionError}<div class="feedback warning"><strong>Caddy admin API is unavailable</strong><span>{connectionError}</span></div>{/if}
+  {#if error}
+    <div class="alert alert-error"><Icon name="x-circle" size={15} /><div><strong>Configuration not applied</strong><span>{error}</span></div></div>
+  {/if}
+  {#if notice}
+    <div class="alert alert-success"><Icon name="check-circle" size={15} /><div><strong>Proxy updated</strong><span>{notice}</span></div></div>
+  {/if}
+  {#if connectionError}
+    <div class="alert alert-warning"><Icon name="alert" size={15} /><div><strong>Caddy admin API is unavailable</strong><span>{connectionError}</span></div></div>
+  {/if}
 
   <div class="proxy-grid">
-    <section class="routes panel">
-      <header><div><span>Managed state</span><h3>Domain routes</h3></div><b>{routes.length}</b></header>
-      <div class="route-head"><span>Domain</span><span>Upstream</span><span>TLS</span></div>
+    <section class="panel" aria-label="Domain routes">
+      <header class="panel-header">
+        <div>
+          <span class="eyebrow">Managed state</span>
+          <h2>Domain routes</h2>
+        </div>
+        <span class="badge">{routes.length}</span>
+      </header>
       {#if loading}
-        <div class="empty">Reading Caddy state…</div>
+        <div class="rows-loading">
+          {#each Array(3) as _}
+            <div class="row-skeleton"><span class="skeleton" style="height:14px;width:40%"></span><span class="skeleton" style="height:14px;flex:1"></span><span class="skeleton" style="width:70px;height:22px"></span></div>
+          {/each}
+        </div>
       {:else if routes.length === 0}
-        <div class="empty"><Icon name="globe" size={22}/><strong>No domains assigned</strong><span>Add a hostname from a project's Domains tab.</span></div>
+        <EmptyState icon="globe" title="No domains assigned" description="Add a hostname from a project's Domains tab to route traffic here." />
       {:else}
-        {#each routes as route}
-          <div class="route-row"><div><i></i><code>{route.domain}</code></div><code>{route.upstream}</code><span class:secure={route.https}>{route.https ? 'Automatic' : 'HTTP only'}</span></div>
-        {/each}
+        <div class="table-scroll">
+          <table class="data-table route-table">
+            <thead><tr><th>Domain</th><th>Upstream</th><th>TLS</th></tr></thead>
+            <tbody>
+              {#each routes as route}
+                <tr>
+                  <td><span class="route-domain"><i></i><code>{route.domain}</code></span></td>
+                  <td><code class="route-upstream">{route.upstream}</code></td>
+                  <td><span class="badge" class:badge-success={route.https}>{route.https ? 'Automatic' : 'HTTP only'}</span></td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {/if}
     </section>
 
     <aside class="edge-notes">
-      <article><span>01</span><div><strong>No host ports</strong><p>Application ports are reachable only through <code>selfhost-proxy</code>.</p></div></article>
-      <article><span>02</span><div><strong>Automatic TLS</strong><p>Real domains can obtain and renew certificates when ports 80 and 443 reach Caddy.</p></div></article>
-      <article><span>03</span><div><strong>Safe reload</strong><p>Caddy rejects invalid edits and keeps the last working configuration active.</p></div></article>
+      <article>
+        <span class="edge-icon"><Icon name="lock" size={14} /></span>
+        <div><strong>No host ports</strong><p>Application ports are reachable only through the private <code>selfhost-proxy</code> network.</p></div>
+      </article>
+      <article>
+        <span class="edge-icon"><Icon name="shield" size={14} /></span>
+        <div><strong>Automatic TLS</strong><p>Real domains can obtain and renew certificates when ports 80 and 443 reach Caddy.</p></div>
+      </article>
+      <article>
+        <span class="edge-icon"><Icon name="check-circle" size={14} /></span>
+        <div><strong>Safe reload</strong><p>Caddy rejects invalid edits and keeps the last working configuration active.</p></div>
+      </article>
     </aside>
   </div>
 
-  <section class="editor panel">
-    <header>
-      <div><span>Advanced runtime editor</span><h3>Generated Caddyfile</h3><p>Project domain changes regenerate this file. Manual edits are runtime overrides and may be replaced by the next managed route update.</p></div>
-      <div class="editor-actions"><button onclick={copyConfiguration}>{copied ? 'Copied' : 'Copy'}</button><button onclick={resetManaged} disabled={resetting}>{resetting ? 'Restoring…' : 'Restore managed'}</button><button class="apply" onclick={applyConfiguration} disabled={saving || !dirty || !connected}>{saving ? 'Applying…' : 'Validate & apply'}</button></div>
+  <section class="panel editor" aria-label="Caddy configuration editor">
+    <header class="panel-header editor-head">
+      <div>
+        <span class="eyebrow">Advanced runtime editor</span>
+        <h2>Generated Caddyfile</h2>
+        <p>Project domain changes regenerate this file. Manual edits are runtime overrides and may be replaced by the next managed route update.</p>
+      </div>
+      <div class="editor-actions">
+        <button class="btn btn-sm" onclick={copyConfiguration}><Icon name={copied ? 'check' : 'copy'} size={13} />{copied ? 'Copied' : 'Copy'}</button>
+        <button class="btn btn-sm" onclick={resetManaged} disabled={resetting}><Icon name="refresh" size={13} />{resetting ? 'Restoring…' : 'Restore managed'}</button>
+        <button class="btn btn-sm btn-primary" onclick={applyConfiguration} disabled={saving || !dirty || !connected}>{saving ? 'Applying…' : 'Validate & apply'}</button>
+      </div>
     </header>
-    <div class="editor-state"><span><i class:changed={dirty}></i>{dirty ? 'Unsaved runtime override' : 'Matches managed state'}</span><code>text/caddyfile · /run/caddy-admin/admin.sock</code></div>
+    <div class="editor-state">
+      <span><i class:changed={dirty}></i>{dirty ? 'Unsaved runtime override' : 'Matches managed state'}</span>
+      <code>text/caddyfile · /run/caddy-admin/admin.sock</code>
+    </div>
     <textarea value={configuration} oninput={changeConfiguration} spellcheck="false" aria-label="Caddy configuration"></textarea>
   </section>
 </Shell>
 
 <style>
-  .proxy-hero{margin-bottom:var(--space-5);padding:var(--space-6);display:grid;grid-template-columns:48px minmax(0,1fr) auto;align-items:center;gap:var(--space-4);border:1px solid var(--color-rule);border-radius:var(--radius-md);background:linear-gradient(135deg,var(--color-paper-raised),var(--color-paper-subtle));box-shadow:var(--shadow-whisper)}
-  .proxy-mark{width:48px;height:48px;display:grid;place-items:center;border:1px solid color-mix(in oklch,var(--color-accent) 30%,var(--color-rule));border-radius:50%;background:var(--color-accent-soft);color:var(--color-accent)}
-  .proxy-hero>div:nth-child(2)>span,.panel header>div>span{color:var(--color-accent);font:10px var(--font-mono);letter-spacing:.08em;text-transform:uppercase}.proxy-hero h2{margin:4px 0 5px;font-size:20px;letter-spacing:-.025em}.proxy-hero p{max-width:68ch;margin:0;color:var(--color-muted);font-size:12px;line-height:1.55}
-  .connection{min-width:150px;padding:10px 12px;display:flex;align-items:center;gap:10px;border:1px solid color-mix(in oklch,var(--color-accent) 32%,var(--color-rule));border-radius:var(--radius-sm);background:var(--color-paper-raised)}.connection>i{width:8px;height:8px;border-radius:50%;background:var(--color-accent);box-shadow:0 0 0 4px var(--color-accent-soft)}.connection.offline{border-color:color-mix(in oklch,var(--color-danger) 35%,var(--color-rule))}.connection.offline>i{background:var(--color-danger);box-shadow:none}.connection>span{display:grid;gap:2px}.connection strong{font-size:11px}.connection small{color:var(--color-muted);font:9px var(--font-mono)}
-  .feedback{margin-bottom:var(--space-4);padding:var(--space-3) var(--space-4);display:grid;grid-template-columns:180px 1fr;gap:var(--space-3);border:1px solid var(--color-rule);border-radius:var(--radius-sm);font-size:12px}.feedback span{color:var(--color-muted)}.feedback.error{border-color:color-mix(in oklch,var(--color-danger) 35%,var(--color-rule));background:color-mix(in oklch,var(--color-danger) 7%,var(--color-paper-raised))}.feedback.success{background:var(--color-accent-soft)}.feedback.warning{border-color:color-mix(in oklch,var(--color-warning) 35%,var(--color-rule));background:color-mix(in oklch,var(--color-warning) 7%,var(--color-paper-raised))}
-  .proxy-grid{margin-bottom:var(--space-5);display:grid;grid-template-columns:minmax(0,1.6fr) minmax(260px,.6fr);gap:var(--space-4)}.panel{overflow:hidden;border:1px solid var(--color-rule);border-radius:var(--radius-md);background:var(--color-paper-raised);box-shadow:var(--shadow-whisper)}.panel>header{min-height:68px;padding:var(--space-4) var(--space-5);display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);border-bottom:1px solid var(--color-rule)}.panel h3{margin:4px 0 0;font-size:15px}.routes header>b{min-width:32px;height:26px;display:grid;place-items:center;border-radius:20px;background:var(--color-paper-subtle);font:11px var(--font-mono)}
-  .route-head,.route-row{display:grid;grid-template-columns:minmax(170px,1fr) minmax(190px,1fr) 100px;gap:var(--space-3);align-items:center}.route-head{height:34px;padding:0 var(--space-5);border-bottom:1px solid var(--color-rule);background:var(--color-paper-subtle);color:var(--color-muted);font:9px var(--font-mono);text-transform:uppercase}.route-row{min-height:54px;padding:0 var(--space-5);border-bottom:1px solid var(--color-rule)}.route-row:last-child{border-bottom:0}.route-row>div{min-width:0;display:flex;align-items:center;gap:9px}.route-row>div i{width:7px;height:7px;flex:none;border-radius:50%;background:var(--color-accent)}.route-row code{overflow:hidden;color:var(--color-ink-secondary);font:10px var(--font-mono);text-overflow:ellipsis;white-space:nowrap}.route-row>div code{color:var(--color-ink)}.route-row>span{width:max-content;padding:5px 7px;border-radius:4px;background:var(--color-paper-subtle);color:var(--color-muted);font:9px var(--font-mono)}.route-row>span.secure{background:var(--color-accent-soft);color:var(--color-accent)}.empty{min-height:170px;display:grid;place-items:center;align-content:center;gap:7px;color:var(--color-muted);font-size:11px}.empty strong{color:var(--color-ink);font-size:12px}
-  .edge-notes{display:grid;align-content:start;gap:var(--space-2)}.edge-notes article{padding:var(--space-4);display:grid;grid-template-columns:30px 1fr;gap:var(--space-3);border:1px solid var(--color-rule);border-radius:var(--radius-md);background:var(--color-paper-raised)}.edge-notes article>span{color:var(--color-accent);font:10px var(--font-mono)}.edge-notes strong{font-size:12px}.edge-notes p{margin:4px 0 0;color:var(--color-muted);font-size:11px;line-height:1.5}.edge-notes code{font:10px var(--font-mono)}
-  .editor>header{align-items:flex-start}.editor header p{max-width:76ch;margin:5px 0 0;color:var(--color-muted);font-size:11px;line-height:1.5}.editor-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:var(--space-2)}.editor-actions button{min-height:36px;padding:0 var(--space-3);border:1px solid var(--color-rule);border-radius:var(--radius-sm);background:var(--color-paper-subtle);color:var(--color-ink);font-size:11px;font-weight:600;cursor:pointer}.editor-actions button.apply{border-color:var(--color-accent);background:var(--color-accent);color:var(--color-accent-ink)}.editor-actions button:disabled{opacity:.45;cursor:not-allowed}.editor-state{height:38px;padding:0 var(--space-4);display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);border-bottom:1px solid var(--color-log-rule);background:var(--color-log-surface);color:var(--color-log-muted)}.editor-state span{display:flex;align-items:center;gap:8px;font:10px var(--font-mono)}.editor-state i{width:7px;height:7px;border-radius:50%;background:var(--color-accent)}.editor-state i.changed{background:var(--color-warning)}.editor-state code{font:9px var(--font-mono)}.editor textarea{width:100%;min-height:390px;padding:var(--space-5);display:block;resize:vertical;border:0;outline:0;background:var(--color-log-bg);color:var(--color-log-text);font:12px/1.65 var(--font-mono);tab-size:2}
-  @media(max-width:850px){.proxy-hero{grid-template-columns:48px 1fr}.connection{grid-column:1/-1}.proxy-grid{grid-template-columns:1fr}.edge-notes{grid-template-columns:repeat(3,1fr)}.editor>header{align-items:stretch;flex-direction:column}.editor-actions{justify-content:flex-start}}
-  @media(max-width:620px){.proxy-hero{grid-template-columns:1fr}.proxy-mark{display:none}.route-head{display:none}.route-row{grid-template-columns:1fr;gap:7px;padding-block:12px}.edge-notes{grid-template-columns:1fr}.editor-actions button{flex:1}.editor-state code{display:none}.feedback{grid-template-columns:1fr}}
+  .connection {
+    min-width: 150px;
+    padding: 7px var(--space-3);
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    border: 1px solid color-mix(in srgb, var(--color-success) 32%, var(--color-rule));
+    border-radius: var(--radius-sm);
+    background: var(--color-paper-raised);
+  }
+  .connection > i {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--color-success);
+    box-shadow: 0 0 0 4px var(--color-success-soft);
+  }
+  .connection.offline {
+    border-color: color-mix(in srgb, var(--color-danger) 35%, var(--color-rule));
+  }
+  .connection.offline > i {
+    background: var(--color-danger);
+    box-shadow: none;
+  }
+  .connection > span {
+    display: grid;
+    gap: 1px;
+  }
+  .connection strong {
+    font-size: var(--text-xs);
+  }
+  .connection small {
+    color: var(--color-muted);
+    font-size: var(--text-2xs);
+  }
+
+  .proxy-grid {
+    margin-bottom: var(--space-4);
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(260px, 0.6fr);
+    gap: var(--space-4);
+    align-items: start;
+  }
+  .route-domain {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .route-domain i {
+    width: 7px;
+    height: 7px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--color-success);
+  }
+  .route-domain code {
+    overflow: hidden;
+    color: var(--color-ink);
+    font-size: var(--text-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .route-upstream {
+    display: block;
+    overflow: hidden;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .edge-notes {
+    display: grid;
+    gap: var(--space-3);
+  }
+  .edge-notes article {
+    padding: var(--space-4);
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: var(--space-3);
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-md);
+    background: var(--color-paper-raised);
+    box-shadow: var(--shadow-panel);
+  }
+  .edge-icon {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-sm);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+  }
+  .edge-notes strong {
+    font-size: var(--text-sm);
+  }
+  .edge-notes p {
+    margin: 3px 0 0;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    line-height: 1.55;
+  }
+  .edge-notes code {
+    font-size: var(--text-xs);
+  }
+
+  .editor-head {
+    align-items: flex-start;
+  }
+  .editor-head p {
+    max-width: 70ch;
+    margin: var(--space-1) 0 0;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+  }
+  .editor-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: var(--space-2);
+  }
+  .editor-state {
+    height: 38px;
+    padding: 0 var(--space-4);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    border-bottom: 1px solid var(--color-log-rule);
+    background: var(--color-log-surface);
+    color: var(--color-log-muted);
+  }
+  .editor-state span {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font: 500 var(--text-xs) var(--font-mono);
+  }
+  .editor-state i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-success);
+  }
+  .editor-state i.changed {
+    background: var(--color-warning);
+  }
+  .editor-state code {
+    font-size: var(--text-2xs);
+  }
+  .editor textarea {
+    width: 100%;
+    min-height: 400px;
+    padding: var(--space-4);
+    display: block;
+    resize: vertical;
+    border: 0;
+    outline: 0;
+    background: var(--color-log-bg);
+    color: var(--color-log-text);
+    caret-color: var(--color-accent);
+    font: var(--text-sm)/1.65 var(--font-mono);
+    tab-size: 2;
+  }
+  .rows-loading {
+    padding: var(--space-3) var(--space-5);
+    display: grid;
+    gap: var(--space-3);
+  }
+  .row-skeleton {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  @media (max-width: 54rem) {
+    .proxy-grid {
+      grid-template-columns: 1fr;
+    }
+    .edge-notes {
+      grid-template-columns: repeat(3, 1fr);
+    }
+    .editor-head {
+      align-items: stretch;
+      flex-direction: column;
+    }
+    .editor-actions {
+      justify-content: flex-start;
+    }
+  }
+  @media (max-width: 38rem) {
+    .edge-notes {
+      grid-template-columns: 1fr;
+    }
+    .editor-actions .btn {
+      flex: 1;
+    }
+    .editor-state code {
+      display: none;
+    }
+    .route-table th:nth-child(3),
+    .route-table td:nth-child(3) {
+      display: none;
+    }
+  }
 </style>

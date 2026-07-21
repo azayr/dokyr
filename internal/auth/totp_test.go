@@ -18,8 +18,8 @@ func TestVerifyTOTPAcceptsRFC6238SHA1Code(t *testing.T) {
 }
 
 func TestTOTPURIContainsAccountAndIssuer(t *testing.T) {
-	uri := TOTPURI("ABC123", "Selfhost", "owner@example.test")
-	if uri != "otpauth://totp/Selfhost:owner@example.test?algorithm=SHA1&digits=6&issuer=Selfhost&period=30&secret=ABC123" {
+	uri := TOTPURI("ABC123", "Dokyr", "owner@example.test")
+	if uri != "otpauth://totp/Dokyr:owner@example.test?algorithm=SHA1&digits=6&issuer=Dokyr&period=30&secret=ABC123" {
 		t.Fatalf("unexpected URI: %s", uri)
 	}
 }

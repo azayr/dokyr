@@ -217,7 +217,7 @@ func (s *Service) StartGitHubManifest(ctx context.Context, userID string) (GitHu
 		"callback_urls":   []string{s.accountCallbackURL()},
 		"setup_url":       s.installationCallbackURL(),
 		"setup_on_update": true,
-		"description":     "Private GitHub authentication for this DeployForge control plane.",
+		"description":     "Private GitHub authentication for this Dokyr control plane.",
 		"public":          false,
 		"hook_attributes": map[string]any{
 			"url":    s.cfg.PublicURL + "/api/webhooks/github",
@@ -328,7 +328,7 @@ func (s *Service) saveGitHubInstallation(ctx context.Context, userID string, rem
 // SyncGitHubInstallations recovers personal GitHub App installations when the
 // browser did not return through the installation setup callback. Only an
 // installation whose account id exactly matches the GitHub identity already
-// linked to this DeployForge user is imported.
+// linked to this Dokyr user is imported.
 func (s *Service) SyncGitHubInstallations(ctx context.Context, userID, linkedAccountID string) ([]store.SourceConnection, string, error) {
 	if userID == "" || linkedAccountID == "" {
 		return nil, "", errors.New("link your GitHub account before synchronizing repository access")

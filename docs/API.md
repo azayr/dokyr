@@ -1,6 +1,6 @@
-# DeployForge API reference
+# Dokyr API reference
 
-This document describes the HTTP API exposed by the Selfhost/DeployForge control plane. It is written for a replacement frontend, mobile app, CLI, or another internal client.
+This document describes the HTTP API exposed by the Dokyr control plane. It is written for a replacement frontend, mobile app, CLI, or another internal client.
 
 ## Conventions
 
@@ -319,7 +319,7 @@ App in Settings. Other GitHub or network failures do not erase configuration.
   "encryption": "starttls",
   "username": "smtp-user",
   "hasPassword": true,
-  "fromName": "DeployForge",
+  "fromName": "Dokyr",
   "fromEmail": "ops@example.com",
   "notifyDeploymentFailures": true,
   "notifyDeploymentSuccesses": false,
@@ -337,7 +337,7 @@ App in Settings. Other GitHub or network failures do not erase configuration.
   "encryption": "starttls",
   "username": "smtp-user",
   "password": "new-password-or-empty-to-keep-existing",
-  "fromName": "DeployForge",
+  "fromName": "Dokyr",
   "fromEmail": "ops@example.com",
   "notifyDeploymentFailures": true,
   "notifyDeploymentSuccesses": false
@@ -729,7 +729,7 @@ A frontend can poll every 1–3 seconds while `deployment.status === "deploying"
 
 GitHub integration uses the GitHub App installation flow. The returned installation has a `manageUrl`; use this to change repository selection in GitHub. GitLab currently uses OAuth and requires provider configuration on the server.
 
-If GitHub shows the App as installed but `GET /api/integrations` has no GitHub source connection, call `POST /api/integrations/github/installations/sync`. It lists installations using the server's private GitHub App credential and imports only an installation whose GitHub account ID exactly matches the account already linked to the authenticated DeployForge user. It never imports an unrelated personal or organization installation.
+If GitHub shows the App as installed but `GET /api/integrations` has no GitHub source connection, call `POST /api/integrations/github/installations/sync`. It lists installations using the server's private GitHub App credential and imports only an installation whose GitHub account ID exactly matches the account already linked to the authenticated Dokyr user. It never imports an unrelated personal or organization installation.
 
 ```json
 {
@@ -740,7 +740,7 @@ If GitHub shows the App as installed but `GET /api/integrations` has no GitHub s
 }
 ```
 
-An installation created with an older App manifest may return a warning and `contentsPermission: ""`. Repository discovery can still succeed because Metadata access exposes repository names, but private clone/deploy requires the App owner to enable read-only Contents permission and approve the GitHub permission update. DeployForge validates the permissions returned with the installation token before cloning and reports an actionable error instead of GitHub's misleading `Repository not found` response.
+An installation created with an older App manifest may return a warning and `contentsPermission: ""`. Repository discovery can still succeed because Metadata access exposes repository names, but private clone/deploy requires the App owner to enable read-only Contents permission and approve the GitHub permission update. Dokyr validates the permissions returned with the installation token before cloning and reports an actionable error instead of GitHub's misleading `Repository not found` response.
 
 `GET /api/integrations` returns:
 

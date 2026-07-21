@@ -3,79 +3,598 @@
   import { page } from '$app/state';
   import Shell from '$lib/components/Shell.svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import EmptyState from '$lib/components/EmptyState.svelte';
+  import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import { api } from '$lib/auth.js';
-  let data={providers:{github:{},gitlab:{}},connections:[],registries:[]};
-  let loading=true, saving=false, syncing=false, syncAttempted=false, error='', sourceError='', warning='';
-  let registry={name:'',registryUrl:'',username:'',password:''};
-  const providerInfo={github:{name:'GitHub',mark:'GH',hint:'Organizations and private repositories'},gitlab:{name:'GitLab',mark:'GL',hint:'Groups and private repositories'}};
-  async function load(trySync=true){loading=true;const r=await api('/api/integrations');data=await r.json();loading=false;if(trySync&&!syncAttempted&&data.providers?.github?.linked&&data.providers?.github?.managed){syncAttempted=true;await syncGitHubInstallations(false)}}
-  async function syncGitHubInstallations(showEmpty=true){syncing=true;sourceError='';warning='';const r=await api('/api/integrations/github/installations/sync',{method:'POST'});const body=await r.json();if(!r.ok){sourceError=body.error||'Could not synchronize GitHub installations';syncing=false;return}warning=body.warning||'';if(body.synced>0){await load(false)}else if(showEmpty){sourceError=body.message||'No GitHub App installation was found for this account.'}syncing=false}
+  import { toast } from '$lib/toast.js';
+
+  let data = { providers: { github: {}, gitlab: {} }, connections: [], registries: [] };
+  let loading = true;
+  let saving = false;
+  let syncing = false;
+  let syncAttempted = false;
+  let error = '';
+  let sourceError = '';
+  let warning = '';
+  let registry = { name: '', registryUrl: '', username: '', password: '' };
+  let registryToRemove = null;
+  let removeRegistryBusy = false;
+  let accountToUnlink = null;
+  let unlinkBusy = false;
+  let unlinkError = '';
+
+  const providerInfo = {
+    github: { name: 'GitHub', mark: 'GH', hint: 'Organizations and private repositories' },
+    gitlab: { name: 'GitLab', mark: 'GL', hint: 'Groups and private repositories' }
+  };
+
+  async function load(trySync = true) {
+    loading = true;
+    const response = await api('/api/integrations');
+    data = await response.json();
+    loading = false;
+    if (trySync && !syncAttempted && data.providers?.github?.linked && data.providers?.github?.managed) {
+      syncAttempted = true;
+      await syncGitHubInstallations(false);
+    }
+  }
+
+  async function syncGitHubInstallations(showEmpty = true) {
+    syncing = true;
+    sourceError = '';
+    warning = '';
+    const response = await api('/api/integrations/github/installations/sync', { method: 'POST' });
+    const body = await response.json();
+    if (!response.ok) {
+      sourceError = body.error || 'Could not synchronize GitHub installations';
+      syncing = false;
+      return;
+    }
+    warning = body.warning || '';
+    if (body.synced > 0) await load(false);
+    else if (showEmpty) sourceError = body.message || 'No GitHub App installation was found for this account.';
+    syncing = false;
+  }
+
   onMount(load);
-  async function saveRegistry(){saving=true;error='';const r=await api('/api/integrations/registries',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(registry)});const body=await r.json();if(!r.ok){error=body.error;saving=false;return}registry={name:'',registryUrl:'',username:'',password:''};await load();saving=false}
-  async function removeRegistry(id){if(!confirm('Remove this registry credential? Existing projects keep their image reference.'))return;await api('/api/integrations/registries/'+id,{method:'DELETE'});await load()}
-  async function unlinkSource(account){if(!confirm(`Unlink ${account.provider} account ${account.accountName}? Existing containers keep running, but Git services must be connected again before their next deployment.`))return;error='';const r=await api('/api/integrations/sources/'+account.id,{method:'DELETE'});const body=await r.json();if(!r.ok){error=body.error||'Could not unlink Git source';return}await load()}
+
+  async function saveRegistry() {
+    saving = true;
+    error = '';
+    const response = await api('/api/integrations/registries', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(registry)
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      error = body.error;
+      saving = false;
+      return;
+    }
+    registry = { name: '', registryUrl: '', username: '', password: '' };
+    toast.success('Registry credential saved');
+    await load();
+    saving = false;
+  }
+
+  async function removeRegistry() {
+    if (!registryToRemove) return;
+    removeRegistryBusy = true;
+    await api('/api/integrations/registries/' + registryToRemove.id, { method: 'DELETE' });
+    toast.success(`Registry ${registryToRemove.name} removed`);
+    registryToRemove = null;
+    removeRegistryBusy = false;
+    await load();
+  }
+
+  async function unlinkSource() {
+    if (!accountToUnlink) return;
+    unlinkBusy = true;
+    unlinkError = '';
+    const response = await api('/api/integrations/sources/' + accountToUnlink.id, { method: 'DELETE' });
+    const body = await response.json();
+    if (!response.ok) {
+      unlinkError = body.error || 'Could not unlink Git source';
+      unlinkBusy = false;
+      return;
+    }
+    toast.success(`${accountToUnlink.provider} account ${accountToUnlink.accountName} unlinked`);
+    accountToUnlink = null;
+    unlinkBusy = false;
+    await load();
+  }
 </script>
 
-<Shell eyebrow="Workspace" title="Sources & registries">
-  {#if page.url.searchParams.get('connected')}<div class="notice success">Account connected. Private repositories are now available when creating a project.</div>{/if}
-  {#if page.url.searchParams.get('error')}<div class="notice failure">{page.url.searchParams.get('error')}</div>{/if}
-  {#if sourceError}<div class="notice failure">{sourceError}</div>{/if}
-  {#if warning}<div class="notice caution">{warning} Open the GitHub App settings, enable read-only Contents permission, then approve the permission update.</div>{/if}
-  <section class="hero"><div><small>Source control</small><h2>Connect a Git provider</h2><p>Authorize Selfhost to discover repositories you can access. Provider tokens are encrypted before they are stored.</p></div><span>{data.connections.length} connected</span></section>
+<Shell eyebrow="Infrastructure" title="Sources" subtitle="Git providers and private registries used to build and pull application images.">
+  {#if page.url.searchParams.get('connected')}
+    <div class="alert alert-success"><Icon name="check-circle" size={15} /><div><strong>Account connected</strong><span>Private repositories are now available when creating a project.</span></div></div>
+  {/if}
+  {#if page.url.searchParams.get('error')}
+    <div class="alert alert-error"><Icon name="x-circle" size={15} /><div><strong>Connection failed</strong><span>{page.url.searchParams.get('error')}</span></div></div>
+  {/if}
+  {#if sourceError}
+    <div class="alert alert-error"><Icon name="x-circle" size={15} /><div><strong>Source error</strong><span>{sourceError}</span></div></div>
+  {/if}
+  {#if warning}
+    <div class="alert alert-warning"><Icon name="alert" size={15} /><div><strong>Permission update required</strong><span>{warning} Open the GitHub App settings, enable read-only Contents permission, then approve the permission update.</span></div></div>
+  {/if}
+
   <div class="providers">
     {#each Object.entries(providerInfo) as [key, provider]}
-      {@const state=data.providers[key]||{}}
-      {@const connections=data.connections.filter((item)=>item.provider===key)}
-      <article>
-        <div class="provider-head"><b class={key}>{provider.mark}</b><div><h3>{provider.name}</h3><p>{provider.hint}</p></div><span class:ready={connections.length || (key==='github' && state.linked)}>{connections.length?'Connected':key==='github'&&state.linked?'Linked':state.configured?'Ready':'Setup required'}</span></div>
+      {@const state = data.providers[key] || {}}
+      {@const connections = data.connections.filter((item) => item.provider === key)}
+      <article class="panel provider-card">
+        <header class="provider-head">
+          <span class="provider-mark {key}">
+            {#if key === 'github'}<Icon name="github" size={18} />{:else}<Icon name="gitlab" size={18} />{/if}
+          </span>
+          <div>
+            <h3>{provider.name}</h3>
+            <p>{provider.hint}</p>
+          </div>
+          <span class="badge" class:badge-success={connections.length || (key === 'github' && state.linked)}>
+            <i></i>{connections.length ? 'Connected' : key === 'github' && state.linked ? 'Linked' : state.configured ? 'Ready' : 'Setup required'}
+          </span>
+        </header>
+
         {#if connections.length}
-          <div class="accounts">{#each connections as account}<div>{#if account.accountAvatar}<img src={account.accountAvatar} alt="" />{:else}<i>{provider.mark}</i>{/if}<span><strong>{account.accountName}</strong><small>{account.repositorySelection==='selected'?'Selected repositories':account.repositorySelection==='all'?'All repositories':account.baseUrl}</small>{#if key==='github' && account.contentsPermission!=='read' && account.contentsPermission!=='write'}<small class="permission-missing">Contents permission required for private deploys</small>{/if}</span><div class="account-actions">{#if account.manageUrl}<a href={account.manageUrl}>Change access <Icon name="link" size={12}/></a>{/if}<button onclick={()=>unlinkSource(account)}>Unlink</button></div></div>{/each}</div>
-        {:else if key==='github' && state.linked}
-          <div class="linked-account"><span class="github-avatar"><Icon name="github" size={15}/></span><span><strong>@{state.login}</strong><small>Linked in Settings · default GitHub account</small></span><em>Ready</em></div>
-        {:else}<div class="empty-account">No {provider.name} account connected yet.</div>{/if}
-        <footer>
-          {#if key==='github'}
-            <div><small>Repository access</small><code>{connections.length?'Access can be changed any time on GitHub':state.linked?'Choose all repositories or only selected repositories':'Uses the GitHub account linked in Settings'}</code></div>
-            {#if connections.length}<a href="/api/integrations/github/install/start">Add installation →</a>{:else if state.linked && state.managed}<div class="github-source-actions"><button type="button" onclick={()=>syncGitHubInstallations(true)} disabled={syncing}>{syncing?'Checking…':'Refresh installation'}</button><a href="/api/integrations/github/install/start">Select repositories →</a></div>{:else}<a href="/api/account/github/start">Link GitHub →</a>{/if}
-          {:else}
-            <div><small>OAuth callback</small><code>{state.callbackUrl||'—'}</code></div>
-            {#if state.configured}<a href={'/api/integrations/oauth/'+key+'/start'}>Connect {provider.name} →</a>{:else}<button disabled>Configure {provider.name}</button>{/if}
-          {/if}
+          <div class="accounts">
+            {#each connections as account}
+              <div class="account-row">
+                {#if account.accountAvatar}
+                  <img src={account.accountAvatar} alt="" />
+                {:else}
+                  <i class="account-fallback">{provider.mark}</i>
+                {/if}
+                <span class="account-text">
+                  <strong>{account.accountName}</strong>
+                  <small>{account.repositorySelection === 'selected' ? 'Selected repositories' : account.repositorySelection === 'all' ? 'All repositories' : account.baseUrl}</small>
+                  {#if key === 'github' && account.contentsPermission !== 'read' && account.contentsPermission !== 'write'}
+                    <small class="permission-missing">Contents permission required for private deploys</small>
+                  {/if}
+                </span>
+                <span class="account-actions">
+                  {#if account.manageUrl}<a class="btn btn-sm" href={account.manageUrl}>Change access <Icon name="external" size={12} /></a>{/if}
+                  <button class="btn btn-sm btn-danger" onclick={() => { unlinkError = ''; accountToUnlink = account; }}>Unlink</button>
+                </span>
+              </div>
+            {/each}
+          </div>
+        {:else if key === 'github' && state.linked}
+          <div class="linked-account">
+            <span class="github-avatar"><Icon name="github" size={15} /></span>
+            <span class="account-text"><strong>@{state.login}</strong><small>Linked in Settings · default GitHub account</small></span>
+            <span class="badge badge-success"><i></i>Ready</span>
+          </div>
+        {:else}
+          <div class="empty-account">No {provider.name} account connected yet.</div>
+        {/if}
+
+        <footer class="provider-footer">
+          <div>
+            {#if key === 'github'}
+              <small>Repository access</small>
+              <code>{connections.length ? 'Access can be changed any time on GitHub' : state.linked ? 'Choose all repositories or only selected repositories' : 'Uses the GitHub account linked in Settings'}</code>
+            {:else}
+              <small>OAuth callback</small>
+              <code>{state.callbackUrl || '—'}</code>
+            {/if}
+          </div>
+          <div class="provider-actions">
+            {#if key === 'github'}
+              {#if connections.length}
+                <a class="btn btn-sm btn-primary" href="/api/integrations/github/install/start">Add installation <Icon name="arrow-right" size={12} /></a>
+              {:else if state.linked && state.managed}
+                <button class="btn btn-sm" type="button" onclick={() => syncGitHubInstallations(true)} disabled={syncing}>{syncing ? 'Checking…' : 'Refresh installation'}</button>
+                <a class="btn btn-sm btn-primary" href="/api/integrations/github/install/start">Select repositories <Icon name="arrow-right" size={12} /></a>
+              {:else}
+                <a class="btn btn-sm btn-primary" href="/api/account/github/start">Link GitHub <Icon name="arrow-right" size={12} /></a>
+              {/if}
+            {:else if state.configured}
+              <a class="btn btn-sm btn-primary" href={'/api/integrations/oauth/' + key + '/start'}>Connect {provider.name} <Icon name="arrow-right" size={12} /></a>
+            {:else}
+              <button class="btn btn-sm" disabled>Configure {provider.name}</button>
+            {/if}
+          </div>
         </footer>
-        {#if key==='github' && !state.managed}<div class="config github-help"><span>Link GitHub in <a href="/settings?section=security">Settings → Security</a>. DeployForge creates a private GitHub App and stores its credentials securely.</span></div>{/if}
-        {#if key==='gitlab' && !state.configured}<div class="config"><span>GitLab OAuth still requires <code>GITLAB_CLIENT_ID + GITLAB_CLIENT_SECRET</code> for this self-hosted server.</span></div>{/if}
+
+        {#if key === 'github' && !state.managed}
+          <div class="config-note accent">
+            <Icon name="info" size={14} />
+            <span>Link GitHub in <a href="/settings?section=security">Settings → Security</a>. Dokyr creates a private GitHub App and stores its credentials encrypted.</span>
+          </div>
+        {/if}
+        {#if key === 'gitlab' && !state.configured}
+          <div class="config-note">
+            <Icon name="info" size={14} />
+            <span>GitLab OAuth requires <code>GITLAB_CLIENT_ID</code> and <code>GITLAB_CLIENT_SECRET</code> in this server's environment.</span>
+          </div>
+        {/if}
       </article>
     {/each}
   </div>
 
-  <section class="registry-panel">
-    <div class="section-head"><div><small>Container sources</small><h2>Private Docker registries</h2><p>Save credentials for GHCR, Docker Hub, GitLab Registry, or any Registry V2 endpoint.</p></div><span>{data.registries.length} saved</span></div>
+  <section class="panel registry-panel">
+    <header class="panel-header">
+      <div>
+        <span class="eyebrow">Container sources</span>
+        <h2>Private Docker registries</h2>
+      </div>
+      <span class="badge">{data.registries.length} saved</span>
+    </header>
     <div class="registry-grid">
-      <form onsubmit={(event)=>{event.preventDefault();saveRegistry()}}>
+      <form onsubmit={(event) => { event.preventDefault(); saveRegistry(); }}>
         <div class="form-title"><b>Add registry</b><small>Credentials are encrypted at rest</small></div>
-        {#if error}<p class="error">{error}</p>{/if}
-        <label>Display name<input bind:value={registry.name} placeholder="GitHub Container Registry" required /></label>
-        <label>Registry host<input bind:value={registry.registryUrl} placeholder="ghcr.io" required /></label>
-        <div class="split"><label>Username<input bind:value={registry.username} placeholder="octocat" /></label><label>Password or token<input bind:value={registry.password} type="password" placeholder="••••••••••••" /></label></div>
-        <button disabled={saving}>{saving?'Saving…':'Save registry'}</button>
+        {#if error}<div class="alert alert-error registry-error"><Icon name="x-circle" size={14} /><div><span>{error}</span></div></div>{/if}
+        <label class="field"><span>Display name</span><input class="input" bind:value={registry.name} placeholder="GitHub Container Registry" required /></label>
+        <label class="field"><span>Registry host</span><input class="input input-mono" bind:value={registry.registryUrl} placeholder="ghcr.io" required /></label>
+        <div class="split">
+          <label class="field"><span>Username</span><input class="input input-mono" bind:value={registry.username} placeholder="octocat" /></label>
+          <label class="field"><span>Password or token</span><input class="input" bind:value={registry.password} type="password" placeholder="••••••••••••" /></label>
+        </div>
+        <button class="btn btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Save registry'}</button>
       </form>
       <div class="registry-list">
-        <div class="table-head"><span>Registry</span><span>Credential</span><span></span></div>
-        {#if loading}<p class="empty">Loading sources…</p>{:else if !data.registries.length}<div class="empty"><b>No private registries</b><span>Public images can still be deployed without a saved credential.</span></div>{:else}{#each data.registries as item}<div class="registry-row"><div><i>◈</i><span><strong>{item.name}</strong><small>{item.registryUrl}</small></span></div><code>{item.username||'anonymous'} / ••••••••</code><button onclick={()=>removeRegistry(item.id)} aria-label="Remove registry">Remove</button></div>{/each}{/if}
+        {#if loading}
+          <div class="rows-loading">
+            {#each Array(2) as _}
+              <div class="row-skeleton"><span class="skeleton" style="width:30px;height:30px"></span><span class="skeleton" style="height:14px;flex:1"></span></div>
+            {/each}
+          </div>
+        {:else if !data.registries.length}
+          <EmptyState icon="database" title="No private registries" description="Public images can still be deployed without a saved credential." />
+        {:else}
+          <div class="registry-rows">
+            {#each data.registries as item}
+              <div class="registry-row">
+                <span class="registry-icon"><Icon name="database" size={14} /></span>
+                <span class="registry-text"><strong>{item.name}</strong><small>{item.registryUrl}</small></span>
+                <code>{item.username || 'anonymous'} / ••••••••</code>
+                <button class="btn btn-sm btn-danger" onclick={() => (registryToRemove = item)}>Remove</button>
+              </div>
+            {/each}
+          </div>
+        {/if}
       </div>
     </div>
   </section>
 </Shell>
 
+{#if registryToRemove}
+  <ConfirmDialog
+    title={'Remove ' + registryToRemove.name + '?'}
+    message="Existing projects keep their image reference, but new deployments that pull private images from this registry will fail."
+    confirmLabel="Remove registry"
+    busy={removeRegistryBusy}
+    onConfirm={removeRegistry}
+    onClose={() => (registryToRemove = null)}
+  />
+{/if}
+
+{#if accountToUnlink}
+  <ConfirmDialog
+    title={'Unlink ' + accountToUnlink.accountName + '?'}
+    message="Existing containers keep running, but Git services must be connected again before their next deployment."
+    confirmLabel="Unlink account"
+    busy={unlinkBusy}
+    error={unlinkError}
+    onConfirm={unlinkSource}
+    onClose={() => (accountToUnlink = null)}
+  />
+{/if}
+
 <style>
-  .notice{padding:11px 14px;border-radius:7px;margin-bottom:14px;font-size:10px;border:1px solid}.success{background:var(--accent-soft);color:var(--green);border-color:color-mix(in srgb,var(--green) 24%,var(--line))}.failure{background:var(--color-danger-soft);color:var(--red);border-color:color-mix(in srgb,var(--red) 30%,var(--line))}.caution{background:var(--color-warning-soft);color:var(--amber);border-color:color-mix(in srgb,var(--amber) 30%,var(--line))}
-  .hero,.section-head{display:flex;justify-content:space-between;align-items:start}.hero{margin-bottom:15px}.hero small,.section-head small{font:8px var(--font-mono);text-transform:uppercase;letter-spacing:.1em;color:var(--accent)}h2{font-size:16px;margin:5px 0 4px}.hero p,.section-head p{margin:0;color:var(--muted);font-size:10px}.hero>span,.section-head>span{font:9px var(--font-mono);color:var(--muted);border:1px solid var(--line);background:var(--surface);padding:6px 8px;border-radius:5px}
-  .providers{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px}.providers article,.registry-panel{background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:hidden}.provider-head{display:grid;grid-template-columns:38px 1fr auto;gap:11px;align-items:center;padding:16px}.provider-head>b{width:36px;height:36px;border-radius:7px;display:grid;place-items:center;background:var(--color-log-bg);color:var(--color-log-text);font:600 9px var(--font-mono)}.provider-head>b.gitlab{background:color-mix(in srgb,#f06a3b 82%,var(--color-log-bg))}.provider-head h3{font-size:12px;margin:0 0 3px}.provider-head p{font-size:9px;color:var(--muted);margin:0}.provider-head>span{font:8px var(--font-mono);padding:5px 7px;border-radius:12px;background:var(--color-warning-soft);color:var(--amber)}.provider-head>span.ready{background:var(--accent-soft);color:var(--green)}
-  .accounts,.empty-account,.linked-account{border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--surface2)}.empty-account{padding:17px;color:var(--muted);font-size:9px}.accounts>div,.linked-account{min-height:58px;display:grid;grid-template-columns:29px 1fr auto;align-items:center;gap:9px;padding:10px 16px}.accounts img,.accounts i,.github-avatar{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;background:var(--line);font:8px var(--font-mono);font-style:normal}.accounts span,.linked-account>span:nth-child(2){display:grid;gap:2px}.accounts strong,.linked-account strong{font-size:10px}.accounts small,.linked-account small{font:8px var(--font-mono);color:var(--muted)}.linked-account em{font-style:normal;font:8px var(--font-mono);color:var(--green)}.account-actions{display:flex;align-items:center;gap:9px}.accounts a{display:inline-flex;align-items:center;gap:5px;color:var(--accent);font-size:8px;font-weight:700;text-decoration:none}.account-actions button{border:0;background:transparent;color:var(--red);font-size:8px;font-weight:700;cursor:pointer}.github-avatar{background:var(--color-log-bg);color:var(--color-log-text)}
-  .accounts small.permission-missing{color:var(--amber);font-weight:700}
-  .providers footer{min-height:66px;padding:13px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px}.providers footer>div{display:grid;min-width:0;gap:3px}.providers footer small{font-size:8px;color:var(--faint)}.providers footer code{font:8px var(--font-mono);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:310px}.providers footer a,.providers footer button{height:31px;border-radius:5px;padding:0 10px;display:flex;align-items:center;border:1px solid var(--accent);background:var(--accent);color:var(--color-accent-ink);text-decoration:none;font-size:9px;font-weight:700;white-space:nowrap}.providers footer button:disabled{background:var(--surface2);border-color:var(--line);color:var(--muted)}.config{padding:9px 16px;background:var(--color-warning-soft);border-top:1px solid color-mix(in srgb,var(--amber) 26%,var(--line));color:var(--amber);font-size:8px;line-height:1.6}.config code{font:8px var(--font-mono)}.config.github-help{background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 22%,var(--line));color:var(--muted)}.config a{color:var(--accent);font-weight:700}
-  .github-source-actions{display:flex!important;grid-auto-flow:column;align-items:center;gap:7px!important}.github-source-actions button{background:var(--surface)!important;color:var(--accent)!important}
-  .registry-panel{padding:18px}.section-head{margin-bottom:16px}.registry-grid{display:grid;grid-template-columns:340px 1fr;border:1px solid var(--line);border-radius:7px;overflow:hidden}.registry-grid form{padding:16px;background:var(--surface2);border-right:1px solid var(--line);display:grid;gap:11px}.form-title{display:flex;justify-content:space-between;align-items:center}.form-title b{font-size:11px}.form-title small{font-size:8px;color:var(--muted)}label{display:grid;gap:5px;font-size:8px;font-weight:700;color:var(--muted)}input{height:34px;border:1px solid var(--line2);background:var(--surface);color:var(--ink);border-radius:5px;padding:0 9px;font:9px var(--font-mono);outline:none}input:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}.split{display:grid;grid-template-columns:1fr 1fr;gap:9px}form>button{height:33px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:5px;font-size:9px;font-weight:700}.error{margin:0;color:var(--red);font-size:9px}
-  .registry-list{min-width:0}.table-head,.registry-row{display:grid;grid-template-columns:1fr 180px 65px;align-items:center}.table-head{height:35px;padding:0 14px;border-bottom:1px solid var(--line);font:8px var(--font-mono);text-transform:uppercase;color:var(--faint)}.registry-row{min-height:57px;padding:0 14px;border-bottom:1px solid var(--line)}.registry-row:last-child{border:0}.registry-row>div{display:flex;align-items:center;gap:9px}.registry-row i{width:29px;height:29px;border-radius:6px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-style:normal}.registry-row span{display:grid}.registry-row strong{font-size:10px}.registry-row small,.registry-row code{font:8px var(--font-mono);color:var(--muted)}.registry-row button{border:0;background:transparent;color:var(--red);font-size:8px}.empty{padding:36px;text-align:center;color:var(--muted);display:grid;gap:5px;font-size:9px}.empty b{color:var(--ink);font-size:10px}
-  @media(max-width:1000px){.providers{grid-template-columns:1fr}.registry-grid{grid-template-columns:1fr}.registry-grid form{border-right:0;border-bottom:1px solid var(--line)}}@media(max-width:620px){.registry-grid{border:0}.split{grid-template-columns:1fr}.table-head{display:none}.registry-row{grid-template-columns:1fr auto}.registry-row code{display:none}}
+  .providers {
+    margin-bottom: var(--space-4);
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-4);
+  }
+  .provider-card {
+    display: flex;
+    flex-direction: column;
+  }
+  .provider-head {
+    min-height: 72px;
+    padding: var(--space-4) var(--space-5);
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-3);
+  }
+  .provider-mark {
+    width: 40px;
+    height: 40px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--radius-md);
+    background: var(--color-log-bg);
+    color: var(--color-log-text);
+  }
+  .provider-mark.gitlab {
+    background: #5c2d1e;
+    color: #fc6d26;
+  }
+  :global(.theme-dark) .provider-mark.gitlab {
+    background: #3a2118;
+    color: #fc8a51;
+  }
+  .provider-head h3 {
+    margin: 0;
+    font-size: var(--text-md);
+  }
+  .provider-head p {
+    margin: 2px 0 0;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .accounts {
+    border-top: 1px solid var(--color-rule);
+  }
+  .account-row {
+    min-height: 64px;
+    padding: var(--space-3) var(--space-5);
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-3);
+    border-bottom: 1px solid var(--color-rule);
+    background: var(--color-surface-subtle);
+  }
+  .account-row:last-child {
+    border-bottom: 0;
+  }
+  .account-row img,
+  .account-fallback,
+  .github-avatar {
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--color-paper-subtle);
+    color: var(--color-muted);
+    font: 600 var(--text-2xs) var(--font-mono);
+    font-style: normal;
+  }
+  .github-avatar {
+    background: var(--color-log-bg);
+    color: var(--color-log-text);
+  }
+  .account-text {
+    min-width: 0;
+    display: grid;
+    gap: 1px;
+  }
+  .account-text strong {
+    overflow: hidden;
+    font-size: var(--text-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .account-text small {
+    overflow: hidden;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .account-text .permission-missing {
+    color: var(--color-warning);
+    font-weight: 600;
+  }
+  .account-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .linked-account {
+    min-height: 64px;
+    padding: var(--space-3) var(--space-5);
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-3);
+    border-top: 1px solid var(--color-rule);
+    background: var(--color-surface-subtle);
+  }
+  .empty-account {
+    padding: var(--space-5);
+    border-top: 1px solid var(--color-rule);
+    background: var(--color-surface-subtle);
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+  }
+  .provider-footer {
+    min-height: 64px;
+    margin-top: auto;
+    padding: var(--space-3) var(--space-5);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    border-top: 1px solid var(--color-rule);
+  }
+  .provider-footer > div:first-child {
+    min-width: 0;
+    display: grid;
+    gap: 1px;
+  }
+  .provider-footer small {
+    color: var(--color-faint);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .provider-footer code {
+    overflow: hidden;
+    max-width: 300px;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .provider-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .config-note {
+    padding: var(--space-3) var(--space-5);
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    border-top: 1px solid color-mix(in srgb, var(--color-warning) 30%, var(--color-rule));
+    background: color-mix(in srgb, var(--color-warning) 6%, var(--color-paper-raised));
+    color: var(--color-warning);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+  }
+  .config-note.accent {
+    border-top-color: color-mix(in srgb, var(--color-accent) 26%, var(--color-rule));
+    background: var(--color-accent-softer);
+    color: var(--color-accent);
+  }
+  .config-note span {
+    color: var(--color-ink-secondary);
+  }
+  .config-note a {
+    color: var(--color-accent);
+    font-weight: 600;
+  }
+  .config-note code {
+    font-size: var(--text-xs);
+  }
+
+  .registry-grid {
+    display: grid;
+    grid-template-columns: 340px minmax(0, 1fr);
+  }
+  .registry-grid form {
+    padding: var(--space-5);
+    display: grid;
+    align-content: start;
+    gap: var(--space-3);
+    border-right: 1px solid var(--color-rule);
+    background: var(--color-surface-subtle);
+  }
+  .form-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+  .form-title b {
+    font-size: var(--text-md);
+  }
+  .form-title small {
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .registry-error {
+    margin-bottom: 0;
+    padding: var(--space-2) var(--space-3);
+  }
+  .split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-3);
+  }
+  .registry-list {
+    min-width: 0;
+  }
+  .registry-rows {
+    display: grid;
+  }
+  .registry-row {
+    min-height: 60px;
+    padding: var(--space-2) var(--space-5);
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: var(--space-3);
+    border-bottom: 1px solid var(--color-rule);
+  }
+  .registry-row:last-child {
+    border-bottom: 0;
+  }
+  .registry-icon {
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--radius-sm);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+  }
+  .registry-text {
+    min-width: 0;
+    display: grid;
+    gap: 1px;
+  }
+  .registry-text strong {
+    overflow: hidden;
+    font-size: var(--text-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .registry-text small {
+    overflow: hidden;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .registry-row code {
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+  }
+  .rows-loading {
+    padding: var(--space-3) var(--space-5);
+    display: grid;
+    gap: var(--space-3);
+  }
+  .row-skeleton {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  @media (max-width: 62rem) {
+    .providers {
+      grid-template-columns: 1fr;
+    }
+    .registry-grid {
+      grid-template-columns: 1fr;
+    }
+    .registry-grid form {
+      border-right: 0;
+      border-bottom: 1px solid var(--color-rule);
+    }
+  }
+  @media (max-width: 40rem) {
+    .split {
+      grid-template-columns: 1fr;
+    }
+    .account-row {
+      grid-template-columns: 32px minmax(0, 1fr);
+    }
+    .account-actions {
+      grid-column: 2;
+      justify-content: flex-start;
+    }
+    .provider-footer {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .registry-row {
+      grid-template-columns: 32px minmax(0, 1fr) auto;
+    }
+    .registry-row code {
+      display: none;
+    }
+  }
 </style>

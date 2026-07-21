@@ -461,7 +461,7 @@ type smtpSettingsInput struct {
 }
 
 func defaultSMTPSettings() store.SMTPSettings {
-	return store.SMTPSettings{Port: 587, Encryption: "starttls", FromName: "DeployForge", NotifyDeploymentFailures: true}
+	return store.SMTPSettings{Port: 587, Encryption: "starttls", FromName: "Dokyr", NotifyDeploymentFailures: true}
 }
 
 func smtpConfigured(settings store.SMTPSettings) bool {
@@ -638,8 +638,8 @@ func (a *API) testSMTPSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	message := mailer.Message{
-		To: recipient, Subject: "DeployForge SMTP test",
-		Text: "Your DeployForge SMTP configuration is working. This server can now send account recovery and deployment notification emails.",
+		To: recipient, Subject: "Dokyr SMTP test",
+		Text: "Your Dokyr SMTP configuration is working. This server can now send account recovery and deployment notification emails.",
 		HTML: `<div style="font-family:Arial,sans-serif;max-width:620px;margin:auto;padding:32px"><p style="color:#087a51;font-weight:700">DEPLOYFORGE</p><h1 style="font-size:24px">SMTP is connected</h1><p>Your server can now send account recovery links and deployment notifications.</p><p style="color:#667085;font-size:13px">You can return to Settings → SMTP to choose which deployment events generate email.</p></div>`,
 	}
 	if err := mailer.Send(r.Context(), config, message); err != nil {
@@ -688,8 +688,8 @@ func (a *API) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 	name := html.EscapeString(u.Name)
 	link := html.EscapeString(resetURL)
 	message := mailer.Message{
-		To: u.Email, Subject: "Reset your DeployForge password",
-		Text: "Reset your DeployForge password using this link (valid for 30 minutes):\n\n" + resetURL + "\n\nIf you did not request this, you can ignore this email.",
+		To: u.Email, Subject: "Reset your Dokyr password",
+		Text: "Reset your Dokyr password using this link (valid for 30 minutes):\n\n" + resetURL + "\n\nIf you did not request this, you can ignore this email.",
 		HTML: `<div style="font-family:Arial,sans-serif;max-width:620px;margin:auto;padding:32px"><p style="color:#087a51;font-weight:700">DEPLOYFORGE</p><h1 style="font-size:24px">Reset your password</h1><p>Hello ` + name + `,</p><p>Use the button below to choose a new password. This one-time link expires in 30 minutes.</p><p style="margin:28px 0"><a href="` + link + `" style="background:#087a51;color:white;text-decoration:none;padding:12px 18px;border-radius:7px;font-weight:700">Reset password</a></p><p style="color:#667085;font-size:13px">If you did not request this, you can ignore this email.</p></div>`,
 	}
 	if err := mailer.Send(r.Context(), config, message); err != nil {
@@ -759,7 +759,7 @@ func (a *API) setupTwoFactor(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, 200, map[string]any{
 		"secret": secret,
-		"uri":    auth.TOTPURI(secret, "Selfhost", u.Email),
+		"uri":    auth.TOTPURI(secret, "Dokyr", u.Email),
 	})
 }
 
@@ -880,7 +880,7 @@ func (a *API) githubManifestCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) renderGitHubManifestForm(w http.ResponseWriter, manifest integration.GitHubManifestStart) {
-	const page = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connecting GitHub — DeployForge</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0d0c;color:#eef2ec;font:14px system-ui,sans-serif}.card{width:min(420px,calc(100% - 40px));padding:32px;border:1px solid #29302b;border-radius:12px;background:#121613;text-align:center}.mark{width:42px;height:42px;margin:auto;display:grid;place-items:center;border-radius:10px;background:#d8ff73;color:#0b0d0c;font-weight:800}h1{font-size:22px;margin:18px 0 8px}p{color:#8d978e;line-height:1.6}button{height:42px;margin-top:14px;padding:0 18px;border:0;border-radius:7px;background:#d8ff73;color:#0b0d0c;font-weight:750;cursor:pointer}</style></head><body><main class="card"><div class="mark">GH</div><h1>Continue to GitHub</h1><p>DeployForge is redirecting you to create and authorize a private GitHub App for this server.</p><form id="github-manifest" method="post" action="{{.Action}}"><input type="hidden" name="manifest" value="{{.Manifest}}"><button type="submit">Continue to GitHub</button></form></main><script>document.getElementById('github-manifest').submit()</script></body></html>`
+	const page = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connecting GitHub — Dokyr</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0c1117;color:#e7edf3;font:14px system-ui,sans-serif}.card{width:min(420px,calc(100% - 40px));padding:32px;border:1px solid #223040;border-radius:12px;background:#121922;text-align:center}.mark{width:42px;height:42px;margin:auto;display:grid;place-items:center;border-radius:10px;background:#0b63e5;color:#ffffff;font-weight:800}h1{font-size:22px;margin:18px 0 8px}p{color:#8494a5;line-height:1.6}button{height:42px;margin-top:14px;padding:0 18px;border:0;border-radius:7px;background:#0b63e5;color:#ffffff;font-weight:750;cursor:pointer}</style></head><body><main class="card"><div class="mark">GH</div><h1>Continue to GitHub</h1><p>Dokyr is redirecting you to create and authorize a private GitHub App for this server.</p><form id="github-manifest" method="post" action="{{.Action}}"><input type="hidden" name="manifest" value="{{.Manifest}}"><button type="submit">Continue to GitHub</button></form></main><script>document.getElementById('github-manifest').submit()</script></body></html>`
 	tmpl, err := template.New("github-manifest").Parse(page)
 	if err != nil {
 		problem(w, err)
@@ -919,7 +919,7 @@ func (a *API) githubAccountCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err := a.store.UserByGitHubAccount(r.Context(), identity.AccountID)
 	if store.NotFound(err) {
-		http.Redirect(w, r, "/login?error="+url.QueryEscape("No Selfhost account is linked to @"+identity.Login+". Sign in with your password and link it in Settings."), http.StatusFound)
+		http.Redirect(w, r, "/login?error="+url.QueryEscape("No Dokyr account is linked to @"+identity.Login+". Sign in with your password and link it in Settings."), http.StatusFound)
 		return
 	}
 	if err != nil {
