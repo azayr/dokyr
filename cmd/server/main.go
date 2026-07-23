@@ -50,6 +50,15 @@ func main() {
 		os.Exit(1)
 	}
 	defer docker.Close()
+	cleanupContext, stopCleanup := context.WithTimeout(context.Background(), 30*time.Second)
+	removedCandidates, cleanupErr := docker.RemoveOrphanApplicationCandidates(cleanupContext)
+	stopCleanup()
+	if cleanupErr != nil {
+		log.Warn("could not remove every orphan application candidate", "error", cleanupErr)
+	}
+	if len(removedCandidates) > 0 {
+		log.Info("removed orphan application candidates", "containers", removedCandidates)
+	}
 	metricsContext, stopMetrics := context.WithCancel(context.Background())
 	defer stopMetrics()
 	if err := docker.StartMetricsCollector(metricsContext); err != nil {
@@ -69,6 +78,9 @@ func main() {
 	if smtpImported {
 		log.Info("SMTP settings imported from environment into PostgreSQL")
 	}
+	schedulerContext, stopScheduler := context.WithCancel(context.Background())
+	defer stopScheduler()
+	apiHandler.StartCleanupScheduler(schedulerContext)
 	go func() {
 		for attempt := 1; attempt <= 10; attempt++ {
 			if err := apiHandler.SyncDomains(context.Background()); err == nil {

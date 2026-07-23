@@ -10,7 +10,7 @@ services:
       DATABASE_URL: postgres://selfhost:${POSTGRES_PASSWORD:-selfhost-local-password}@postgres:5432/selfhost?sslmode=disable
       SELFHOST_JWT_SECRET: ${JWT_SECRET:-development-secret-change-before-production}
       SELFHOST_COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      SELFHOST_PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      SELFHOST_PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8888}
       SELFHOST_ENCRYPTION_KEY: ${ENCRYPTION_KEY:-development-encryption-key-change-now}
       GITLAB_CLIENT_ID: ${GITLAB_CLIENT_ID:-}
       GITLAB_CLIENT_SECRET: ${GITLAB_CLIENT_SECRET:-}
@@ -65,7 +65,7 @@ services:
     environment:
       SELFHOST_CONTROL_HOSTS: ${CONTROL_HOSTS:-localhost}
     ports:
-      - "${HTTP_PORT:-8080}:80"
+      - "${HTTP_PORT:-8888}:80"
       - "${HTTPS_PORT:-8443}:443"
       - "${HTTPS_PORT:-8443}:443/udp"
     volumes:

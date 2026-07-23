@@ -690,6 +690,11 @@ func applicationCandidateContainerName(serviceID string, started time.Time) stri
 	return fmt.Sprintf("%s-next-%x", applicationContainerName(serviceID), started.UnixNano())
 }
 
+func isApplicationCandidateContainerName(name string) bool {
+	name = strings.TrimPrefix(name, "/")
+	return strings.HasPrefix(name, "selfhost-svc-") && strings.Contains(name, "-next-")
+}
+
 func (d *Docker) containerExists(ctx context.Context, name string) (bool, error) {
 	var inspected struct {
 		ID string `json:"Id"`
@@ -823,6 +828,10 @@ func checkApplicationHTTP(ctx context.Context, container string, port int, path 
 	if err != nil {
 		return err
 	}
+	// Docker container names can contain underscores, which are valid for
+	// internal DNS but invalid in an HTTP Host header. Keep using Docker DNS
+	// for the connection while presenting a standards-compliant probe host.
+	request.Host = "localhost"
 	client := &http.Client{Timeout: 3 * time.Second}
 	response, err := client.Do(request)
 	if err != nil {
@@ -1196,7 +1205,7 @@ func (d *Docker) DatabaseRuntime(ctx context.Context, serviceID string, internal
 	if err := d.get(ctx, "/containers/"+url.PathEscape(name)+"/json", &inspected); err != nil {
 		return DatabaseRuntime{}, err
 	}
-	status := "degraded"
+	status := "stopped"
 	if inspected.State.Running {
 		status = "healthy"
 		if inspected.State.Health.Status == "starting" {
@@ -1255,6 +1264,84 @@ func (d *Docker) RemoveApplication(ctx context.Context, serviceID string) error 
 	return err
 }
 
+func (d *Docker) RemoveOrphanApplicationCandidates(ctx context.Context) ([]string, error) {
+	filters := url.QueryEscape(`{"label":["selfhost.managed=true","selfhost.service.kind=application"]}`)
+	var containers []struct {
+		Names  []string          `json:"Names"`
+		Labels map[string]string `json:"Labels"`
+	}
+	if err := d.get(ctx, "/containers/json?all=1&filters="+filters, &containers); err != nil {
+		return nil, err
+	}
+	removed := []string{}
+	removeErrors := []error{}
+	for _, container := range containers {
+		if container.Labels["selfhost.managed"] != "true" || container.Labels["selfhost.service.kind"] != "application" {
+			continue
+		}
+		candidateName := ""
+		for _, name := range container.Names {
+			if isApplicationCandidateContainerName(name) {
+				candidateName = strings.TrimPrefix(name, "/")
+				break
+			}
+		}
+		if candidateName == "" {
+			continue
+		}
+		response, err := d.request(ctx, http.MethodDelete, "/containers/"+url.PathEscape(candidateName)+"?force=1&v=1", nil, nil)
+		if err != nil {
+			removeErrors = append(removeErrors, fmt.Errorf("remove %s: %w", candidateName, err))
+			continue
+		}
+		response.Body.Close()
+		removed = append(removed, candidateName)
+	}
+	return removed, errors.Join(removeErrors...)
+}
+
+func (d *Docker) StopProject(ctx context.Context, projectID string) error {
+	return d.stopContainer(ctx, containerName(projectID))
+}
+
+func (d *Docker) RestartProject(ctx context.Context, projectID string) error {
+	return d.restartContainer(ctx, containerName(projectID))
+}
+
+func (d *Docker) StopApplication(ctx context.Context, serviceID string) error {
+	return d.stopContainer(ctx, applicationContainerName(serviceID))
+}
+
+func (d *Docker) RestartApplication(ctx context.Context, serviceID string) error {
+	return d.restartContainer(ctx, applicationContainerName(serviceID))
+}
+
+func (d *Docker) StopDatabase(ctx context.Context, serviceID string) error {
+	return d.stopContainer(ctx, databaseContainerName(serviceID))
+}
+
+func (d *Docker) RestartDatabase(ctx context.Context, serviceID string) error {
+	return d.restartContainer(ctx, databaseContainerName(serviceID))
+}
+
+func (d *Docker) stopContainer(ctx context.Context, name string) error {
+	response, err := d.request(ctx, http.MethodPost, "/containers/"+url.PathEscape(name)+"/stop?t=10", nil, nil)
+	if err != nil {
+		return err
+	}
+	response.Body.Close()
+	return nil
+}
+
+func (d *Docker) restartContainer(ctx context.Context, name string) error {
+	response, err := d.request(ctx, http.MethodPost, "/containers/"+url.PathEscape(name)+"/restart?t=10", nil, nil)
+	if err != nil {
+		return err
+	}
+	response.Body.Close()
+	return nil
+}
+
 func (d *Docker) ApplicationService(ctx context.Context, serviceID, serviceName string) (Service, error) {
 	return d.applicationServiceContainer(ctx, applicationContainerName(serviceID), serviceName)
 }
@@ -1272,7 +1359,7 @@ func (d *Docker) applicationServiceContainer(ctx context.Context, name, serviceN
 	if err := d.get(ctx, "/containers/"+url.PathEscape(name)+"/json", &inspected); err != nil {
 		return Service{}, err
 	}
-	status := "degraded"
+	status := "stopped"
 	if inspected.State.Running {
 		status = "healthy"
 	}
@@ -1298,7 +1385,7 @@ func (d *Docker) ProjectService(ctx context.Context, projectID string) (Service,
 	if err := d.get(ctx, "/containers/"+url.PathEscape(name)+"/json", &inspected); err != nil {
 		return Service{}, err
 	}
-	status := "degraded"
+	status := "stopped"
 	if inspected.State.Running {
 		status = "healthy"
 	}

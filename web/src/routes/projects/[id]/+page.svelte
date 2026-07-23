@@ -12,6 +12,7 @@
   let data = { project: { name: 'Loading…', status: 'deploying' }, deployments: [], services: [], applicationServices: [], databaseServices: [] };
   let loading = true;
   let deploying = false;
+  let lifecycleBusy = '';
   let error = '';
   let notice = '';
   let platformProtocol = 'http:';
@@ -44,16 +45,13 @@
   let runtimeTriggersSaving = false;
   let runtimeTriggersError = '';
   let runtimeTriggersNotice = '';
-  let applicationLogService = null;
-  let applicationRuntimeLogs = [];
-  let applicationLogLimit = 300;
-  let applicationLogsLoading = false;
-  let applicationLogsError = '';
-  let applicationLogTimer;
-  let applicationLogsCopied = false;
   let applicationDeleteService = null;
   let applicationDeleteBusy = false;
   let applicationDeleteError = '';
+  let logTargetId = '';
+  let logView = 'runtime';
+  let logEvents = [];
+  let logRequest = 0;
   let logs = [];
   let logsLoading = false;
   let logsError = '';
@@ -83,15 +81,6 @@
   let exposureService = null;
   let exposurePort = 3306;
   let exposureSaving = false;
-  let databaseLogService = null;
-  let databaseLogTab = 'runtime';
-  let databaseRuntimeLogs = [];
-  let databaseDeployEvents = [];
-  let databaseLogLimit = 300;
-  let databaseLogsLoading = false;
-  let databaseLogsError = '';
-  let databaseLogTimer;
-  let databaseLogsCopied = false;
   let databaseDeleteService = null;
   let databaseDeleteConfirmation = '';
   let databaseDeleteVolume = false;
@@ -129,6 +118,12 @@
   $: applicationServices = data.applicationServices || [];
   $: legacyService = project.sourceType === 'empty' ? null : { id: 'main', name: project.name, imageUrl: project.sourceType === 'image' ? project.imageUrl : project.repository, containerPort: project.containerPort || 80, status: service?.status || project.status, container: service?.container || '', legacy: true };
   $: displayApplicationServices = [...(legacyService ? [legacyService] : []), ...applicationServices];
+  $: logTargets = [
+    ...displayApplicationServices.map((item) => ({ key: `application:${item.id}`, kind: 'application', ...item })),
+    ...databaseServices.map((item) => ({ key: `database:${item.id}`, kind: 'database', ...item }))
+  ];
+  $: activeLogTarget = logTargets.find((item) => item.key === logTargetId) || logTargets[0] || null;
+  $: if (activeLogTarget?.kind !== 'database' && logView !== 'runtime') logView = 'runtime';
   $: routeTargets = displayApplicationServices.map((item) => ({ ...item, id: item.legacy ? '' : item.id }));
   $: environmentTargets = displayApplicationServices;
   $: runtimeSettingsService = applicationServices.find((item) => item.id === runtimeSettingsServiceId) || applicationServices[0] || null;
@@ -137,11 +132,17 @@
   $: source = project.sourceType === 'empty' ? '' : project.sourceType === 'image' ? project.imageUrl : project.repository;
   $: filteredServiceRepositories = serviceRepositories.filter((item) => item.fullName.toLowerCase().includes(serviceRepositoryQuery.trim().toLowerCase()));
   $: domainURL = project.domain ? `${project.httpsEnabled ? 'https:' : platformProtocol}//${project.domain}${!project.httpsEnabled && platformPort ? ':' + platformPort : ''}` : '';
-  $: parsedLogs = logs.map(parseLogLine);
+  $: parsedLogs = logView === 'deployment'
+    ? logEvents.map((event, index) => ({
+        index: index + 1,
+        timestamp: event.createdAt || '',
+        time: event.createdAt ? new Date(event.createdAt).toLocaleTimeString() : '—',
+        message: `[${event.stage || 'deploy'}] ${event.message}`,
+        severity: event.type === 'error' ? 'error' : event.type === 'complete' ? 'info' : 'debug'
+      }))
+    : logs.map(parseLogLine);
   $: logCounts = parsedLogs.reduce((counts, entry) => ({ ...counts, [entry.severity]: (counts[entry.severity] || 0) + 1 }), { debug: 0, info: 0, warning: 0, error: 0 });
   $: visibleLogs = parsedLogs.filter((entry) => (logLevel === 'all' || entry.severity === logLevel) && entry.message.toLowerCase().includes(logQuery.trim().toLowerCase()));
-  $: parsedDatabaseLogs = databaseRuntimeLogs.map(parseLogLine);
-  $: parsedApplicationLogs = applicationRuntimeLogs.map(parseLogLine);
 
   onMount(async () => {
     platformProtocol = location.protocol || 'http:';
@@ -150,6 +151,7 @@
     const requestedTab = location.hash.slice(1);
     if (tabs.includes(requestedTab)) activeTab = requestedTab;
     await Promise.all([loadProject(), loadIntegrations()]);
+    await tick();
     if (activeTab === 'logs') {
       await loadLogs();
       startLogPolling();
@@ -163,8 +165,6 @@
 
   onDestroy(() => {
     stopLogPolling();
-    stopDatabaseLogPolling();
-    stopApplicationLogPolling();
     stopMetricsPolling();
     clearTimeout(projectPollTimer);
     clearTimeout(logsCopyTimer);
@@ -250,7 +250,7 @@
         registryId: payload.registryId || '',
 		containerPort: payload.containerPort || 80
       };
-      settingsNotice = 'Project configuration saved. Deploy again when you are ready to apply the new source.';
+      settingsNotice = 'Project details saved.';
     } catch (cause) {
       settingsError = cause instanceof Error ? cause.message : 'Could not update project';
     } finally {
@@ -287,8 +287,11 @@
     activeTab = tab;
     history.replaceState(null, '', '#' + tab);
     if (tab === 'logs') {
-      loadLogs();
-      startLogPolling();
+      tick().then(async () => {
+        if (activeTab !== 'logs') return;
+        await loadLogs();
+        startLogPolling();
+      });
     } else {
       stopLogPolling();
       if (tab === 'environment' && environmentVariables.length === 0) loadEnvironment();
@@ -506,23 +509,80 @@
   }
 
   async function loadLogs() {
-    if (logsLoading) return;
+    const target = activeLogTarget;
+    if (!target) {
+      logs = [];
+      logEvents = [];
+      logsError = '';
+      return;
+    }
+    const request = ++logRequest;
     logsLoading = true;
     logsError = '';
     try {
-      const response = await api('/api/projects/' + page.params.id + '/logs?lines=' + logLimit);
+      let endpoint;
+      if (target.kind === 'database' && logView === 'deployment') endpoint = `/api/databases/${target.id}/events`;
+      else if (target.kind === 'database') endpoint = `/api/databases/${target.id}/logs?lines=${logLimit}`;
+      else if (target.legacy) endpoint = `/api/projects/${page.params.id}/logs?lines=${logLimit}`;
+      else endpoint = `/api/services/${target.id}/logs?lines=${logLimit}`;
+      const response = await api(endpoint);
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || 'Could not load container logs');
-      logs = payload.lines || [];
+      if (!response.ok) throw new Error(payload.error || `Could not load ${logView === 'deployment' ? 'deployment events' : 'container logs'}`);
+      if (request !== logRequest) return;
+      if (logView === 'deployment') {
+        logEvents = payload.events || [];
+        logs = [];
+      } else {
+        logs = payload.lines || [];
+        logEvents = [];
+      }
       logsUpdated = new Date().toLocaleTimeString();
       await tick();
       if (logsLive && logConsole) logConsole.scrollTop = logConsole.scrollHeight;
     } catch (cause) {
-      logsError = cause instanceof Error ? cause.message : 'Could not load container logs';
+      if (request !== logRequest) return;
+      logsError = cause instanceof Error ? cause.message : 'Could not load logs';
       logs = [];
+      logEvents = [];
     } finally {
-      logsLoading = false;
+      if (request === logRequest) logsLoading = false;
     }
+  }
+
+  function openWorkloadLogs(item, kind, initialView = 'runtime') {
+    logTargetId = `${kind}:${item.id}`;
+    logView = kind === 'database' ? initialView : 'runtime';
+    logs = [];
+    logEvents = [];
+    logsError = '';
+    logsUpdated = '';
+    selectTab('logs');
+  }
+
+  async function selectLogTarget(key) {
+    stopLogPolling();
+    logTargetId = key;
+    logView = 'runtime';
+    logs = [];
+    logEvents = [];
+    logsError = '';
+    logsUpdated = '';
+    await tick();
+    await loadLogs();
+    startLogPolling();
+  }
+
+  async function selectLogView(view) {
+    if (!activeLogTarget || (view === 'deployment' && activeLogTarget.kind !== 'database')) return;
+    stopLogPolling();
+    logView = view;
+    logs = [];
+    logEvents = [];
+    logsError = '';
+    logsUpdated = '';
+    await tick();
+    await loadLogs();
+    startLogPolling();
   }
 
   function startLogPolling() {
@@ -893,45 +953,31 @@
     await loadProject(true);
   }
 
-  function openApplicationLogs(item) {
-    applicationLogService = item;
-    applicationRuntimeLogs = [];
-    applicationLogsError = '';
-    loadApplicationLogs();
-    stopApplicationLogPolling();
-    applicationLogTimer = setInterval(loadApplicationLogs, 2500);
-  }
-
-  function stopApplicationLogPolling() {
-    if (applicationLogTimer) clearInterval(applicationLogTimer);
-    applicationLogTimer = null;
-  }
-
-  function closeApplicationLogs() {
-    stopApplicationLogPolling();
-    applicationLogService = null;
-  }
-
-  async function loadApplicationLogs() {
-    if (!applicationLogService || applicationLogsLoading) return;
-    applicationLogsLoading = true;
+  async function controlWorkload(item, kind, action) {
+    if (lifecycleBusy) return;
+    const key = `${kind}:${item.id}:${action}`;
+    lifecycleBusy = key;
+    error = '';
+    notice = '';
     try {
-      const response = await api(`/api/services/${applicationLogService.id}/logs?lines=${applicationLogLimit}`);
+      let endpoint;
+      if (kind === 'database') endpoint = `/api/databases/${item.id}/${action}`;
+      else if (item.legacy) endpoint = `/api/projects/${page.params.id}/${action}`;
+      else endpoint = `/api/services/${item.id}/${action}`;
+      const response = await api(endpoint, { method: 'POST' });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || 'Could not load service logs');
-      applicationRuntimeLogs = payload.lines || [];
-      applicationLogsError = '';
+      if (!response.ok) throw new Error(payload.error || `Could not ${action} ${item.name}`);
+      notice = payload.message || `${item.name} ${action === 'stop' ? 'stopped' : 'restarted'}.`;
+      await loadProject(true);
     } catch (cause) {
-      applicationLogsError = cause instanceof Error ? cause.message : 'Could not load service logs';
+      error = cause instanceof Error ? cause.message : `Could not ${action} ${item.name}`;
     } finally {
-      applicationLogsLoading = false;
+      lifecycleBusy = '';
     }
   }
 
-  async function copyApplicationLogs() {
-    await writeClipboard(applicationRuntimeLogs.join('\n'));
-    applicationLogsCopied = true;
-    setTimeout(() => applicationLogsCopied = false, 1600);
+  function workloadActionBusy(item, kind, action) {
+    return lifecycleBusy === `${kind}:${item.id}:${action}`;
   }
 
   function openApplicationDelete(item) {
@@ -1051,58 +1097,6 @@
     await saveExposure(false);
   }
 
-  function openDatabaseLogs(item, initialTab = 'runtime') {
-    databaseLogService = item;
-    databaseLogTab = initialTab;
-    databaseRuntimeLogs = [];
-    databaseDeployEvents = [];
-    databaseLogsError = '';
-    loadDatabaseLogs();
-    stopDatabaseLogPolling();
-    databaseLogTimer = setInterval(loadDatabaseLogs, 2500);
-  }
-
-  function stopDatabaseLogPolling() {
-    if (databaseLogTimer) clearInterval(databaseLogTimer);
-    databaseLogTimer = null;
-  }
-
-  function closeDatabaseLogs() {
-    stopDatabaseLogPolling();
-    databaseLogService = null;
-  }
-
-  async function loadDatabaseLogs() {
-    if (!databaseLogService || databaseLogsLoading) return;
-    databaseLogsLoading = true;
-    try {
-      const [runtimeResponse, eventsResponse] = await Promise.all([
-        api(`/api/databases/${databaseLogService.id}/logs?lines=${databaseLogLimit}`),
-        api(`/api/databases/${databaseLogService.id}/events`)
-      ]);
-      const runtimePayload = await runtimeResponse.json();
-      const eventsPayload = await eventsResponse.json();
-      if (!runtimeResponse.ok) throw new Error(runtimePayload.error || 'Could not load runtime logs');
-      if (!eventsResponse.ok) throw new Error(eventsPayload.error || 'Could not load deployment logs');
-      databaseRuntimeLogs = runtimePayload.lines || [];
-      databaseDeployEvents = eventsPayload.events || [];
-      databaseLogsError = '';
-    } catch (cause) {
-      databaseLogsError = cause instanceof Error ? cause.message : 'Could not load database logs';
-    } finally {
-      databaseLogsLoading = false;
-    }
-  }
-
-  async function copyDatabaseLogs() {
-    const text = databaseLogTab === 'runtime'
-      ? databaseRuntimeLogs.join('\n')
-      : databaseDeployEvents.map((event) => `${event.createdAt} [${event.stage.toUpperCase()}] ${event.message}`).join('\n');
-    await writeClipboard(text);
-    databaseLogsCopied = true;
-    setTimeout(() => databaseLogsCopied = false, 1600);
-  }
-
   function openDatabaseDelete(item) {
     databaseDeleteService = item;
     databaseDeleteConfirmation = '';
@@ -1218,10 +1212,12 @@
             <div><strong>{item.name}</strong><small>{item.sourceType === 'repository' ? `${item.repository}@${item.branch}` : (item.imageUrl || 'No image configured')} · :{item.containerPort}{item.command ? ` · command ${item.command}` : ''} · {item.container || 'container not created'}</small></div>
             <Status value={item.status} />
             <div class="application-service-actions">
-              <button onclick={() => item.legacy ? selectTab('logs') : openApplicationLogs(item)} disabled={!item.container}><Icon name="logs" size={13}/> Logs</button>
+              <button onclick={() => openWorkloadLogs(item, 'application')} disabled={!item.container}><Icon name="logs" size={13}/> Logs</button>
               <button onclick={() => openEnvironmentFor(item.id)}><Icon name="settings" size={13}/> Env</button>
               {#if !item.legacy}<button class="icon-only" title="Configure service" aria-label={'Configure ' + item.name} onclick={() => openServiceSettings(item)}><Icon name="settings" size={14}/></button>{/if}
-              <button onclick={() => item.legacy ? deploy() : deployApplicationService(item)} disabled={item.status === 'deploying' || item.legacy && project.sourceType !== 'image'}><Icon name="play" size={13}/>{item.status === 'deploying' ? 'Pulling…' : 'Deploy'}</button>
+              {#if item.status !== 'stopped'}<button class="lifecycle-stop" onclick={() => controlWorkload(item, 'application', 'stop')} disabled={!item.container || item.status === 'deploying' || lifecycleBusy !== ''}><Icon name="stop" size={12}/>{workloadActionBusy(item, 'application', 'stop') ? 'Stopping…' : 'Stop'}</button>{/if}
+              <button class="lifecycle-restart" onclick={() => controlWorkload(item, 'application', 'restart')} disabled={!item.container || item.status === 'deploying' || lifecycleBusy !== ''}><Icon name={item.status === 'stopped' ? 'play' : 'refresh'} size={13}/>{workloadActionBusy(item, 'application', 'restart') ? (item.status === 'stopped' ? 'Starting…' : 'Restarting…') : (item.status === 'stopped' ? 'Start' : 'Restart')}</button>
+              <button onclick={() => item.legacy ? deploy() : deployApplicationService(item)} disabled={item.status === 'deploying' || lifecycleBusy !== '' || item.legacy && project.sourceType !== 'image'}><Icon name="rocket" size={13}/>{item.status === 'deploying' ? 'Pulling…' : 'Deploy'}</button>
               {#if !item.legacy}<button class="danger-text icon-only" title="Remove service" aria-label={'Remove ' + item.name} onclick={() => openApplicationDelete(item)}><Icon name="trash" size={14}/></button>{/if}
             </div>
           </article>
@@ -1232,8 +1228,10 @@
             <div><strong>{item.name}</strong><small>{databasePresets[item.engine]?.label || item.engine} · {item.internalAddress}</small></div>
             <div class="database-state"><Status value={item.status} /><em class:public={item.publicEnabled}>{item.publicEnabled ? `Public · ${item.publicPort}` : 'Private'}</em></div>
             <div class="database-actions">
-              <button onclick={() => openDatabaseLogs(item)}><Icon name="logs" size={13}/> Logs</button>
+              <button onclick={() => openWorkloadLogs(item, 'database')}><Icon name="logs" size={13}/> Logs</button>
               <button onclick={() => showCredentials(item)}><Icon name="key" size={13}/> Credentials</button>
+              {#if item.status !== 'stopped'}<button class="lifecycle-stop" onclick={() => controlWorkload(item, 'database', 'stop')} disabled={!item.container || item.status === 'deploying' || lifecycleBusy !== ''}><Icon name="stop" size={12}/>{workloadActionBusy(item, 'database', 'stop') ? 'Stopping…' : 'Stop'}</button>{/if}
+              <button class="lifecycle-restart" onclick={() => controlWorkload(item, 'database', 'restart')} disabled={!item.container || item.status === 'deploying' || lifecycleBusy !== ''}><Icon name={item.status === 'stopped' ? 'play' : 'refresh'} size={13}/>{workloadActionBusy(item, 'database', 'restart') ? (item.status === 'stopped' ? 'Starting…' : 'Restarting…') : (item.status === 'stopped' ? 'Start' : 'Restart')}</button>
               {#if item.publicEnabled}<button class="danger-text" onclick={() => makePrivate(item)} disabled={exposureSaving}><Icon name="network" size={13}/> Private</button>{:else}<button onclick={() => openExposure(item)}><Icon name="network" size={13}/> Expose</button>{/if}
               <button class="danger-text icon-only" title="Remove database" aria-label={'Remove ' + item.name} onclick={() => openDatabaseDelete(item)}><Icon name="trash" size={14}/></button>
             </div>
@@ -1316,8 +1314,10 @@
                 <div><dt>Persistent volume</dt><dd><code>{item.volumeName}</code></dd></div>
               </dl>
               <div class="database-card-actions">
-                <button onclick={() => openDatabaseLogs(item, 'runtime')}><Icon name="activity" size={14} /> Runtime logs</button>
-                <button onclick={() => openDatabaseLogs(item, 'deploy')}><Icon name="rocket" size={14} /> Deployment logs</button>
+                <button onclick={() => openWorkloadLogs(item, 'database', 'runtime')}><Icon name="activity" size={14} /> Runtime logs</button>
+                <button onclick={() => openWorkloadLogs(item, 'database', 'deployment')}><Icon name="rocket" size={14} /> Deployment logs</button>
+                {#if item.status !== 'stopped'}<button class="lifecycle-stop" onclick={() => controlWorkload(item, 'database', 'stop')} disabled={!item.container || item.status === 'deploying' || lifecycleBusy !== ''}><Icon name="stop" size={12}/>{workloadActionBusy(item, 'database', 'stop') ? 'Stopping…' : 'Stop'}</button>{/if}
+                <button class="lifecycle-restart" onclick={() => controlWorkload(item, 'database', 'restart')} disabled={!item.container || item.status === 'deploying' || lifecycleBusy !== ''}><Icon name={item.status === 'stopped' ? 'play' : 'refresh'} size={13}/>{workloadActionBusy(item, 'database', 'restart') ? (item.status === 'stopped' ? 'Starting…' : 'Restarting…') : (item.status === 'stopped' ? 'Start' : 'Restart')}</button>
                 <button onclick={() => showCredentials(item)}><Icon name="key" size={14}/> Credentials</button>
                 {#if item.publicEnabled}<button onclick={() => makePrivate(item)} disabled={exposureSaving}><Icon name="network" size={14}/> Make private</button>{:else}<button onclick={() => openExposure(item)}><Icon name="network" size={14}/> Networking</button>{/if}
                 <button class="delete-database" onclick={() => openDatabaseDelete(item)}><Icon name="trash" size={14}/> Delete database</button>
@@ -1340,18 +1340,20 @@
   {:else if activeTab === 'logs'}
     <section class="panel log-panel">
       <header>
-        <div><span>Container output</span><h3>Runtime logs</h3></div>
+        <div><span>{activeLogTarget?.kind === 'database' ? 'Database observability' : 'Container output'}</span><h3>{activeLogTarget ? `${activeLogTarget.name} logs` : 'Runtime logs'}</h3></div>
         <div class="log-actions">
           {#if logsUpdated}<small>Updated {logsUpdated}</small>{/if}
-          <label class="line-limit">
-            <span>Lines</span>
-            <select bind:value={logLimit} onchange={changeLogLimit} aria-label="Number of log lines">
-              <option value={100}>100</option>
-              <option value={300}>300</option>
-              <option value={500}>500</option>
-              <option value={1000}>1,000</option>
-            </select>
-          </label>
+          {#if logView === 'runtime'}
+            <label class="line-limit">
+              <span>Lines</span>
+              <select bind:value={logLimit} onchange={changeLogLimit} aria-label="Number of log lines">
+                <option value={100}>100</option>
+                <option value={300}>300</option>
+                <option value={500}>500</option>
+                <option value={1000}>1,000</option>
+              </select>
+            </label>
+          {/if}
           <button class="live-toggle" class:live={logsLive} onclick={toggleLiveLogs} aria-pressed={logsLive}>
             <i></i>{logsLive ? 'Live · Pause' : 'Paused · Resume'}
           </button>
@@ -1359,24 +1361,45 @@
           <button onclick={loadLogs} disabled={logsLoading}>{logsLoading ? 'Refreshing…' : 'Refresh'}</button>
         </div>
       </header>
-      <div class="log-toolbar">
-        <div class="severity-filters" aria-label="Filter logs by severity">
-          <button class:active={logLevel === 'all'} onclick={() => logLevel = 'all'}>All <span>{logs.length}</span></button>
-          <button class="debug" class:active={logLevel === 'debug'} onclick={() => logLevel = 'debug'}>Debug <span>{logCounts.debug}</span></button>
-          <button class="info" class:active={logLevel === 'info'} onclick={() => logLevel = 'info'}>Info <span>{logCounts.info}</span></button>
-          <button class="warning" class:active={logLevel === 'warning'} onclick={() => logLevel = 'warning'}>Warning <span>{logCounts.warning}</span></button>
-          <button class="error" class:active={logLevel === 'error'} onclick={() => logLevel = 'error'}>Error <span>{logCounts.error}</span></button>
+      {#if logTargets.length > 0}
+        <div class="log-source-strip" aria-label="Choose log source">
+          {#each logTargets as item}
+            <button class:active={activeLogTarget?.key === item.key} onclick={() => selectLogTarget(item.key)}>
+              <span class:database={item.kind === 'database'} class="log-source-icon"><Icon name={item.kind === 'database' ? 'database' : 'box'} size={14}/></span>
+              <span><strong>{item.name}</strong><small>{item.kind === 'database' ? (databasePresets[item.engine]?.label || item.engine) : (item.legacy ? 'Main application' : `Application · :${item.containerPort}`)}</small></span>
+              <Status value={item.status}/>
+            </button>
+          {/each}
         </div>
-        <label><span class="sr-only">Search logs</span><input bind:value={logQuery} type="search" placeholder="Search log output" /></label>
-      </div>
-      {#if logsLoading && logs.length === 0}
+        <div class="log-toolbar">
+          <div class="log-filter-group">
+            {#if activeLogTarget?.kind === 'database'}
+              <div class="log-view-tabs" aria-label="Choose database log type">
+                <button class:active={logView === 'runtime'} onclick={() => selectLogView('runtime')}>Runtime</button>
+                <button class:active={logView === 'deployment'} onclick={() => selectLogView('deployment')}>Deployment</button>
+              </div>
+            {/if}
+            <div class="severity-filters" aria-label="Filter logs by severity">
+              <button class:active={logLevel === 'all'} onclick={() => logLevel = 'all'}>All <span>{parsedLogs.length}</span></button>
+              <button class="debug" class:active={logLevel === 'debug'} onclick={() => logLevel = 'debug'}>Debug <span>{logCounts.debug}</span></button>
+              <button class="info" class:active={logLevel === 'info'} onclick={() => logLevel = 'info'}>Info <span>{logCounts.info}</span></button>
+              <button class="warning" class:active={logLevel === 'warning'} onclick={() => logLevel = 'warning'}>Warning <span>{logCounts.warning}</span></button>
+              <button class="error" class:active={logLevel === 'error'} onclick={() => logLevel = 'error'}>Error <span>{logCounts.error}</span></button>
+            </div>
+          </div>
+          <label><span class="sr-only">Search logs</span><input bind:value={logQuery} type="search" placeholder="Search log output" /></label>
+        </div>
+      {/if}
+      {#if !activeLogTarget}
+        <div class="log-state"><div class="empty-icon"><Icon name="logs" size={22}/></div><div><h4>No workloads to inspect</h4><p>Add an application service or database and its logs will appear here.</p></div></div>
+      {:else if logsLoading && parsedLogs.length === 0}
         <div class="log-state"><span class="spinner"></span><div><h4>Reading container logs</h4><p>Loading the latest output from Docker.</p></div></div>
       {:else if logsError}
         <div class="log-state"><div class="empty-icon">!</div><div><h4>Logs unavailable</h4><p>{logsError}</p></div></div>
-      {:else if logs.length === 0}
-        <div class="log-state"><div class="empty-icon">LOG</div><div><h4>No output yet</h4><p>The container has not written anything to stdout or stderr.</p></div></div>
+      {:else if parsedLogs.length === 0}
+        <div class="log-state"><div class="empty-icon">LOG</div><div><h4>{logView === 'deployment' ? 'No deployment events yet' : 'No output yet'}</h4><p>{logView === 'deployment' ? 'Deployment events will appear after the next database apply.' : 'The container has not written anything to stdout or stderr.'}</p></div></div>
       {:else}
-        <div class="terminal-head"><span></span><strong>{service?.container || 'project container'}</strong><small>{logs.length} lines</small></div>
+        <div class="terminal-head"><span></span><strong>{logView === 'deployment' ? `${activeLogTarget.name} deployment activity` : (activeLogTarget.container || activeLogTarget.name)}</strong><small>{parsedLogs.length} {logView === 'deployment' ? 'events' : 'lines'}</small></div>
         {#if visibleLogs.length === 0}
           <div class="filtered-empty"><strong>No matching log lines</strong><span>Change the severity filter or search query.</span></div>
         {:else}
@@ -1485,35 +1508,17 @@
   {:else if activeTab === 'settings'}
     <div class="settings-stack">
       <section class="panel project-editor">
-        <header><div><span>Configuration</span><h3>Project settings</h3></div><code>{project.id}</code></header>
+        <header><div><span>Project</span><h3>Project details</h3></div><code>{project.id}</code></header>
         <form onsubmit={(event) => { event.preventDefault(); saveProjectSettings(); }}>
-          <div class="settings-intro"><h4>Identity and deployment source</h4><p>Changes affect the next deployment. The currently running container continues serving traffic until you deploy again.</p></div>
           {#if settingsError}<div class="domain-feedback error"><strong>Project not updated</strong><span>{settingsError}</span></div>{/if}
-          {#if settingsNotice}<div class="domain-feedback success"><strong>Settings saved</strong><span>{settingsNotice}</span></div>{/if}
-          <label class="settings-field"><span>Project name</span><input bind:value={settingsForm.name} required maxlength="100" /></label>
-          <fieldset class="source-choice">
-            <legend>Deployment source</legend>
-            <button type="button" class:active={settingsForm.sourceType === 'empty'} onclick={() => settingsForm.sourceType = 'empty'}><Icon name="grid" size={17}/><span><strong>Service-first</strong><small>No legacy default container</small></span></button>
-            <button type="button" class:active={settingsForm.sourceType === 'image'} onclick={() => settingsForm.sourceType = 'image'}><Icon name="box" size={17}/><span><strong>Container image</strong><small>Pull from a Docker registry</small></span></button>
-            <button type="button" class:active={settingsForm.sourceType === 'repository'} onclick={() => settingsForm.sourceType = 'repository'}><Icon name="git" size={17}/><span><strong>Git repository</strong><small>GitHub, GitLab, or Git URL</small></span></button>
-          </fieldset>
-          {#if settingsForm.sourceType === 'image'}
-            <div class="settings-grid">
-              <label class="settings-field wide"><span>Container image</span><input bind:value={settingsForm.imageUrl} required placeholder="ghcr.io/acme/customer-api:latest" spellcheck="false" /></label>
-              <label class="settings-field"><span>Registry credential</span><select bind:value={settingsForm.registryId}><option value="">Public image / no credential</option>{#each integrations.registries || [] as item}<option value={item.id}>{item.name} · {item.registryUrl}</option>{/each}</select></label>
-			  <label class="settings-field"><span>Container port</span><input type="number" min="1" max="65535" bind:value={settingsForm.containerPort} required /></label>
-              <div class="field-note"><strong>Private registry?</strong><span>Select a saved credential or <a href="/integrations">add one in Sources</a>.</span></div>
+          {#if settingsNotice}<div class="domain-feedback success"><strong>Project updated</strong><span>{settingsNotice}</span></div>{/if}
+          <div class="project-identity-layout">
+            <label class="settings-field"><span>Project name</span><input bind:value={settingsForm.name} required maxlength="100" /></label>
+            <div class="project-boundary-note">
+              <span><Icon name="layers" size={17}/></span>
+              <div><strong>Shared service boundary</strong><p>{applicationServices.length} application service{applicationServices.length === 1 ? '' : 's'} · {databaseServices.length} database{databaseServices.length === 1 ? '' : 's'} · one private Docker network</p></div>
             </div>
-          {:else if settingsForm.sourceType === 'repository'}
-            <div class="settings-grid">
-              <label class="settings-field wide"><span>Repository URL</span><input bind:value={settingsForm.repository} required placeholder="https://github.com/acme/customer-api.git" spellcheck="false" /></label>
-              <label class="settings-field"><span>Branch</span><input bind:value={settingsForm.branch} required placeholder="main" spellcheck="false" /></label>
-              <label class="settings-field"><span>Connected account <em>optional</em></span><select bind:value={settingsForm.connectionId}><option value="">Public repository</option>{#each integrations.connections || [] as item}<option value={item.id}>{item.provider} · {item.accountName}</option>{/each}</select></label>
-              <div class="repository-note"><strong>Repository source can be saved now.</strong><span>The Git clone and image-build deployment worker is the next backend feature; current deployments run prebuilt images.</span></div>
-            </div>
-          {:else}
-            <div class="service-first-settings"><Icon name="grid" size={18}/><div><strong>This project has no default application.</strong><span>Add, deploy, route, and configure every workload independently from the Services panel.</span></div></div>
-          {/if}
+          </div>
           <footer><span>Last updated {new Date(project.updatedAt).toLocaleString()}</span><button class="save-settings" type="submit" disabled={settingsSaving}>{settingsSaving ? 'Saving changes…' : 'Save changes'}</button></footer>
         </form>
       </section>
@@ -1628,27 +1633,6 @@
   </div>
 {/if}
 
-{#if databaseLogService}
-  <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) closeDatabaseLogs(); }}>
-    <div class="modal database-logs-modal" role="dialog" aria-modal="true" aria-labelledby="database-logs-title">
-      <header><div><span>Database observability</span><h2 id="database-logs-title">{databaseLogService.name} logs</h2></div><button aria-label="Close" onclick={closeDatabaseLogs}>×</button></header>
-      <div class="database-log-toolbar">
-        <div class="database-log-tabs"><button class:active={databaseLogTab === 'runtime'} onclick={() => databaseLogTab = 'runtime'}>Runtime</button><button class:active={databaseLogTab === 'deploy'} onclick={() => databaseLogTab = 'deploy'}>Deployment <span>{databaseDeployEvents.length}</span></button></div>
-        <div class="database-log-actions"><label>Lines <select bind:value={databaseLogLimit} onchange={loadDatabaseLogs}><option value={100}>100</option><option value={300}>300</option><option value={500}>500</option><option value={1000}>1,000</option></select></label><button onclick={loadDatabaseLogs} disabled={databaseLogsLoading}>{databaseLogsLoading ? 'Refreshing…' : 'Refresh'}</button><button onclick={copyDatabaseLogs}>{databaseLogsCopied ? 'Copied' : 'Copy'}</button></div>
-      </div>
-      {#if databaseLogsError}<div class="database-log-error">{databaseLogsError}</div>{/if}
-      <div class="database-log-console">
-        {#if databaseLogTab === 'runtime'}
-          {#if parsedDatabaseLogs.length === 0}<div class="log-empty">No runtime output yet.</div>{:else}{#each parsedDatabaseLogs as entry}<div class="database-log-line {entry.severity}"><time>{entry.timestamp || '—'}</time><b>{entry.severity}</b><span>{entry.message}</span></div>{/each}{/if}
-        {:else}
-          {#if databaseDeployEvents.length === 0}<div class="log-empty">Deployment events will appear after the next database apply.</div>{:else}{#each databaseDeployEvents as event}<div class="database-log-line {event.type === 'complete' ? 'info' : event.type === 'error' ? 'error' : 'debug'}"><time>{new Date(event.createdAt).toLocaleTimeString()}</time><b>{event.stage}</b><span>{event.message}</span></div>{/each}{/if}
-        {/if}
-      </div>
-      <footer><span class="live-indicator"><i></i> Live · refreshes every 2.5s</span><button class="primary" onclick={closeDatabaseLogs}>Done</button></footer>
-    </div>
-  </div>
-{/if}
-
 {#if databaseDeleteService}
   <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget && !databaseDeleteBusy) databaseDeleteService = null; }}>
     <div class="modal database-delete-modal" role="dialog" aria-modal="true" aria-labelledby="database-delete-title">
@@ -1660,20 +1644,6 @@
         <label class="confirm-field"><span>Type <code>{databaseDeleteService.name}</code> to confirm</span><input bind:value={databaseDeleteConfirmation} autocomplete="off" spellcheck="false" placeholder={databaseDeleteService.name} /></label>
         <footer><button type="button" onclick={() => databaseDeleteService = null} disabled={databaseDeleteBusy}>Cancel</button><button class="destructive" type="submit" disabled={databaseDeleteBusy || databaseDeleteConfirmation !== databaseDeleteService.name}>{databaseDeleteBusy ? 'Removing…' : databaseDeleteVolume ? 'Delete database and data' : 'Remove and retain volume'}</button></footer>
       </form>
-    </div>
-  </div>
-{/if}
-
-{#if applicationLogService}
-  <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) closeApplicationLogs(); }}>
-    <div class="modal database-logs-modal" role="dialog" aria-modal="true" aria-labelledby="application-logs-title">
-      <header><div><span>Application observability</span><h2 id="application-logs-title">{applicationLogService.name} logs</h2></div><button aria-label="Close" onclick={closeApplicationLogs}>×</button></header>
-      <div class="database-log-toolbar"><span class="live-indicator"><i></i> Live runtime output</span><div class="database-log-actions"><label>Lines <select bind:value={applicationLogLimit} onchange={loadApplicationLogs}><option value={100}>100</option><option value={300}>300</option><option value={500}>500</option><option value={1000}>1,000</option></select></label><button onclick={loadApplicationLogs} disabled={applicationLogsLoading}>{applicationLogsLoading ? 'Refreshing…' : 'Refresh'}</button><button onclick={copyApplicationLogs}>{applicationLogsCopied ? 'Copied' : 'Copy'}</button></div></div>
-      {#if applicationLogsError}<div class="database-log-error">{applicationLogsError}</div>{/if}
-      <div class="database-log-console">
-        {#if parsedApplicationLogs.length === 0}<div class="log-empty">No runtime output yet.</div>{:else}{#each parsedApplicationLogs as entry}<div class="database-log-line {entry.severity}"><time>{entry.timestamp || '—'}</time><b>{entry.severity}</b><span>{entry.message}</span></div>{/each}{/if}
-      </div>
-      <footer><span class="live-indicator"><i></i> Refreshes every 2.5s</span><button class="primary" onclick={closeApplicationLogs}>Done</button></footer>
     </div>
   </div>
 {/if}
@@ -1944,6 +1914,7 @@
   .state p { margin-top: var(--space-1); font-size: var(--text-sm); }
 
   /* ---------- Services ---------- */
+  .services { container-type: inline-size; }
   .service-head-actions { display: flex !important; grid-auto-flow: column; align-items: center; gap: var(--space-2) !important; }
   .service-head-actions b { min-width: 30px; height: 30px; display: grid; place-items: center; border-radius: var(--radius-sm); background: var(--color-paper-subtle); font: 600 var(--text-sm) var(--font-mono); }
   .service-head-actions button { min-height: 32px; padding: 0 var(--space-3); display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-sm); font-weight: 600; cursor: pointer; }
@@ -1956,10 +1927,12 @@
   .services article strong { font-size: var(--text-md); }
   .services article small { overflow: hidden; color: var(--color-muted); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
   .application-service-row, .database-row { border-top: 1px solid var(--color-rule); }
-  .application-service-actions, .database-actions { display: flex !important; grid-auto-flow: column; gap: var(--space-1) !important; }
+  .application-service-actions, .database-actions { display: flex !important; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-1) !important; }
   .application-service-actions button, .database-actions button { min-height: 32px; padding: 0 var(--space-2); display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: transparent; color: var(--color-ink); font-size: var(--text-xs); font-weight: 600; cursor: pointer; }
   .application-service-actions button:hover:not(:disabled), .database-actions button:hover:not(:disabled) { background: var(--color-paper-subtle); }
   .application-service-actions .danger-text, .database-actions .danger-text { color: var(--color-danger); }
+  .application-service-actions .lifecycle-stop, .database-actions .lifecycle-stop, .database-card-actions .lifecycle-stop { border-color: color-mix(in srgb, var(--color-warning) 36%, var(--color-rule)); color: var(--color-warning); }
+  .application-service-actions .lifecycle-restart, .database-actions .lifecycle-restart, .database-card-actions .lifecycle-restart { border-color: color-mix(in srgb, var(--color-info) 34%, var(--color-rule)); color: var(--color-info); }
   .application-service-actions .icon-only, .database-actions .icon-only { width: 32px; padding: 0; }
   .database-state { justify-items: end; gap: var(--space-1) !important; }
   .database-state em { color: var(--color-muted); font-size: var(--text-2xs); font-style: normal; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
@@ -2049,6 +2022,16 @@
 
   /* ---------- Logs tab ---------- */
   .log-panel { min-height: 430px; }
+  .log-source-strip { padding: var(--space-3) var(--space-4); display: flex; align-items: stretch; gap: var(--space-2); overflow-x: auto; border-bottom: 1px solid var(--color-rule); background: var(--color-surface-subtle); }
+  .log-source-strip > button { min-width: 210px; min-height: 58px; padding: var(--space-2) var(--space-3); display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-paper-raised); color: var(--color-muted); text-align: left; cursor: pointer; transition: border-color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out); }
+  .log-source-strip > button:hover { border-color: var(--color-rule-strong); }
+  .log-source-strip > button.active { border-color: var(--color-accent); background: var(--color-accent-soft); color: var(--color-accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent); }
+  .log-source-icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--radius-sm); background: var(--color-paper-subtle); color: var(--color-info); }
+  .log-source-icon.database { color: var(--color-warning); }
+  .log-source-strip button > span:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
+  .log-source-strip strong, .log-source-strip small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log-source-strip strong { color: var(--color-ink); font-size: var(--text-sm); }
+  .log-source-strip small { font-size: var(--text-xs); }
   .log-actions { display: flex !important; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-2) !important; }
   .log-actions small { color: var(--color-muted); font-size: var(--text-xs); white-space: nowrap; }
   .log-actions button { min-height: 32px; padding: 0 var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-xs); font-weight: 600; cursor: pointer; }
@@ -2061,6 +2044,10 @@
   .live-toggle.live { border-color: color-mix(in srgb, var(--color-success) 40%, var(--color-rule)); color: var(--color-success); }
   .live-toggle.live i { background: var(--color-success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-success) 14%, transparent); animation: live-pulse 1.8s ease-out infinite; }
   .log-toolbar { min-height: 54px; padding: var(--space-2) var(--space-4); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); border-bottom: 1px solid var(--color-rule); background: var(--color-paper-raised); }
+  .log-filter-group { min-width: 0; display: flex; align-items: center; gap: var(--space-2); }
+  .log-view-tabs { padding: 3px; display: flex; align-items: center; gap: 2px; flex: 0 0 auto; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
+  .log-view-tabs button { min-height: 24px; padding: 0 var(--space-2); border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--color-muted); font-size: var(--text-xs); font-weight: 600; cursor: pointer; }
+  .log-view-tabs button.active { background: var(--color-paper-raised); color: var(--color-ink); box-shadow: var(--shadow-xs); }
   .severity-filters { display: flex; align-items: center; gap: var(--space-1); overflow-x: auto; }
   .severity-filters button { min-height: 30px; padding: 0 var(--space-2); display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--color-muted); font-size: var(--text-xs); font-weight: 600; white-space: nowrap; cursor: pointer; }
   .severity-filters button span { min-width: 19px; height: 19px; padding: 0 var(--space-1); display: grid; place-items: center; border-radius: var(--radius-xs); background: var(--color-paper-subtle); color: var(--color-muted); font: 500 var(--text-2xs) var(--font-mono); }
@@ -2219,9 +2206,11 @@
   .project-editor { min-height: 0; }
   .project-editor > header code { color: var(--color-muted); font-size: var(--text-xs); }
   .project-editor > form { padding: var(--space-5); }
-  .settings-intro { margin-bottom: var(--space-4); }
-  .settings-intro h4 { margin: 0 0 var(--space-1); font-size: var(--text-lg); }
-  .settings-intro p { max-width: 68ch; margin: 0; color: var(--color-muted); font-size: var(--text-sm); line-height: 1.6; }
+  .project-identity-layout { display: grid; grid-template-columns: minmax(240px, 0.8fr) minmax(320px, 1.2fr); align-items: end; gap: var(--space-4); }
+  .project-boundary-note { min-height: 62px; padding: var(--space-3) var(--space-4); display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface-subtle); }
+  .project-boundary-note > span { width: 34px; height: 34px; display: grid; place-items: center; border-radius: var(--radius-sm); background: var(--color-accent-soft); color: var(--color-accent); }
+  .project-boundary-note strong { font-size: var(--text-sm); }
+  .project-boundary-note p { margin: 3px 0 0; color: var(--color-muted); font-size: var(--text-xs); line-height: 1.45; }
   .settings-field { display: grid; gap: var(--space-2); color: var(--color-ink); font-size: var(--text-xs); font-weight: 600; }
   .settings-field span { display: flex; align-items: center; gap: var(--space-1); }
   .settings-field em { color: var(--color-muted); font-style: normal; font-weight: 500; }
@@ -2234,19 +2223,8 @@
   .health-check-note { min-height: 60px; padding: var(--space-3); display: grid; align-content: center; gap: 4px; border: 1px dashed var(--color-rule-strong); border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
   .health-check-note strong { color: var(--color-ink); font-size: var(--text-xs); }
   .health-check-note small { color: var(--color-muted); font-size: var(--text-xs); font-weight: 500; line-height: 1.5; }
-  .source-choice { margin: var(--space-4) 0; padding: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); border: 0; }
-  .source-choice legend { margin-bottom: var(--space-2); color: var(--color-ink); font-size: var(--text-xs); font-weight: 600; }
-  .source-choice button { min-height: 62px; padding: var(--space-3); display: flex; align-items: center; gap: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-muted); text-align: left; cursor: pointer; }
-  .source-choice button.active { border-color: var(--color-accent); background: var(--color-accent-soft); color: var(--color-accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent); }
-  .source-choice button span { display: grid; gap: 2px; }
-  .source-choice strong { color: var(--color-ink); font-size: var(--text-sm); }
-  .source-choice small { font-size: var(--text-xs); }
   .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); }
   .settings-grid .wide { grid-column: 1 / -1; }
-  .field-note, .repository-note { min-height: 40px; align-self: end; display: grid; align-content: center; gap: 2px; color: var(--color-muted); font-size: var(--text-xs); }
-  .field-note strong, .repository-note strong { color: var(--color-ink); }
-  .field-note a { color: var(--color-accent); text-decoration: none; }
-  .repository-note { grid-column: 1 / -1; padding: var(--space-3); border: 1px solid color-mix(in srgb, var(--color-warning) 34%, var(--color-rule)); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-warning) 7%, var(--color-paper-raised)); }
   .project-editor form > footer { margin: var(--space-5) calc(var(--space-5) * -1) calc(var(--space-5) * -1); padding: var(--space-3) var(--space-5); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); border-top: 1px solid var(--color-rule); background: var(--color-surface-subtle); }
   .project-editor form > footer > span { color: var(--color-muted); font: 500 var(--text-xs) var(--font-mono); }
   .save-settings { min-height: 36px; padding: 0 var(--space-4); display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--color-accent); border-radius: var(--radius-sm); background: var(--color-accent); color: var(--color-accent-ink); font-size: var(--text-sm); font-weight: 600; cursor: pointer; }
@@ -2315,10 +2293,6 @@
   .runtime-settings-empty h4 { margin: 0 0 4px; font-size: var(--text-md); }
   .runtime-settings-empty p { margin: 0; color: var(--color-muted); font-size: var(--text-sm); }
   .runtime-settings-empty button { min-height: 36px; padding: 0 var(--space-4); display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--color-accent); border-radius: var(--radius-sm); background: var(--color-accent); color: var(--color-accent-ink); font-size: var(--text-sm); font-weight: 600; cursor: pointer; }
-  .service-first-settings { padding: var(--space-4); display: flex; align-items: center; gap: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface-subtle); color: var(--color-accent); }
-  .service-first-settings div { display: grid; gap: 2px; }
-  .service-first-settings strong { color: var(--color-ink); font-size: var(--text-sm); }
-  .service-first-settings span { color: var(--color-muted); font-size: var(--text-xs); }
   .danger-zone { min-height: 100px; padding: var(--space-5); display: flex; align-items: center; justify-content: space-between; gap: var(--space-5); border: 1px solid color-mix(in srgb, var(--color-danger) 35%, var(--color-rule)); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--color-danger) 4%, var(--color-paper-raised)); }
   .danger-zone span { color: var(--color-danger); font-size: var(--text-2xs); font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
   .danger-zone h3 { margin: var(--space-1) 0; font-size: var(--text-md); }
@@ -2409,33 +2383,6 @@
   .credential-list button { min-height: 28px; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: transparent; color: var(--color-accent); font-size: var(--text-xs); font-weight: 600; cursor: pointer; }
   .secret-note { margin: var(--space-2) var(--space-5) var(--space-5); padding: var(--space-3); border-radius: var(--radius-sm); background: var(--color-surface-subtle); color: var(--color-muted); font-size: var(--text-xs); line-height: 1.5; }
 
-  /* ---------- Log modals ---------- */
-  .database-logs-modal { width: min(960px, calc(100vw - 32px)); }
-  .database-log-toolbar { padding: var(--space-3) var(--space-5); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); border-bottom: 1px solid var(--color-rule); }
-  .database-log-tabs, .database-log-actions { display: flex; align-items: center; gap: var(--space-2); }
-  .database-log-tabs button, .database-log-actions button, .database-log-actions select { min-height: 30px; padding: 0 var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-xs); cursor: pointer; }
-  .database-log-tabs button.active { border-color: var(--color-accent); background: var(--color-accent-soft); color: var(--color-accent); }
-  .database-log-tabs span { margin-left: 4px; color: var(--color-muted); font: 500 var(--text-2xs) var(--font-mono); }
-  .database-log-actions label { display: flex; align-items: center; gap: var(--space-2); color: var(--color-muted); font-size: var(--text-xs); }
-  .database-log-console { height: min(55vh, 540px); padding: var(--space-3) 0; overflow: auto; background: var(--color-log-bg); color: var(--color-log-text); font: var(--text-sm)/1.65 var(--font-mono); }
-  .database-log-line { padding: 2px var(--space-4); display: grid; grid-template-columns: 84px 72px minmax(0, 1fr); gap: var(--space-3); border-left: 2px solid transparent; }
-  .database-log-line:hover { background: color-mix(in srgb, var(--color-log-surface) 65%, transparent); }
-  .database-log-line time { color: var(--color-log-muted); font-size: var(--text-xs); }
-  .database-log-line b { color: var(--color-log-muted); font-size: var(--text-xs); text-transform: uppercase; }
-  .database-log-line span { overflow-wrap: anywhere; font-size: var(--text-xs); }
-  .database-log-line.info { border-color: var(--color-success); }
-  .database-log-line.info b { color: var(--color-success); }
-  .database-log-line.warning { border-color: var(--color-warning); }
-  .database-log-line.warning b { color: var(--color-warning); }
-  .database-log-line.error { border-color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 6%, transparent); }
-  .database-log-line.error b { color: var(--color-danger); }
-  .database-log-line.debug { border-color: var(--color-info); }
-  .database-log-line.debug b { color: var(--color-info); }
-  .database-log-error { padding: var(--space-3) var(--space-5); background: color-mix(in srgb, var(--color-danger) 8%, var(--color-paper-raised)); color: var(--color-danger); font-size: var(--text-sm); }
-  .log-empty { padding: var(--space-6); color: var(--color-log-muted); text-align: center; font-size: var(--text-sm); }
-  .live-indicator { margin-right: auto; color: var(--color-muted); font-size: var(--text-xs); }
-  .live-indicator i { width: 7px; height: 7px; margin-right: 6px; display: inline-block; border-radius: 50%; background: var(--color-success); box-shadow: 0 0 0 4px var(--color-success-soft); }
-
   /* ---------- Delete dialogs ---------- */
   .database-delete-modal form, .delete-project-modal form { padding: var(--space-5); }
   .database-delete-modal form > footer, .delete-project-modal form > footer { margin: var(--space-5) calc(var(--space-5) * -1) calc(var(--space-5) * -1); padding: var(--space-3) var(--space-5); display: flex; justify-content: flex-end; gap: var(--space-2); border-top: 1px solid var(--color-rule); background: var(--color-surface-subtle); }
@@ -2458,11 +2405,33 @@
   @media (max-width: 41.99rem) { .service-source-picker { grid-template-columns: 1fr; } }
   @media (min-width: 50rem) { .project-hero { flex-direction: row; align-items: center; } .overview-grid { grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr); } .domain-layout { grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr); } .route-guide { border-top: 0; border-left: 1px solid var(--color-rule); } }
   @media (max-width: 48rem) { .recent > a, .deployment-row { grid-template-columns: 104px minmax(0, 1fr) 20px; } .recent code, .deployment-row code, .recent time, .deployment-row time { display: none; } .services article { grid-template-columns: 40px minmax(0, 1fr) auto; } }
-  @media (max-width: 32rem) { .hero-actions { width: 100%; } .hero-actions button { flex: 1; padding-inline: var(--space-3); } .services article { grid-template-columns: 40px minmax(0, 1fr); } .services article :global(.status) { grid-column: 2; } .database-state, .database-actions { grid-column: 2; justify-items: start; } .feedback { grid-template-columns: 1fr auto; } .feedback span { grid-row: 2; grid-column: 1 / -1; } .engine-picker { grid-template-columns: 1fr; } .credential-list > div { grid-template-columns: 1fr 54px; padding: var(--space-2) 0; } .credential-list span { grid-column: 1 / -1; } .source-choice, .settings-grid { grid-template-columns: 1fr; } .settings-grid .wide, .repository-note { grid-column: auto; } .danger-zone, .project-editor form > footer, .runtime-settings-form > footer, .deployment-triggers > footer { align-items: flex-start; flex-direction: column; } .runtime-settings-panel > header { align-items: flex-start; flex-direction: column; } .runtime-settings-panel > header > p { margin-left: 0; text-align: left; } .runtime-settings-form > footer > div, .runtime-settings-form > footer button, .deployment-triggers > footer button { width: 100%; } .runtime-settings-empty { grid-template-columns: 42px minmax(0, 1fr); } .runtime-settings-empty button { grid-column: 1 / -1; width: 100%; } .trigger-row { grid-template-columns: 36px minmax(0, 1fr); } .trigger-row .switch { grid-column: 2; } .webhook-endpoint { grid-template-columns: 1fr; } .webhook-endpoint button { width: 100%; } }
-  @media (max-width: 44rem) { .log-panel > header { align-items: flex-start; flex-direction: column; } .log-actions { width: 100%; justify-content: flex-start; } .log-actions small { width: 100%; } .log-toolbar { align-items: stretch; flex-direction: column; } .log-toolbar label { width: 100%; } .log-line { grid-template-columns: 34px 62px minmax(0, 1fr); } .log-line time { display: none; } .environment-panel > header { align-items: flex-start; flex-direction: column; gap: var(--space-3); } .environment-columns { display: none; } .variable-row { grid-template-columns: 1fr 64px 34px; padding: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-md); } .variable-row > label:first-child, .value-field { grid-column: 1 / -1; } .environment-editor > footer { align-items: stretch; flex-direction: column; } .environment-editor > footer button { width: 100%; } .domain-editor-head { align-items: stretch; flex-direction: column; } .add-domain { width: 100%; } .domain-binding > .binding-head { grid-template-columns: minmax(0, 1fr) auto; } .binding-domain { grid-column: 1 / -1; } .binding-preview { grid-template-columns: minmax(0, 1fr) auto; } .binding-preview code { grid-row: 2; grid-column: 1 / -1; } .route-rules-footer { align-items: stretch; flex-direction: column; } .route-rules-footer button { width: 100%; } }
+  @media (max-width: 32rem) { .hero-actions { width: 100%; } .hero-actions button { flex: 1; padding-inline: var(--space-3); } .services article { grid-template-columns: 40px minmax(0, 1fr); } .services article :global(.status) { grid-column: 2; } .database-state, .database-actions { grid-column: 2; justify-items: start; } .feedback { grid-template-columns: 1fr auto; } .feedback span { grid-row: 2; grid-column: 1 / -1; } .engine-picker { grid-template-columns: 1fr; } .credential-list > div { grid-template-columns: 1fr 54px; padding: var(--space-2) 0; } .credential-list span { grid-column: 1 / -1; } .settings-grid { grid-template-columns: 1fr; } .settings-grid .wide { grid-column: auto; } .danger-zone, .project-editor form > footer, .runtime-settings-form > footer, .deployment-triggers > footer { align-items: flex-start; flex-direction: column; } .runtime-settings-panel > header { align-items: flex-start; flex-direction: column; } .runtime-settings-panel > header > p { margin-left: 0; text-align: left; } .runtime-settings-form > footer > div, .runtime-settings-form > footer button, .deployment-triggers > footer button { width: 100%; } .runtime-settings-empty { grid-template-columns: 42px minmax(0, 1fr); } .runtime-settings-empty button { grid-column: 1 / -1; width: 100%; } .trigger-row { grid-template-columns: 36px minmax(0, 1fr); } .trigger-row .switch { grid-column: 2; } .webhook-endpoint { grid-template-columns: 1fr; } .webhook-endpoint button { width: 100%; } }
+  @media (max-width: 48rem) { .project-identity-layout { grid-template-columns: 1fr; } }
+  @media (max-width: 44rem) { .log-panel > header { align-items: flex-start; flex-direction: column; } .log-actions { width: 100%; justify-content: flex-start; } .log-actions small { width: 100%; } .log-toolbar { align-items: stretch; flex-direction: column; } .log-filter-group { align-items: stretch; flex-direction: column; } .log-toolbar label { width: 100%; } .log-line { grid-template-columns: 34px 62px minmax(0, 1fr); } .log-line time { display: none; } .environment-panel > header { align-items: flex-start; flex-direction: column; gap: var(--space-3); } .environment-columns { display: none; } .variable-row { grid-template-columns: 1fr 64px 34px; padding: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-md); } .variable-row > label:first-child, .value-field { grid-column: 1 / -1; } .environment-editor > footer { align-items: stretch; flex-direction: column; } .environment-editor > footer button { width: 100%; } .domain-editor-head { align-items: stretch; flex-direction: column; } .add-domain { width: 100%; } .domain-binding > .binding-head { grid-template-columns: minmax(0, 1fr) auto; } .binding-domain { grid-column: 1 / -1; } .binding-preview { grid-template-columns: minmax(0, 1fr) auto; } .binding-preview code { grid-row: 2; grid-column: 1 / -1; } .route-rules-footer { align-items: stretch; flex-direction: column; } .route-rules-footer button { width: 100%; } }
   @media (max-width: 78rem) { .project-metric-grid { grid-template-columns: repeat(3, 1fr); } .project-metric-grid article:nth-child(3) { border-right: 0; } .project-metric-grid article:nth-child(-n+3) { border-bottom: 1px solid var(--color-rule); } .workload-columns, .workload-row { grid-template-columns: minmax(210px, 1.35fr) minmax(74px, 0.5fr) minmax(105px, 0.7fr) minmax(100px, 0.65fr); } .workload-columns span:nth-child(n+5), .workload-row > :nth-child(n+5) { display: none; } }
   @media (max-width: 52rem) { .project-metrics-head { align-items: flex-start; flex-direction: column; } .metrics-freshness { width: 100%; } .metrics-freshness button { margin-left: auto; } .project-metric-grid { grid-template-columns: 1fr 1fr; } .project-metric-grid article, .project-metric-grid article:nth-child(3) { border-right: 1px solid var(--color-rule); border-bottom: 1px solid var(--color-rule); } .project-metric-grid article:nth-child(even) { border-right: 0; } .project-metric-grid article:last-child { border-bottom: 0; } .workload-columns { display: none; } .workload-row { grid-template-columns: minmax(0, 1fr) 80px 105px; } .workload-row > :nth-child(n+4) { display: none; } }
   @media (max-width: 34rem) { .project-metric-grid { grid-template-columns: 1fr; } .project-metric-grid article, .project-metric-grid article:nth-child(3), .project-metric-grid article:nth-child(even) { border-right: 0; } .workload-row { grid-template-columns: minmax(0, 1fr) 74px; } .workload-row > :nth-child(n+3) { display: none; } }
   @media (max-width: 46rem) { .database-manager-card dl { grid-template-columns: 1fr; } .database-manager-card dl > div:nth-last-child(-n+2) { border-bottom: 1px solid var(--color-rule); } .database-manager-card dl > div:last-child { border-bottom: 0; } .database-card-actions .delete-database { margin-left: 0; } }
+  @container (max-width: 48rem) {
+    .services article {
+      grid-template-columns: 40px minmax(0, 1fr) auto;
+      align-items: center;
+    }
+    .application-service-actions,
+    .database-actions {
+      grid-column: 1 / -1;
+      width: 100%;
+      padding-top: var(--space-2);
+      overflow-x: auto;
+      flex-wrap: nowrap;
+      justify-content: flex-start;
+      border-top: 1px solid var(--color-rule);
+      scrollbar-width: thin;
+    }
+    .application-service-actions button,
+    .database-actions button {
+      flex: 0 0 auto;
+    }
+  }
   @media (prefers-reduced-motion: reduce) { .spinner, .live-toggle.live i, .metrics-freshness > i.spinning { animation: none; } }
 </style>

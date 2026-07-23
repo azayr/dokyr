@@ -25,6 +25,9 @@
   let data = { deployment: { id: 'Loading', status: 'deploying', duration: 0 }, project: { name: 'Loading…', sourceType: 'image' }, events: [] };
   let loading = true;
   let error = '';
+  let cancelError = '';
+  let cancelling = false;
+  let cancelRequested = false;
   let filter = '';
   let autoScroll = true;
   let terminalBody;
@@ -38,16 +41,23 @@
   $: stageDefinitions = data.deployment?.serviceId || data.project?.sourceType === 'image' || data.project?.sourceType === 'empty' ? imageStages : repositoryStages;
   $: steps = stageDefinitions.map((definition) => {
     const events = data.events.filter((event) => event.stage === definition.id);
-    const failed = events.some((event) => event.type === 'error');
     const complete = events.some((event) => event.type === 'complete') || (['verify', 'promote'].includes(definition.id) && data.deployment.status === 'healthy');
     const started = events.length > 0;
+    const errorEvent = events.find((event) => event.type === 'error');
+    const failed = Boolean(errorEvent) || (['failed', 'degraded'].includes(data.deployment.status) && started && !complete);
+    const cancelled = data.deployment.status === 'cancelled' && started && !complete && !failed;
     const startedAt = events[0]?.createdAt;
     const endedAt = events[events.length - 1]?.createdAt;
     const duration = startedAt && endedAt ? Math.max(0, Math.round((new Date(endedAt) - new Date(startedAt)) / 1000)) : 0;
-    return { ...definition, state: failed ? 'failed' : complete ? 'complete' : started ? 'active' : 'pending', duration };
+    const failureMessage = errorEvent?.message || (failed ? data.deployment.message : '');
+    return { ...definition, state: failed ? 'failed' : complete ? 'complete' : cancelled ? 'cancelled' : started ? 'active' : 'pending', duration, failureMessage };
   });
   $: visibleEvents = data.events.filter((event) => !filter || event.message.toLowerCase().includes(filter.toLowerCase()) || event.stage.includes(filter.toLowerCase()));
   $: isLive = ['deploying', 'building'].includes(data.deployment.status);
+  $: isCancelled = data.deployment.status === 'cancelled';
+  $: isFailed = ['failed', 'degraded'].includes(data.deployment.status);
+  $: wasInterrupted = isFailed && data.deployment.message?.toLowerCase().includes('interrupted');
+  $: canCancel = isLive && !data.events.some((event) => event.stage === 'promote');
 
   onMount(() => {
     loadDeployment();
@@ -73,6 +83,7 @@
       const incomingLastID = payload.events.at(-1)?.id || 0;
       const hasNewEvents = incomingLastID !== lastEventID;
       data = payload;
+      if (!['deploying', 'building'].includes(payload.deployment.status)) cancelRequested = false;
       lastEventID = incomingLastID;
       loading = false;
       error = '';
@@ -88,6 +99,24 @@
       error = cause instanceof Error ? cause.message : 'Could not load deployment';
       clearTimeout(pollTimer);
       pollTimer = setTimeout(loadDeployment, 2500);
+    }
+  }
+
+  async function cancelDeployment() {
+    if (!canCancel || cancelling || cancelRequested) return;
+    cancelling = true;
+    cancelError = '';
+    try {
+      const response = await api('/api/deployments/' + page.params.id + '/cancel', { method: 'POST' });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not stop deployment');
+      cancelRequested = true;
+      await loadDeployment();
+    } catch (cause) {
+      cancelRequested = false;
+      cancelError = cause instanceof Error ? cause.message : 'Could not stop deployment';
+    } finally {
+      cancelling = false;
     }
   }
 
@@ -127,7 +156,14 @@
 </script>
 
 <Shell eyebrow="Deployment" title={data.deployment.id}>
-  <a slot="actions" class="btn" href={'/projects/' + data.project.id}><Icon name="arrow-left" size={14} /> Back to project</a>
+  <svelte:fragment slot="actions">
+    {#if canCancel}
+      <button class="btn btn-danger" onclick={cancelDeployment} disabled={cancelling || cancelRequested}>
+        <Icon name="stop" size={13} /> {cancelling || cancelRequested ? 'Stopping…' : 'Stop deployment'}
+      </button>
+    {/if}
+    <a class="btn" href={'/projects/' + data.project.id}><Icon name="arrow-left" size={14} /> Back to project</a>
+  </svelte:fragment>
 
   <section class="release-head" aria-busy={loading}>
     <div class="release-copy">
@@ -140,12 +176,15 @@
     </div>
     <div class="timer">
       <small>{isLive ? 'Elapsed' : 'Duration'}</small>
-      <strong>{formatDuration(elapsed)}</strong>
+      <strong>{wasInterrupted && elapsed === 0 ? 'Interrupted' : formatDuration(elapsed)}</strong>
     </div>
   </section>
 
   {#if error}
     <div class="alert alert-error"><Icon name="x-circle" size={15} /><div><strong>Live updates interrupted</strong><span>{error}. Retrying automatically…</span></div></div>
+  {/if}
+  {#if cancelError}
+    <div class="alert alert-error"><Icon name="x-circle" size={15} /><div><strong>Deployment was not stopped</strong><span>{cancelError}</span></div></div>
   {/if}
 
   <div class="workbench">
@@ -159,23 +198,25 @@
       </header>
       <div class="stage-list">
         {#each steps as step, index}
-          <article class:active={step.state === 'active'} class:complete={step.state === 'complete'} class:failed={step.state === 'failed'}>
+          <article class:active={step.state === 'active'} class:complete={step.state === 'complete'} class:failed={step.state === 'failed'} class:cancelled={step.state === 'cancelled'}>
             <div class="rail">
               <span>
                 {#if step.state === 'complete'}<Icon name="check" size={12} />
                 {:else if step.state === 'failed'}<Icon name="x" size={12} />
+                {:else if step.state === 'cancelled'}<Icon name="stop" size={10} />
                 {:else}{index + 1}{/if}
               </span>
               <i></i>
             </div>
             <div class="stage-copy">
               <strong>{step.label}</strong>
-              <small>{step.state === 'active' ? data.events.filter((event) => event.stage === step.id).at(-1)?.message : step.detail}</small>
+              <small>{step.state === 'active' ? data.events.filter((event) => event.stage === step.id).at(-1)?.message : step.state === 'failed' ? step.failureMessage : step.detail}</small>
             </div>
             <div class="stage-state">
               {#if step.state === 'active'}<i class="spinner"></i><b>Running</b>
               {:else if step.state === 'complete'}<b>{step.duration ? step.duration + 's' : 'Done'}</b>
               {:else if step.state === 'failed'}<b>Failed</b>
+              {:else if step.state === 'cancelled'}<b>Stopped</b>
               {:else}<b>Waiting</b>{/if}
             </div>
           </article>
@@ -207,7 +248,7 @@
       <div class="terminal-title">
         <span class="lights"><i></i><i></i><i></i></span>
         <strong>Deployment output</strong>
-        <em class:live={isLive}>{isLive ? 'streaming' : 'complete'}</em>
+        <em class:live={isLive} class:cancelled={isCancelled} class:failed={isFailed}>{isLive ? 'streaming' : isCancelled ? 'stopped' : isFailed ? 'failed' : 'complete'}</em>
       </div>
       <div class="terminal-actions">
         <button class="terminal-copy" class:copied={outputCopied} onclick={copyVisibleOutput} disabled={visibleEvents.length === 0} aria-live="polite">
@@ -218,13 +259,16 @@
     </header>
     <div class="terminal-body" bind:this={terminalBody}>
       {#if visibleEvents.length === 0}
-        <div class="empty-output"><i class="spinner"></i><span>{loading ? 'Connecting to deployment stream…' : 'Waiting for the first runtime event…'}</span></div>
+        <div class="empty-output">
+          {#if isLive || loading}<i class="spinner"></i>{/if}
+          <span>{loading ? 'Connecting to deployment stream…' : isCancelled ? 'Deployment stopped before runtime output.' : isFailed ? data.deployment.message : 'Waiting for the first runtime event…'}</span>
+        </div>
       {:else}
         {#each visibleEvents as event}
-          <div class="log-line" class:error={event.type === 'error'} class:success={event.type === 'complete'} class:command={event.type === 'start'}>
+          <div class="log-line" class:error={event.type === 'error'} class:success={event.type === 'complete'} class:command={event.type === 'start'} class:cancelled={event.type === 'cancelled'}>
             <time>{formatTime(event.createdAt)}</time>
             <span class="stage-tag">{event.stage}</span>
-            <i class="log-glyph">{event.type === 'start' ? '›' : event.type === 'complete' ? '✓' : event.type === 'error' ? '×' : '·'}</i>
+            <i class="log-glyph">{event.type === 'start' ? '›' : event.type === 'complete' ? '✓' : event.type === 'error' ? '×' : event.type === 'cancelled' ? '■' : '·'}</i>
             <code>{event.message}</code>
           </div>
         {/each}
@@ -362,6 +406,11 @@
     background: var(--color-danger);
     color: #fff;
   }
+  .cancelled .rail > span {
+    border-color: var(--color-warning);
+    background: var(--color-warning);
+    color: #fff;
+  }
   .complete .rail > i {
     background: var(--color-success);
   }
@@ -400,6 +449,9 @@
   }
   .failed .stage-state b {
     color: var(--color-danger);
+  }
+  .cancelled .stage-state b {
+    color: var(--color-warning);
   }
   .stage-state .spinner {
     width: 12px;
@@ -497,6 +549,14 @@
     background: color-mix(in srgb, var(--color-success) 20%, transparent);
     color: var(--color-success);
   }
+  .terminal-title em.cancelled {
+    background: color-mix(in srgb, var(--color-warning) 20%, transparent);
+    color: var(--color-warning);
+  }
+  .terminal-title em.failed {
+    background: color-mix(in srgb, var(--color-danger) 20%, transparent);
+    color: var(--color-danger);
+  }
   .terminal label {
     display: flex;
     align-items: center;
@@ -591,6 +651,10 @@
   .log-line.error > .log-glyph,
   .log-line.error > code {
     color: var(--color-danger);
+  }
+  .log-line.cancelled > .log-glyph,
+  .log-line.cancelled > code {
+    color: var(--color-warning);
   }
   .empty-output {
     height: 100%;

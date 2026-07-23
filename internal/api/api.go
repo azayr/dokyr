@@ -36,19 +36,21 @@ import (
 )
 
 type API struct {
-	store         *store.Store
-	docker        *runtime.Docker
-	auth          *auth.Manager
-	integrations  *integration.Service
-	box           *secretbox.Box
-	log           *slog.Logger
-	caddy         *caddy.Client
-	publicURL     string
-	domainMu      sync.Mutex
-	databaseMu    sync.Mutex
-	applicationMu sync.Mutex
-	projectMu     sync.Mutex
-	cleanupMu     sync.Mutex
+	store             *store.Store
+	docker            *runtime.Docker
+	auth              *auth.Manager
+	integrations      *integration.Service
+	box               *secretbox.Box
+	log               *slog.Logger
+	caddy             *caddy.Client
+	publicURL         string
+	domainMu          sync.Mutex
+	databaseMu        sync.Mutex
+	applicationMu     sync.Mutex
+	projectMu         sync.Mutex
+	cleanupMu         sync.Mutex
+	deploymentMu      sync.Mutex
+	deploymentCancels map[string]context.CancelFunc
 }
 
 type domainRuleInput struct {
@@ -64,7 +66,17 @@ type domainBindingInput struct {
 }
 
 func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integration.Service, box *secretbox.Box, caddyClient *caddy.Client, publicURL string, log *slog.Logger) *API {
-	return &API{store: s, docker: d, auth: a, integrations: integrations, box: box, caddy: caddyClient, publicURL: strings.TrimRight(publicURL, "/"), log: log}
+	return &API{
+		store:             s,
+		docker:            d,
+		auth:              a,
+		integrations:      integrations,
+		box:               box,
+		caddy:             caddyClient,
+		publicURL:         strings.TrimRight(publicURL, "/"),
+		log:               log,
+		deploymentCancels: make(map[string]context.CancelFunc),
+	}
 }
 func (a *API) Handler() http.Handler {
 	public := http.NewServeMux()
@@ -105,6 +117,8 @@ func (a *API) Handler() http.Handler {
 	protected.HandleFunc("DELETE /api/projects/{id}", a.deleteProject)
 	protected.HandleFunc("PUT /api/projects/{id}/domain", a.updateProjectDomain)
 	protected.HandleFunc("POST /api/projects/{id}/deploy", a.deployProject)
+	protected.HandleFunc("POST /api/projects/{id}/stop", a.stopProjectService)
+	protected.HandleFunc("POST /api/projects/{id}/restart", a.restartProjectService)
 	protected.HandleFunc("GET /api/projects/{id}/logs", a.projectLogs)
 	protected.HandleFunc("GET /api/projects/{id}/metrics", a.projectMetrics)
 	protected.HandleFunc("GET /api/projects/{id}/environment", a.projectEnvironment)
@@ -113,6 +127,8 @@ func (a *API) Handler() http.Handler {
 	protected.HandleFunc("POST /api/projects/{id}/services", a.createApplicationService)
 	protected.HandleFunc("PUT /api/services/{id}", a.updateApplicationService)
 	protected.HandleFunc("POST /api/services/{id}/deploy", a.deployApplicationService)
+	protected.HandleFunc("POST /api/services/{id}/stop", a.stopApplicationService)
+	protected.HandleFunc("POST /api/services/{id}/restart", a.restartApplicationService)
 	protected.HandleFunc("GET /api/services/{id}/deployment-triggers", a.applicationServiceDeploymentTriggers)
 	protected.HandleFunc("PUT /api/services/{id}/deployment-triggers", a.updateApplicationServiceDeploymentTriggers)
 	protected.HandleFunc("GET /api/services/{id}/logs", a.applicationServiceLogs)
@@ -121,11 +137,14 @@ func (a *API) Handler() http.Handler {
 	protected.HandleFunc("DELETE /api/services/{id}", a.deleteApplicationService)
 	protected.HandleFunc("GET /api/databases/{id}/credentials", a.databaseCredentials)
 	protected.HandleFunc("PUT /api/databases/{id}/exposure", a.updateDatabaseExposure)
+	protected.HandleFunc("POST /api/databases/{id}/stop", a.stopDatabaseService)
+	protected.HandleFunc("POST /api/databases/{id}/restart", a.restartDatabaseService)
 	protected.HandleFunc("GET /api/databases/{id}/logs", a.databaseLogs)
 	protected.HandleFunc("GET /api/databases/{id}/events", a.databaseDeploymentEvents)
 	protected.HandleFunc("DELETE /api/databases/{id}", a.deleteDatabaseService)
 	protected.HandleFunc("GET /api/deployments", a.deployments)
 	protected.HandleFunc("GET /api/deployments/{id}", a.deployment)
+	protected.HandleFunc("POST /api/deployments/{id}/cancel", a.cancelDeployment)
 	protected.HandleFunc("GET /api/integrations", a.integrationsIndex)
 	protected.HandleFunc("GET /api/integrations/oauth/{provider}/start", a.oauthStart)
 	protected.HandleFunc("GET /api/integrations/github/install/start", a.githubInstallationStart)
@@ -140,6 +159,8 @@ func (a *API) Handler() http.Handler {
 	protected.HandleFunc("GET /api/infrastructure/metrics", a.infrastructureMetrics)
 	protected.HandleFunc("GET /api/infrastructure/cleanup", a.dockerCleanupPreview)
 	protected.HandleFunc("POST /api/infrastructure/cleanup", a.dockerCleanup)
+	protected.HandleFunc("GET /api/infrastructure/cleanup/schedule", a.cleanupSchedule)
+	protected.HandleFunc("PUT /api/infrastructure/cleanup/schedule", a.updateCleanupSchedule)
 	root := http.NewServeMux()
 	root.Handle("/api/auth/me", a.auth.Require(protected))
 	root.Handle("/api/account/", a.auth.Require(protected))
@@ -2189,6 +2210,76 @@ func (a *API) databaseLogs(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, map[string]any{"lines": lines, "count": len(lines), "limit": tail, "container": "selfhost-db-" + service.ID})
 }
 
+func (a *API) stopDatabaseService(w http.ResponseWriter, r *http.Request) {
+	a.databaseMu.Lock()
+	defer a.databaseMu.Unlock()
+
+	service, err := a.store.DatabaseService(r.Context(), strings.TrimSpace(r.PathValue("id")))
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "database service not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	runtimeState, err := a.docker.DatabaseRuntime(r.Context(), service.ID, service.InternalPort)
+	if errors.Is(err, runtime.ErrNotFound) {
+		write(w, 409, map[string]string{"error": "deploy this database before stopping it"})
+		return
+	} else if err != nil {
+		a.log.Warn("inspect database before stop", "database", service.ID, "error", err)
+		write(w, 502, map[string]string{"error": "could not inspect the database container"})
+		return
+	}
+	if runtimeState.Status != "stopped" {
+		if err := a.docker.StopDatabase(r.Context(), service.ID); err != nil {
+			a.log.Warn("stop database service", "database", service.ID, "error", err)
+			write(w, 502, map[string]string{"error": "could not stop the database container"})
+			return
+		}
+		a.recordDatabaseDeploymentEvent(r.Context(), service.ID, "control", "complete", "Database container stopped manually")
+	}
+	service.Status = "stopped"
+	service.Container = runtimeState.Container
+	service.InternalAddress = service.Container + ":" + strconv.Itoa(service.InternalPort)
+	write(w, 200, map[string]any{"service": service, "message": service.Name + " stopped"})
+}
+
+func (a *API) restartDatabaseService(w http.ResponseWriter, r *http.Request) {
+	a.databaseMu.Lock()
+	defer a.databaseMu.Unlock()
+
+	service, err := a.store.DatabaseService(r.Context(), strings.TrimSpace(r.PathValue("id")))
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "database service not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if err := a.docker.RestartDatabase(r.Context(), service.ID); errors.Is(err, runtime.ErrNotFound) {
+		write(w, 409, map[string]string{"error": "deploy this database before restarting it"})
+		return
+	} else if err != nil {
+		a.log.Warn("restart database service", "database", service.ID, "error", err)
+		write(w, 502, map[string]string{"error": "could not restart the database container"})
+		return
+	}
+	runtimeState, err := a.docker.DatabaseRuntime(r.Context(), service.ID, service.InternalPort)
+	if err != nil {
+		a.log.Warn("inspect restarted database service", "database", service.ID, "error", err)
+		write(w, 502, map[string]string{"error": "database restarted, but its runtime status is unavailable"})
+		return
+	}
+	service.Status = runtimeState.Status
+	service.Container = runtimeState.Container
+	service.InternalAddress = service.Container + ":" + strconv.Itoa(service.InternalPort)
+	a.recordDatabaseDeploymentEvent(r.Context(), service.ID, "control", "complete", "Database container restarted manually")
+	write(w, 200, map[string]any{"service": service, "message": service.Name + " restarted"})
+}
+
 func (a *API) deleteDatabaseService(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Confirmation string `json:"confirmation"`
@@ -2391,13 +2482,16 @@ func (a *API) deployProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.recordDeploymentEvent(r.Context(), deployment.ID, "prepare", "complete", "Deployment accepted by the control plane")
-	go a.runImageDeployment(deployment, project, registryAuth, started)
+	deploymentCtx, cancelDeployment := context.WithCancel(context.Background())
+	a.registerDeployment(deployment.ID, cancelDeployment)
+	go a.runImageDeployment(deploymentCtx, deployment, project, registryAuth, started)
 	write(w, http.StatusAccepted, map[string]any{"deployment": deployment})
 }
 
-func (a *API) runImageDeployment(deployment store.Deployment, project store.Project, registryAuth *runtime.RegistryAuth, started time.Time) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+func (a *API) runImageDeployment(deploymentCtx context.Context, deployment store.Deployment, project store.Project, registryAuth *runtime.RegistryAuth, started time.Time) {
+	ctx, cancel := context.WithTimeout(deploymentCtx, 15*time.Minute)
 	defer cancel()
+	defer a.unregisterDeployment(deployment.ID)
 	activeStage := "prepare"
 	progress := func(stage, eventType, message string) {
 		if eventType == "start" {
@@ -2409,6 +2503,16 @@ func (a *API) runImageDeployment(deployment store.Deployment, project store.Proj
 	service, err := a.docker.DeployImage(ctx, project.ID, project.ImageURL, project.ContainerPort, registryAuth, progress)
 	duration := int(time.Since(started).Round(time.Second).Seconds())
 	if err != nil {
+		if deploymentCancelled(ctx, err) {
+			if current, currentErr := a.docker.ProjectService(context.Background(), project.ID); currentErr == nil {
+				_ = a.store.UpdateProjectStatus(context.Background(), project.ID, current.Status)
+			} else {
+				_ = a.store.UpdateProjectStatus(context.Background(), project.ID, "stopped")
+			}
+			a.recordDeploymentEvent(context.Background(), deployment.ID, activeStage, "cancelled", "Deployment stopped by user")
+			_ = a.store.FinishDeployment(context.Background(), deployment.ID, "cancelled", "Deployment stopped", duration)
+			return
+		}
 		message := "Deployment failed"
 		a.recordDeploymentEvent(context.Background(), deployment.ID, activeStage, "error", err.Error())
 		a.failDeployment(context.Background(), deployment.ID, project.ID, started, message, err)
@@ -2421,6 +2525,89 @@ func (a *API) runImageDeployment(deployment store.Deployment, project store.Proj
 	_ = a.store.UpdateProjectStatus(ctx, project.ID, "healthy")
 	a.recordDeploymentEvent(ctx, deployment.ID, "complete", "complete", "Deployment finished successfully on "+service.Container)
 	a.queueDeploymentNotification(deployment.ID, project.ID, project.Name, "healthy", "Deployment finished successfully on "+service.Container)
+}
+
+func (a *API) stopProjectService(w http.ResponseWriter, r *http.Request) {
+	a.projectMu.Lock()
+	defer a.projectMu.Unlock()
+
+	project, err := a.store.Project(r.Context(), strings.TrimSpace(r.PathValue("id")))
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "project not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if project.SourceType == "empty" {
+		write(w, 409, map[string]string{"error": "this project has no legacy application"})
+		return
+	}
+	if project.Status == "deploying" {
+		write(w, 409, map[string]string{"error": "wait for the current deployment to finish before stopping this service"})
+		return
+	}
+	service, err := a.docker.ProjectService(r.Context(), project.ID)
+	if errors.Is(err, runtime.ErrNotFound) {
+		write(w, 409, map[string]string{"error": "deploy this service before stopping it"})
+		return
+	} else if err != nil {
+		a.log.Warn("inspect project service before stop", "project", project.ID, "error", err)
+		write(w, 502, map[string]string{"error": "could not inspect the service container"})
+		return
+	}
+	if service.Status != "stopped" {
+		if err := a.docker.StopProject(r.Context(), project.ID); err != nil {
+			a.log.Warn("stop project service", "project", project.ID, "error", err)
+			write(w, 502, map[string]string{"error": "could not stop the service container"})
+			return
+		}
+	}
+	_ = a.store.UpdateProjectStatus(r.Context(), project.ID, "stopped")
+	service.Name = project.Name
+	service.Status = "stopped"
+	write(w, 200, map[string]any{"service": service, "message": project.Name + " stopped"})
+}
+
+func (a *API) restartProjectService(w http.ResponseWriter, r *http.Request) {
+	a.projectMu.Lock()
+	defer a.projectMu.Unlock()
+
+	project, err := a.store.Project(r.Context(), strings.TrimSpace(r.PathValue("id")))
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "project not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if project.SourceType == "empty" {
+		write(w, 409, map[string]string{"error": "this project has no legacy application"})
+		return
+	}
+	if project.Status == "deploying" {
+		write(w, 409, map[string]string{"error": "wait for the current deployment to finish before restarting this service"})
+		return
+	}
+	if err := a.docker.RestartProject(r.Context(), project.ID); errors.Is(err, runtime.ErrNotFound) {
+		write(w, 409, map[string]string{"error": "deploy this service before restarting it"})
+		return
+	} else if err != nil {
+		a.log.Warn("restart project service", "project", project.ID, "error", err)
+		write(w, 502, map[string]string{"error": "could not restart the service container"})
+		return
+	}
+	service, err := a.docker.ProjectService(r.Context(), project.ID)
+	if err != nil {
+		a.log.Warn("inspect restarted project service", "project", project.ID, "error", err)
+		write(w, 502, map[string]string{"error": "service restarted, but its runtime status is unavailable"})
+		return
+	}
+	service.Name = project.Name
+	_ = a.store.UpdateProjectStatus(r.Context(), project.ID, service.Status)
+	write(w, 200, map[string]any{"service": service, "message": project.Name + " restarted"})
 }
 
 func parseServiceEnvironment(value string) ([]string, error) {
@@ -2980,7 +3167,9 @@ func (a *API) startApplicationServiceDeployment(ctx context.Context, serviceID, 
 	}
 	service.Status = "deploying"
 	a.recordDeploymentEvent(ctx, deployment.ID, "prepare", "complete", "Deployment accepted for service "+service.Name)
-	go a.runApplicationServiceDeployment(deployment, service, registryAuth, sourceConnection, repository, time.Now())
+	deploymentCtx, cancelDeployment := context.WithCancel(context.Background())
+	a.registerDeployment(deployment.ID, cancelDeployment)
+	go a.runApplicationServiceDeployment(deploymentCtx, deployment, service, registryAuth, sourceConnection, repository, time.Now())
 	return service, deployment, nil
 }
 
@@ -3179,13 +3368,19 @@ func (a *API) registryWebhook(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusAccepted, map[string]any{"triggered": true, "deployment": deployment.ID})
 }
 
-func (a *API) runApplicationServiceDeployment(deployment store.Deployment, service store.ApplicationService, registryAuth *runtime.RegistryAuth, sourceConnection *store.SourceConnection, repository *integration.Repository, started time.Time) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+func (a *API) runApplicationServiceDeployment(deploymentCtx context.Context, deployment store.Deployment, service store.ApplicationService, registryAuth *runtime.RegistryAuth, sourceConnection *store.SourceConnection, repository *integration.Repository, started time.Time) {
+	ctx, cancel := context.WithTimeout(deploymentCtx, 15*time.Minute)
 	defer cancel()
+	defer a.unregisterDeployment(deployment.ID)
 	activeStage := "prepare"
 	progress := func(stage, eventType, message string) {
 		if eventType == "start" {
 			activeStage = stage
+			if stage == "promote" {
+				// Promotion changes the stable release. Once it begins, let it finish
+				// atomically instead of cancelling between container renames.
+				a.unregisterDeployment(deployment.ID)
+			}
 		}
 		a.recordDeploymentEvent(ctx, deployment.ID, stage, eventType, message)
 	}
@@ -3215,6 +3410,17 @@ func (a *API) runApplicationServiceDeployment(deployment store.Deployment, servi
 	duration := int(time.Since(started).Round(time.Second).Seconds())
 	if err != nil {
 		fallback, fallbackErr := a.docker.ApplicationService(context.Background(), service.ID, service.Name)
+		if deploymentCancelled(ctx, err) {
+			if fallbackErr == nil {
+				_ = a.store.UpdateApplicationServiceStatus(context.Background(), service.ID, fallback.Status, "")
+				a.recordDeploymentEvent(context.Background(), deployment.ID, "rollback", "complete", "Candidate discarded; previous release remains unchanged")
+			} else {
+				_ = a.store.UpdateApplicationServiceStatus(context.Background(), service.ID, "created", "")
+			}
+			a.recordDeploymentEvent(context.Background(), deployment.ID, activeStage, "cancelled", "Deployment stopped by user")
+			_ = a.store.FinishDeployment(context.Background(), deployment.ID, "cancelled", "Deployment stopped for "+service.Name, duration)
+			return
+		}
 		if fallbackErr == nil && fallback.Status == "healthy" {
 			_ = a.store.UpdateApplicationServiceStatus(context.Background(), service.ID, fallback.Status, err.Error())
 			_ = a.store.UpdateProjectStatus(context.Background(), service.ProjectID, fallback.Status)
@@ -3265,6 +3471,82 @@ func (a *API) applicationServiceLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, 200, map[string]any{"lines": lines, "count": len(lines), "limit": tail, "container": "selfhost-svc-" + service.ID})
+}
+
+func (a *API) stopApplicationService(w http.ResponseWriter, r *http.Request) {
+	a.applicationMu.Lock()
+	defer a.applicationMu.Unlock()
+
+	service, err := a.store.ApplicationService(r.Context(), strings.TrimSpace(r.PathValue("id")))
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "application service not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if service.Status == "deploying" {
+		write(w, 409, map[string]string{"error": "wait for the current deployment to finish before stopping this service"})
+		return
+	}
+	runtimeService, err := a.docker.ApplicationService(r.Context(), service.ID, service.Name)
+	if errors.Is(err, runtime.ErrNotFound) {
+		write(w, 409, map[string]string{"error": "deploy this service before stopping it"})
+		return
+	} else if err != nil {
+		a.log.Warn("inspect application service before stop", "service", service.ID, "error", err)
+		write(w, 502, map[string]string{"error": "could not inspect the service container"})
+		return
+	}
+	if runtimeService.Status != "stopped" {
+		if err := a.docker.StopApplication(r.Context(), service.ID); err != nil {
+			a.log.Warn("stop application service", "service", service.ID, "error", err)
+			write(w, 502, map[string]string{"error": "could not stop the service container"})
+			return
+		}
+	}
+	_ = a.store.UpdateApplicationServiceStatus(r.Context(), service.ID, "stopped", "")
+	service.Status = "stopped"
+	service.Container = runtimeService.Container
+	write(w, 200, map[string]any{"service": service, "message": service.Name + " stopped"})
+}
+
+func (a *API) restartApplicationService(w http.ResponseWriter, r *http.Request) {
+	a.applicationMu.Lock()
+	defer a.applicationMu.Unlock()
+
+	service, err := a.store.ApplicationService(r.Context(), strings.TrimSpace(r.PathValue("id")))
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "application service not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if service.Status == "deploying" {
+		write(w, 409, map[string]string{"error": "wait for the current deployment to finish before restarting this service"})
+		return
+	}
+	if err := a.docker.RestartApplication(r.Context(), service.ID); errors.Is(err, runtime.ErrNotFound) {
+		write(w, 409, map[string]string{"error": "deploy this service before restarting it"})
+		return
+	} else if err != nil {
+		a.log.Warn("restart application service", "service", service.ID, "error", err)
+		write(w, 502, map[string]string{"error": "could not restart the service container"})
+		return
+	}
+	runtimeService, err := a.docker.ApplicationService(r.Context(), service.ID, service.Name)
+	if err != nil {
+		a.log.Warn("inspect restarted application service", "service", service.ID, "error", err)
+		write(w, 502, map[string]string{"error": "service restarted, but its runtime status is unavailable"})
+		return
+	}
+	_ = a.store.UpdateApplicationServiceStatus(r.Context(), service.ID, runtimeService.Status, "")
+	service.Status = runtimeService.Status
+	service.Container = runtimeService.Container
+	write(w, 200, map[string]any{"service": service, "message": service.Name + " restarted"})
 }
 
 func (a *API) applicationEnvironmentVariables(service store.ApplicationService) ([]environmentVariableInput, []string, error) {
@@ -3506,6 +3788,36 @@ func (a *API) queueDeploymentNotification(deploymentID, projectID, serviceName, 
 		}
 	}()
 }
+
+func (a *API) registerDeployment(deploymentID string, cancel context.CancelFunc) {
+	a.deploymentMu.Lock()
+	defer a.deploymentMu.Unlock()
+	if a.deploymentCancels == nil {
+		a.deploymentCancels = make(map[string]context.CancelFunc)
+	}
+	a.deploymentCancels[deploymentID] = cancel
+}
+
+func (a *API) unregisterDeployment(deploymentID string) {
+	a.deploymentMu.Lock()
+	defer a.deploymentMu.Unlock()
+	delete(a.deploymentCancels, deploymentID)
+}
+
+func (a *API) claimDeploymentCancellation(deploymentID string) (context.CancelFunc, bool) {
+	a.deploymentMu.Lock()
+	defer a.deploymentMu.Unlock()
+	cancel, ok := a.deploymentCancels[deploymentID]
+	if ok {
+		delete(a.deploymentCancels, deploymentID)
+	}
+	return cancel, ok
+}
+
+func deploymentCancelled(ctx context.Context, err error) bool {
+	return errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled)
+}
+
 func (a *API) deployments(w http.ResponseWriter, r *http.Request) {
 	items, err := a.store.Deployments(r.Context(), "")
 	if err != nil {
@@ -3536,6 +3848,36 @@ func (a *API) deployment(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, 200, map[string]any{"deployment": d, "project": p, "events": events})
 }
+
+func (a *API) cancelDeployment(w http.ResponseWriter, r *http.Request) {
+	deploymentID := strings.TrimSpace(r.PathValue("id"))
+	deployment, err := a.store.Deployment(r.Context(), deploymentID)
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "deployment not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if deployment.Status == "cancelled" {
+		write(w, 200, map[string]any{"deployment": deployment, "message": "Deployment is already stopped"})
+		return
+	}
+	if deployment.Status != "deploying" && deployment.Status != "building" {
+		write(w, 409, map[string]string{"error": "deployment is no longer running"})
+		return
+	}
+	cancel, ok := a.claimDeploymentCancellation(deployment.ID)
+	if !ok {
+		write(w, 409, map[string]string{"error": "deployment is no longer cancellable"})
+		return
+	}
+	a.recordDeploymentEvent(r.Context(), deployment.ID, "cancel", "log", "Stop requested by user")
+	cancel()
+	write(w, http.StatusAccepted, map[string]any{"deployment": deployment, "message": "Stopping deployment"})
+}
+
 func newID(prefix string) string {
 	b := make([]byte, 10)
 	if _, err := rand.Read(b); err != nil {

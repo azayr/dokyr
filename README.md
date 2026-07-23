@@ -12,13 +12,13 @@ The prebuilt control-plane image is available as `brahoul/selfhost:latest`. It c
 docker compose up --build
 ```
 
-Open `http://localhost:8080`. The non-standard default avoids conflicts with local tools such as Laravel Herd. On the first visit, Dokyr asks you to create the owner account; public registration closes immediately afterward. PostgreSQL persists in the `postgres_data` volume and the control plane reads the host Docker Engine through `/var/run/docker.sock`.
+Open `http://localhost:8888`. The non-standard default avoids conflicts with local tools such as Laravel Herd. On the first visit, Dokyr asks you to create the owner account; public registration closes immediately afterward. PostgreSQL persists in the `postgres_data` volume and the control plane reads the host Docker Engine through `/var/run/docker.sock`.
 
 Caddy rejects unknown hostnames with a 404 instead of forwarding them to the control panel. Direct IPv4 access is allowed automatically, so a fresh installation remains reachable at the VPS IP and published HTTP port. `CONTROL_HOSTS` is the allowlist for additional control-panel domain names. For example, on a VPS:
 
 ```sh
 CONTROL_HOSTS="panel.example.com"
-PUBLIC_URL=http://panel.example.com:8080
+PUBLIC_URL=http://panel.example.com:8888
 ```
 
 Project domains are assigned from each project's **Domains** tab. A hostname that is neither assigned to a project nor listed in `CONTROL_HOSTS` receives Caddy's 404 response.
@@ -74,10 +74,10 @@ GitLab does not provide GitHub's App Manifest flow. To connect GitLab, copy
 callback URL:
 
 ```text
-http://localhost:8080/api/integrations/oauth/gitlab/callback
+http://localhost:8888/api/integrations/oauth/gitlab/callback
 ```
 
-For production, replace `http://localhost:8080` with `PUBLIC_URL` and enable `COOKIE_SECURE=true`. GitLab self-managed instances can be selected with `GITLAB_BASE_URL`.
+For production, replace `http://localhost:8888` with `PUBLIC_URL` and enable `COOKIE_SECURE=true`. GitLab self-managed instances can be selected with `GITLAB_BASE_URL`.
 
 GitHub App credentials, GitLab provider tokens, and private registry passwords
 are encrypted with `ENCRYPTION_KEY` before PostgreSQL stores them. Keep that key

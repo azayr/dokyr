@@ -4,6 +4,23 @@
   import Icon from '$lib/components/Icon.svelte';
   import { api } from '$lib/auth.js';
 
+  const infrastructureViews = ['monitoring', 'cleanup'];
+  const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const defaultCleanupSchedule = {
+    configured: false,
+    enabled: false,
+    frequency: 'weekly',
+    weekday: 0,
+    hour: 3,
+    minute: 0,
+    timezone: 'UTC',
+    containers: true,
+    images: true,
+    buildCache: true,
+    networks: true,
+    lastStatus: 'never'
+  };
+
   let activeView = 'monitoring';
   let metrics = { engineName: 'local-docker', global: { diskIo: {}, networkIo: {}, disk: {} } };
   let metricsLoading = true;
@@ -11,6 +28,7 @@
   let metricsError = '';
   let history = [];
   let pollTimer;
+  let hashListener;
   let cleanup = { containers: {}, images: {}, buildCache: {}, networks: {}, volumes: {} };
   let cleanupLoading = false;
   let cleanupLoaded = false;
@@ -19,19 +37,34 @@
   let cleanupConfirmation = '';
   let cleanupRunning = false;
   let cleanupResult = null;
+  let cleanupSchedule = { ...defaultCleanupSchedule };
+  let cleanupScheduleTime = '03:00';
+  let cleanupScheduleLoading = false;
+  let cleanupScheduleLoaded = false;
+  let cleanupScheduleSaving = false;
+  let cleanupScheduleError = '';
+  let cleanupScheduleSaved = false;
 
   $: selectedBytes = ['containers', 'images', 'buildCache', 'networks', 'volumes'].reduce((total, key) => total + (cleanupSelection[key] ? cleanup[key]?.bytes || 0 : 0), 0);
   $: selectedItems = ['containers', 'images', 'buildCache', 'networks', 'volumes'].reduce((total, key) => total + (cleanupSelection[key] ? cleanup[key]?.count || 0 : 0), 0);
   $: hostDiskAvailable = (metrics.global.disk?.total || 0) > 0;
+  $: automaticResourceCount = ['containers', 'images', 'buildCache', 'networks'].filter((key) => cleanupSchedule[key]).length;
 
   onMount(async () => {
+    hashListener = syncViewFromURL;
+    syncViewFromURL();
+    window.addEventListener('hashchange', hashListener);
+
     await loadMetrics();
     pollTimer = setInterval(() => {
       if (activeView === 'monitoring' && !metricsRefreshing) loadMetrics(true);
     }, 5000);
   });
 
-  onDestroy(() => clearInterval(pollTimer));
+  onDestroy(() => {
+    clearInterval(pollTimer);
+    if (hashListener) window.removeEventListener('hashchange', hashListener);
+  });
 
   async function loadMetrics(silent = false) {
     if (silent) metricsRefreshing = true;
@@ -67,9 +100,55 @@
     }
   }
 
-  function showView(view) {
+  async function loadCleanupSchedule() {
+    cleanupScheduleLoading = true;
+    cleanupScheduleError = '';
+    try {
+      const response = await api('/api/infrastructure/cleanup/schedule');
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not load the cleanup schedule');
+      if (!payload.configured) {
+        payload.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      }
+      cleanupSchedule = { ...defaultCleanupSchedule, ...payload };
+      cleanupScheduleTime = `${String(cleanupSchedule.hour).padStart(2, '0')}:${String(cleanupSchedule.minute).padStart(2, '0')}`;
+      cleanupScheduleLoaded = true;
+    } catch (cause) {
+      cleanupScheduleError = cause instanceof Error ? cause.message : 'Could not load the cleanup schedule';
+    } finally {
+      cleanupScheduleLoading = false;
+    }
+  }
+
+  function activateView(view) {
     activeView = view;
-    if (view === 'cleanup' && !cleanupLoaded && !cleanupLoading) loadCleanup();
+    if (view === 'cleanup') {
+      if (!cleanupLoaded && !cleanupLoading) loadCleanup();
+      if (!cleanupScheduleLoaded && !cleanupScheduleLoading) loadCleanupSchedule();
+    }
+  }
+
+  function viewFromHash() {
+    const view = window.location.hash.slice(1).toLowerCase();
+    return infrastructureViews.includes(view) ? view : 'monitoring';
+  }
+
+  function syncViewFromURL() {
+    const view = viewFromHash();
+    activateView(view);
+
+    if (window.location.hash !== `#${view}`) {
+      window.history.replaceState(null, '', `#${view}`);
+    }
+  }
+
+  function showView(view) {
+    if (!infrastructureViews.includes(view)) return;
+
+    activateView(view);
+    if (window.location.hash !== `#${view}`) {
+      window.location.hash = view;
+    }
   }
 
   async function runCleanup() {
@@ -91,6 +170,52 @@
       cleanupError = cause instanceof Error ? cause.message : 'Docker cleanup failed';
     } finally {
       cleanupRunning = false;
+    }
+  }
+
+  async function saveCleanupSchedule() {
+    cleanupScheduleSaving = true;
+    cleanupScheduleError = '';
+    cleanupScheduleSaved = false;
+    const [hour, minute] = cleanupScheduleTime.split(':').map(Number);
+    try {
+      const response = await api('/api/infrastructure/cleanup/schedule', {
+        method: 'PUT',
+        body: JSON.stringify({
+          enabled: cleanupSchedule.enabled,
+          frequency: cleanupSchedule.frequency,
+          weekday: Number(cleanupSchedule.weekday),
+          hour,
+          minute,
+          timezone: cleanupSchedule.timezone,
+          containers: cleanupSchedule.containers,
+          images: cleanupSchedule.images,
+          buildCache: cleanupSchedule.buildCache,
+          networks: cleanupSchedule.networks
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not save the cleanup schedule');
+      cleanupSchedule = { ...defaultCleanupSchedule, ...payload };
+      cleanupScheduleTime = `${String(cleanupSchedule.hour).padStart(2, '0')}:${String(cleanupSchedule.minute).padStart(2, '0')}`;
+      cleanupScheduleSaved = true;
+    } catch (cause) {
+      cleanupScheduleError = cause instanceof Error ? cause.message : 'Could not save the cleanup schedule';
+    } finally {
+      cleanupScheduleSaving = false;
+    }
+  }
+
+  function formatScheduleDate(value) {
+    if (!value) return 'Not scheduled';
+    try {
+      return new Date(value).toLocaleString([], {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: cleanupSchedule.timezone
+      });
+    } catch {
+      return new Date(value).toLocaleString();
     }
   }
 
@@ -269,6 +394,115 @@
         <p class="cleanup-note">Docker only removes resources that are unused at execution time. The preview is refreshed after cleanup.</p>
       </aside>
     </form>
+
+    <section class="panel schedule-panel">
+      <header class="schedule-header">
+        <div class="schedule-heading">
+          <span class="schedule-icon"><Icon name="clock" size={18} /></span>
+          <div>
+            <span class="eyebrow">Automation</span>
+            <h2>Scheduled cleanup</h2>
+            <p>Let Dokyr remove safe, unused Docker resources on a recurring schedule.</p>
+          </div>
+        </div>
+        <span class:enabled={cleanupSchedule.enabled} class="schedule-state">
+          <i></i>{cleanupSchedule.enabled ? 'Active' : 'Paused'}
+        </span>
+      </header>
+
+      {#if cleanupScheduleError}
+        <div class="alert alert-error schedule-alert">
+          <Icon name="x-circle" size={15} />
+          <div><strong>Schedule unavailable</strong><span>{cleanupScheduleError}</span></div>
+        </div>
+      {:else if cleanupScheduleSaved}
+        <div class="alert alert-success schedule-alert">
+          <Icon name="check-circle" size={15} />
+          <div><strong>Schedule saved</strong><span>{cleanupSchedule.enabled ? `Next cleanup is ${formatScheduleDate(cleanupSchedule.nextRunAt)}.` : 'Automatic cleanup is paused.'}</span></div>
+        </div>
+      {/if}
+
+      <div class="schedule-body">
+        <aside class="schedule-summary">
+          <div class="next-run">
+            <span>{cleanupSchedule.enabled ? 'Next automatic cleanup' : 'Automation status'}</span>
+            <strong>{cleanupScheduleLoading ? 'Loading…' : cleanupSchedule.enabled ? formatScheduleDate(cleanupSchedule.nextRunAt) : 'Paused'}</strong>
+            <small>{cleanupSchedule.enabled ? cleanupSchedule.timezone : 'Enable the schedule when you are ready.'}</small>
+          </div>
+          <dl>
+            <div><dt>Last run</dt><dd>{formatScheduleDate(cleanupSchedule.lastRunAt)}</dd></div>
+            <div>
+              <dt>Last result</dt>
+              <dd class:success={cleanupSchedule.lastStatus === 'succeeded'} class:failed={cleanupSchedule.lastStatus === 'failed'}>
+                {cleanupSchedule.lastStatus === 'never' ? 'No runs yet' : cleanupSchedule.lastStatus}
+              </dd>
+            </div>
+            {#if cleanupSchedule.lastStatus === 'succeeded'}
+              <div><dt>Reclaimed</dt><dd>{formatBytes(cleanupSchedule.lastReclaimed)} · {cleanupSchedule.lastDeleted} removed</dd></div>
+            {/if}
+          </dl>
+          {#if cleanupSchedule.lastStatus === 'failed' && cleanupSchedule.lastMessage}
+            <p class="last-error">{cleanupSchedule.lastMessage}</p>
+          {/if}
+        </aside>
+
+        <form class="schedule-form" onsubmit={(event) => { event.preventDefault(); saveCleanupSchedule(); }}>
+          <label class="automation-toggle">
+            <span>
+              <strong>Enable automatic cleanup</strong>
+              <small>Runs even when no one has the dashboard open.</small>
+            </span>
+            <input type="checkbox" bind:checked={cleanupSchedule.enabled} />
+            <i></i>
+          </label>
+
+          <div class="schedule-fields">
+            <label class="field">
+              <span>Frequency</span>
+              <select class="select" bind:value={cleanupSchedule.frequency}>
+                <option value="daily">Every day</option>
+                <option value="weekly">Every week</option>
+              </select>
+            </label>
+            {#if cleanupSchedule.frequency === 'weekly'}
+              <label class="field">
+                <span>Day</span>
+                <select class="select" bind:value={cleanupSchedule.weekday}>
+                  {#each weekdays as day, index}<option value={index}>{day}</option>{/each}
+                </select>
+              </label>
+            {/if}
+            <label class="field">
+              <span>Run at</span>
+              <input class="input input-mono" type="time" bind:value={cleanupScheduleTime} />
+            </label>
+          </div>
+          <p class="timezone-note"><Icon name="globe" size={14} /> Timezone: <code>{cleanupSchedule.timezone}</code></p>
+
+          <fieldset class="automatic-resources">
+            <legend>Resources to remove</legend>
+            <div>
+              <label><input class="checkbox" type="checkbox" bind:checked={cleanupSchedule.containers} /><span>Stopped containers</span></label>
+              <label><input class="checkbox" type="checkbox" bind:checked={cleanupSchedule.images} /><span>Unused images</span></label>
+              <label><input class="checkbox" type="checkbox" bind:checked={cleanupSchedule.buildCache} /><span>Build cache</span></label>
+              <label><input class="checkbox" type="checkbox" bind:checked={cleanupSchedule.networks} /><span>Unused networks</span></label>
+            </div>
+          </fieldset>
+
+          <div class="schedule-safety">
+            <Icon name="shield" size={16} />
+            <p><strong>Volumes stay manual.</strong> Scheduled cleanup never deletes volumes or resources attached to running containers.</p>
+          </div>
+
+          <footer>
+            <span>{automaticResourceCount} resource categor{automaticResourceCount === 1 ? 'y' : 'ies'} selected</span>
+            <button class="btn btn-primary" type="submit" disabled={cleanupScheduleLoading || cleanupScheduleSaving || (cleanupSchedule.enabled && automaticResourceCount === 0)}>
+              {cleanupScheduleSaving ? 'Saving schedule…' : 'Save schedule'}
+            </button>
+          </footer>
+        </form>
+      </div>
+    </section>
   {/if}
 </Shell>
 
@@ -677,6 +911,284 @@
     line-height: 1.5;
   }
 
+  .schedule-panel {
+    margin-top: var(--space-5);
+    overflow: hidden;
+  }
+  .schedule-header {
+    min-height: 82px;
+    padding: var(--space-4) var(--space-5);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    border-bottom: 1px solid var(--color-rule);
+    background:
+      linear-gradient(90deg, color-mix(in srgb, var(--color-info) 6%, transparent), transparent 42%),
+      var(--color-paper-raised);
+  }
+  .schedule-heading {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+  .schedule-icon {
+    width: 42px;
+    height: 42px;
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--color-info) 25%, var(--color-rule));
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--color-info) 8%, var(--color-paper-raised));
+    color: var(--color-info);
+  }
+  .schedule-heading h2 {
+    margin: 2px 0 0;
+    font-size: var(--text-lg);
+  }
+  .schedule-heading p {
+    margin: 2px 0 0;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .schedule-state {
+    padding: 5px 9px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--color-rule);
+    border-radius: 999px;
+    background: var(--color-paper-subtle);
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    font-weight: 700;
+  }
+  .schedule-state i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-faint);
+  }
+  .schedule-state.enabled {
+    border-color: color-mix(in srgb, var(--color-success) 30%, var(--color-rule));
+    background: color-mix(in srgb, var(--color-success) 9%, var(--color-paper-raised));
+    color: var(--color-success);
+  }
+  .schedule-state.enabled i {
+    background: var(--color-success);
+  }
+  .schedule-alert {
+    margin: var(--space-4) var(--space-5) 0;
+  }
+  .schedule-body {
+    display: grid;
+    grid-template-columns: minmax(260px, 0.62fr) minmax(0, 1.38fr);
+  }
+  .schedule-summary {
+    padding: var(--space-5);
+    border-right: 1px solid var(--color-rule);
+    background: var(--color-paper-subtle);
+  }
+  .next-run {
+    padding-bottom: var(--space-5);
+    display: grid;
+    gap: var(--space-1);
+    border-bottom: 1px solid var(--color-rule);
+  }
+  .next-run span,
+  .schedule-summary dt {
+    color: var(--color-muted);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .next-run strong {
+    font-size: var(--text-lg);
+    letter-spacing: -0.02em;
+  }
+  .next-run small {
+    color: var(--color-muted);
+    font: 500 var(--text-xs) var(--font-mono);
+  }
+  .schedule-summary dl {
+    margin: var(--space-4) 0 0;
+    display: grid;
+    gap: var(--space-3);
+  }
+  .schedule-summary dl > div {
+    display: grid;
+    gap: 3px;
+  }
+  .schedule-summary dd {
+    margin: 0;
+    color: var(--color-ink-secondary);
+    font-size: var(--text-sm);
+    text-transform: capitalize;
+  }
+  .schedule-summary dd.success {
+    color: var(--color-success);
+  }
+  .schedule-summary dd.failed,
+  .last-error {
+    color: var(--color-danger);
+  }
+  .last-error {
+    margin: var(--space-4) 0 0;
+    font-size: var(--text-xs);
+    line-height: 1.5;
+  }
+  .schedule-form {
+    padding: var(--space-5);
+    display: grid;
+    gap: var(--space-4);
+  }
+  .automation-toggle {
+    min-height: 58px;
+    padding: var(--space-3);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-3);
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+  }
+  .automation-toggle > span {
+    display: grid;
+    gap: 2px;
+  }
+  .automation-toggle strong {
+    font-size: var(--text-sm);
+  }
+  .automation-toggle small {
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .automation-toggle input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .automation-toggle > i {
+    width: 38px;
+    height: 22px;
+    position: relative;
+    border: 1px solid var(--color-rule-strong);
+    border-radius: 999px;
+    background: var(--color-paper-subtle);
+    transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+  }
+  .automation-toggle > i::after {
+    content: '';
+    width: 16px;
+    height: 16px;
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    border-radius: 50%;
+    background: var(--color-muted);
+    transition: transform var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out);
+  }
+  .automation-toggle input:checked + i {
+    border-color: var(--color-accent);
+    background: var(--color-accent);
+  }
+  .automation-toggle input:checked + i::after {
+    transform: translateX(16px);
+    background: var(--color-accent-ink);
+  }
+  .automation-toggle input:focus-visible + i {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+  .schedule-fields {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-3);
+  }
+  .timezone-note {
+    margin: calc(var(--space-2) * -1) 0 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .timezone-note code {
+    color: var(--color-ink-secondary);
+    font-family: var(--font-mono);
+  }
+  .automatic-resources {
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  .automatic-resources legend {
+    margin-bottom: var(--space-2);
+    color: var(--color-ink-secondary);
+    font-size: var(--text-xs);
+    font-weight: 700;
+  }
+  .automatic-resources > div {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+  .automatic-resources label {
+    min-height: 44px;
+    padding: 0 var(--space-3);
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    border-bottom: 1px solid var(--color-rule);
+    cursor: pointer;
+    font-size: var(--text-xs);
+  }
+  .automatic-resources label:nth-child(odd) {
+    border-right: 1px solid var(--color-rule);
+  }
+  .automatic-resources label:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+  .automatic-resources label:has(input:checked) {
+    background: var(--color-accent-softer);
+    color: var(--color-accent-strong);
+  }
+  .schedule-safety {
+    padding: var(--space-3);
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    border: 1px solid color-mix(in srgb, var(--color-info) 25%, var(--color-rule));
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--color-info) 5%, var(--color-paper-raised));
+    color: var(--color-info);
+  }
+  .schedule-safety p {
+    margin: 0;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+  }
+  .schedule-safety strong {
+    color: var(--color-ink-secondary);
+  }
+  .schedule-form footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+  .schedule-form footer > span {
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+
   @media (max-width: 76rem) {
     .metric-grid {
       grid-template-columns: repeat(3, 1fr);
@@ -694,6 +1206,13 @@
     }
     .cleanup-confirm {
       position: static;
+    }
+    .schedule-body {
+      grid-template-columns: 1fr;
+    }
+    .schedule-summary {
+      border-right: 0;
+      border-bottom: 1px solid var(--color-rule);
     }
   }
   @media (max-width: 40rem) {
@@ -731,6 +1250,30 @@
     }
     .cleanup-list label > i {
       display: none;
+    }
+    .schedule-header,
+    .schedule-form footer {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .schedule-state {
+      margin-left: 54px;
+    }
+    .schedule-fields,
+    .automatic-resources > div {
+      grid-template-columns: 1fr;
+    }
+    .automatic-resources label,
+    .automatic-resources label:nth-child(odd),
+    .automatic-resources label:nth-last-child(-n + 2) {
+      border-right: 0;
+      border-bottom: 1px solid var(--color-rule);
+    }
+    .automatic-resources label:last-child {
+      border-bottom: 0;
+    }
+    .schedule-form footer button {
+      width: 100%;
     }
   }
 </style>

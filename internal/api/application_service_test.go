@@ -1,6 +1,11 @@
 package api
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+)
 
 func TestCleanApplicationServiceInputKeepsValidBuildStrategyForImage(t *testing.T) {
 	clean, err := cleanApplicationServiceInput(applicationServiceInput{
@@ -75,5 +80,49 @@ func TestCleanApplicationServiceInputClearsRepositoryFieldsForImage(t *testing.T
 	}
 	if clean.BuildStrategy != "dockerfile" {
 		t.Fatalf("build strategy = %q, want dockerfile", clean.BuildStrategy)
+	}
+}
+
+func TestDeploymentCancellationCanOnlyBeClaimedOnce(t *testing.T) {
+	api := &API{}
+	ctx, cancel := context.WithCancel(context.Background())
+	api.registerDeployment("dep_test", cancel)
+
+	claimed, ok := api.claimDeploymentCancellation("dep_test")
+	if !ok {
+		t.Fatal("expected registered deployment cancellation")
+	}
+	claimed()
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("context error = %v, want context.Canceled", ctx.Err())
+	}
+	if _, ok := api.claimDeploymentCancellation("dep_test"); ok {
+		t.Fatal("expected cancellation to be removed after it was claimed")
+	}
+}
+
+func TestUnregisterDeploymentRemovesCancellation(t *testing.T) {
+	api := &API{}
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	api.registerDeployment("dep_test", cancel)
+	api.unregisterDeployment("dep_test")
+
+	if _, ok := api.claimDeploymentCancellation("dep_test"); ok {
+		t.Fatal("expected completed deployment cancellation to be unregistered")
+	}
+}
+
+func TestDeploymentCancelledRecognizesContextAndWrappedErrors(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if !deploymentCancelled(ctx, errors.New("docker request failed")) {
+		t.Fatal("expected cancelled context to be recognized")
+	}
+	if !deploymentCancelled(context.Background(), fmt.Errorf("pull image: %w", context.Canceled)) {
+		t.Fatal("expected wrapped context.Canceled to be recognized")
+	}
+	if deploymentCancelled(context.Background(), context.DeadlineExceeded) {
+		t.Fatal("deadline exceeded must remain a failed deployment")
 	}
 }

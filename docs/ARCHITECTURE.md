@@ -66,7 +66,7 @@ flowchart TB
     HostSocket["/var/run/docker.sock"]
 
     subgraph Compose["Dokyr Compose application"]
-        Caddy["caddy<br/>host 8080→80<br/>host 8443→443"]
+        Caddy["caddy<br/>host 8888→80<br/>host 8443→443"]
         Control["selfhost<br/>listens on 8080 internally"]
         MetaDB["postgres:17-alpine<br/>not published"]
         AdminSock[("caddy_admin volume<br/>admin.sock")]
@@ -104,7 +104,7 @@ flowchart TB
 | `caddy_data`, `caddy_config` | Persists certificates and Caddy state | Docker volumes |
 | `selfhost-db-*` volumes | Persist managed database data | One named volume per database service |
 
-By default, Caddy publishes HTTP on host port `8080` and HTTPS on `8443`, which avoids a collision with tools already using ports 80/443. Set `HTTP_PORT=80` and `HTTPS_PORT=443` on a VPS when those ports are available.
+By default, Caddy publishes HTTP on host port `8888` and HTTPS on `8443`, which avoids collisions with other local services. Set `HTTP_PORT=80` and `HTTPS_PORT=443` on a VPS when those ports are available.
 
 ## 4. Code map
 
@@ -285,7 +285,7 @@ flowchart TD
     ControlHost -->|No| NotFound["404 Not Found"]
 ```
 
-For a local hostname such as `hello.test`, map it to `127.0.0.1`, assign `hello.test` in the project, and browse `http://hello.test:8080` with the default ports. On a VPS, point an A record to the server and normally publish Caddy on 80/443.
+For a local hostname such as `hello.test`, map it to `127.0.0.1`, assign `hello.test` in the project, and browse `http://hello.test:8888` with the default ports. On a VPS, point an A record to the server and normally publish Caddy on 80/443.
 
 ## 10. Managed database flow
 
@@ -394,7 +394,7 @@ Applied filenames are recorded in `schema_migrations`. Each migration runs in it
 | `GITLAB_BASE_URL` | `https://gitlab.com` | GitLab SaaS or self-managed base URL |
 | `CADDY_ADMIN_URL` | `unix:///run/caddy-admin/admin.sock` | Caddy admin API transport |
 | `SELFHOST_CONTROL_HOSTS` | `localhost` | Space/comma/semicolon-separated panel host allowlist |
-| `HTTP_PORT` | `8080` | Compose-only Caddy HTTP host port |
+| `HTTP_PORT` | `8888` | Compose-only Caddy HTTP host port |
 | `HTTPS_PORT` | `8443` | Compose-only Caddy HTTPS TCP/UDP host port |
 | `POSTGRES_PASSWORD` | insecure development value | Compose control-plane database password |
 
@@ -426,7 +426,7 @@ Build and run the full reference topology:
 cp .env.example .env
 # Replace every development credential in .env.
 docker compose up -d --build
-curl http://localhost:8080/api/health
+curl http://localhost:8888/api/health
 ```
 
 Run code checks:

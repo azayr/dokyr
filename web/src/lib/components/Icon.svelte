@@ -20,6 +20,7 @@
 {:else if name==='plus'}<path d="M12 5v14M5 12h14"/>
 {:else if name==='logs'}<path d="M5 5h14M5 10h14M5 15h9M5 20h6"/>
 {:else if name==='play'}<path d="m8 5 11 7-11 7V5z"/>
+{:else if name==='stop'}<rect x="6" y="6" width="12" height="12" rx="1.5"/>
 {:else if name==='trash'}<path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/>
 {:else if name==='key'}<circle cx="8" cy="15" r="4"/><path d="m11 12 8-8M16 7l2 2M14 9l2 2"/>
 {:else if name==='network'}<circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="m7 11 10-4M7 13l10 4"/>

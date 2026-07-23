@@ -19,7 +19,7 @@
   class:good={['healthy', 'ready'].includes(value)}
   class:busy={['deploying', 'building', 'running', 'queued'].includes(value)}
   class:bad={value === 'failed'}
-  class:warn={value === 'degraded'}
+  class:warn={['degraded', 'cancelled'].includes(value)}
 >
   <i></i>{labels[value] || value}
 </span>

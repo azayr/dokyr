@@ -265,10 +265,46 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) recoverInterruptedDeployments(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE deployments
-		SET status='failed', message='Deployment interrupted by control plane restart'
-		WHERE status IN ('deploying','building')`)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	const interruption = "Deployment interrupted by control plane restart"
+	if _, err := tx.ExecContext(ctx, `WITH interrupted AS (
+			SELECT deployment.id,
+				COALESCE((
+					SELECT event.stage
+					FROM deployment_events event
+					WHERE event.deployment_id=deployment.id
+					ORDER BY event.id DESC
+					LIMIT 1
+				), 'prepare') AS stage
+			FROM deployments deployment
+			WHERE deployment.status IN ('deploying','building')
+		)
+		INSERT INTO deployment_events(deployment_id,stage,event_type,message)
+		SELECT id,stage,'error',$1 FROM interrupted`, interruption); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE application_services
+		SET status='failed', last_error=$1, updated_at=NOW()
+		WHERE status IN ('deploying','building')`, interruption); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE projects
+		SET status='degraded', updated_at=NOW()
+		WHERE status IN ('deploying','building')`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE deployments
+		SET status='failed',
+			message=$1,
+			duration=GREATEST(duration, FLOOR(EXTRACT(EPOCH FROM (NOW()-created_at)))::INTEGER)
+		WHERE status IN ('deploying','building')`, interruption); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *Store) wait(ctx context.Context, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)

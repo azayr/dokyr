@@ -1,0 +1,21 @@
+CREATE TABLE cleanup_schedule (
+    singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    frequency TEXT NOT NULL DEFAULT 'weekly' CHECK (frequency IN ('daily', 'weekly')),
+    weekday SMALLINT NOT NULL DEFAULT 0 CHECK (weekday BETWEEN 0 AND 6),
+    hour SMALLINT NOT NULL DEFAULT 3 CHECK (hour BETWEEN 0 AND 23),
+    minute SMALLINT NOT NULL DEFAULT 0 CHECK (minute BETWEEN 0 AND 59),
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    cleanup_containers BOOLEAN NOT NULL DEFAULT TRUE,
+    cleanup_images BOOLEAN NOT NULL DEFAULT TRUE,
+    cleanup_build_cache BOOLEAN NOT NULL DEFAULT TRUE,
+    cleanup_networks BOOLEAN NOT NULL DEFAULT TRUE,
+    last_run_at TIMESTAMPTZ,
+    next_run_at TIMESTAMPTZ,
+    last_status TEXT NOT NULL DEFAULT 'never' CHECK (last_status IN ('never', 'running', 'succeeded', 'failed')),
+    last_message TEXT NOT NULL DEFAULT '',
+    last_deleted INTEGER NOT NULL DEFAULT 0,
+    last_reclaimed BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

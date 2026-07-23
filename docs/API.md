@@ -4,7 +4,7 @@ This document describes the HTTP API exposed by the Dokyr control plane. It is w
 
 ## Conventions
 
-- **Base URL:** the URL where the control plane is installed, for example `https://control.example.com` or `http://127.0.0.1:8080`.
+- **Base URL:** the URL where the control plane is installed, for example `https://control.example.com` or `http://127.0.0.1:8888`.
 - All API routes are rooted at `/api`.
 - JSON request and response bodies use `application/json`.
 - The server rejects unknown request-body properties and bodies larger than 1 MiB.
@@ -358,6 +358,8 @@ App in Settings. Other GitHub or network failures do not erase configuration.
 | `DELETE` | `/api/projects/{projectId}` | Delete project with confirmation |
 | `PUT` | `/api/projects/{projectId}/domain` | Replace all domain bindings |
 | `POST` | `/api/projects/{projectId}/deploy` | Deploy default/legacy application |
+| `POST` | `/api/projects/{projectId}/stop` | Stop default/legacy application |
+| `POST` | `/api/projects/{projectId}/restart` | Restart or start default/legacy application |
 | `GET` | `/api/projects/{projectId}/logs?lines=300` | Default/legacy runtime logs |
 | `GET` | `/api/projects/{projectId}/metrics` | Per-project container metrics |
 
@@ -463,6 +465,8 @@ For backwards compatibility, a single-domain shape (`domain`, `httpsEnabled`, `d
 
 `POST /api/projects/{projectId}/deploy` starts an image deployment and returns `202` with `{ "project": Project, "deployment": Deployment }`. It is unavailable for the legacy repository project type. Use `POST /api/services/{serviceId}/deploy` for Git services.
 
+`POST /api/projects/{projectId}/stop` and `/restart` control the existing legacy container without pulling or rebuilding it. Both return `{ "service": Service, "message": "…" }`.
+
 ### Logs and metrics
 
 `GET /api/projects/{projectId}/logs?lines=300` returns:
@@ -504,6 +508,8 @@ Successful application-service update returns `{ "variables": [...], "service": 
 | `POST` | `/api/projects/{projectId}/services` | Create an application service |
 | `PUT` | `/api/services/{serviceId}` | Update its source/runtime definition |
 | `POST` | `/api/services/{serviceId}/deploy` | Start async deployment |
+| `POST` | `/api/services/{serviceId}/stop` | Stop its current container |
+| `POST` | `/api/services/{serviceId}/restart` | Restart or start its current container |
 | `GET` | `/api/services/{serviceId}/deployment-triggers` | Read Git/registry deployment automation |
 | `PUT` | `/api/services/{serviceId}/deployment-triggers` | Enable or update deployment automation |
 | `GET` | `/api/services/{serviceId}/logs?lines=300` | Runtime logs |
@@ -622,7 +628,9 @@ If `registryWebhookTag` is not empty, the JSON payload must contain that value i
 
 Automatic deployments use the same zero-downtime execution path as the manual deploy button: Git services clone and rebuild; image services pull the configured image; both create, verify, and promote a candidate container. If the service is already deploying, the event is accepted but ignored.
 
-### Service logs and removal
+### Service lifecycle, logs, and removal
+
+`POST /api/services/{serviceId}/stop` and `POST /api/services/{serviceId}/restart` have no body and return `{ "service": ApplicationService, "message": "…" }`. Restart uses the current container and does not pull, clone, or rebuild; call deploy when the source or image should be refreshed. Lifecycle actions return `409` while a deployment is in progress or before the service has its first container.
 
 `GET /api/services/{serviceId}/logs?lines=300` has the same response shape and `lines` limits as project logs, but uses the service container.
 
@@ -637,6 +645,8 @@ Automatic deployments use the same zero-downtime execution path as the manual de
 | `GET` | `/api/databases/{databaseId}/events` | Database deployment events |
 | `GET` | `/api/databases/{databaseId}/logs?lines=300` | Runtime logs |
 | `PUT` | `/api/databases/{databaseId}/exposure` | Change public port exposure |
+| `POST` | `/api/databases/{databaseId}/stop` | Stop database container |
+| `POST` | `/api/databases/{databaseId}/restart` | Restart or start database container |
 | `DELETE` | `/api/databases/{databaseId}` | Remove database |
 
 ### Create a database
@@ -679,6 +689,8 @@ Returns `201`:
 
 `GET /api/databases/{databaseId}/events` returns `{ "events": [{ "id": 1, "stage": "pull", "type": "log", "message": "…", "createdAt": "…" }] }`.
 
+`POST /api/databases/{databaseId}/stop` and `/restart` control the existing database container without changing its volume, credentials, or exposure. Both return `{ "service": DatabaseService, "message": "…" }`.
+
 `PUT /api/databases/{databaseId}/exposure`:
 
 ```json
@@ -701,6 +713,7 @@ Returns `{ "removed": true, "volumeRemoved": false, "retainedVolume": "selfhost-
 | --- | --- | --- |
 | `GET` | `/api/deployments` | All deployments, newest first |
 | `GET` | `/api/deployments/{deploymentId}` | Deployment, project, and events |
+| `POST` | `/api/deployments/{deploymentId}/cancel` | Stop a running deployment |
 
 `GET /api/deployments/{deploymentId}` response:
 
@@ -712,7 +725,9 @@ Returns `{ "removed": true, "volumeRemoved": false, "retainedVolume": "selfhost-
 }
 ```
 
-A frontend can poll every 1–3 seconds while `deployment.status === "deploying"`, then stop when it becomes `healthy`, `degraded`, or `failed`.
+A frontend can poll every 1–3 seconds while `deployment.status` is `deploying` or `building`, then stop when it becomes `healthy`, `degraded`, `failed`, or `cancelled`.
+
+`POST /api/deployments/{deploymentId}/cancel` returns `202 Accepted` after cancellation is requested. The deployment remains live while Dokyr aborts the pull, clone, build, or candidate rollout and cleans up. It then becomes `cancelled`. For application services, an existing stable release remains online; cancelling a first deployment returns the undeployed service to `created`. Once promotion starts, Dokyr lets the atomic release switch finish and the endpoint returns `409`.
 
 ## Sources and registries
 

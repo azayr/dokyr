@@ -2,11 +2,71 @@ package runtime
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
+func TestContainerLifecycleActionsUseExpectedDockerEndpoints(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		run  func(*Docker) error
+	}{
+		{name: "stop project", path: "/containers/selfhost-prj_one/stop?t=10", run: func(d *Docker) error { return d.StopProject(context.Background(), "prj_one") }},
+		{name: "restart project", path: "/containers/selfhost-prj_one/restart?t=10", run: func(d *Docker) error { return d.RestartProject(context.Background(), "prj_one") }},
+		{name: "stop application", path: "/containers/selfhost-svc-svc_one/stop?t=10", run: func(d *Docker) error { return d.StopApplication(context.Background(), "svc_one") }},
+		{name: "restart application", path: "/containers/selfhost-svc-svc_one/restart?t=10", run: func(d *Docker) error { return d.RestartApplication(context.Background(), "svc_one") }},
+		{name: "stop database", path: "/containers/selfhost-db-db_one/stop?t=10", run: func(d *Docker) error { return d.StopDatabase(context.Background(), "db_one") }},
+		{name: "restart database", path: "/containers/selfhost-db-db_one/restart?t=10", run: func(d *Docker) error { return d.RestartDatabase(context.Background(), "db_one") }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			docker := &Docker{client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if request.Method != http.MethodPost || request.URL.RequestURI() != test.path {
+					t.Fatalf("request = %s %s, want POST %s", request.Method, request.URL.RequestURI(), test.path)
+				}
+				return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+			})}}
+			if err := test.run(docker); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestStoppedContainersReportStoppedStatus(t *testing.T) {
+	docker := &Docker{client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := `{"Name":"/example","State":{"Running":false,"Health":{"Status":""}},"Config":{"Image":"example:latest"},"NetworkSettings":{"Ports":{}}}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}}
+	application, err := docker.ApplicationService(context.Background(), "svc_one", "API")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := docker.ProjectService(context.Background(), "prj_one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := docker.DatabaseRuntime(context.Background(), "db_one", 5432)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if application.Status != "stopped" || project.Status != "stopped" || database.Status != "stopped" {
+		t.Fatalf("stopped statuses = application %q, project %q, database %q", application.Status, project.Status, database.Status)
+	}
+}
 
 func TestDecodeImagePullConsumesCompleteJSONStream(t *testing.T) {
 	events := []string{}
@@ -36,6 +96,65 @@ func TestApplicationCandidateContainerNameIsDistinctAndStablePrefix(t *testing.T
 	}
 	if again := applicationCandidateContainerName("svc_example", started); again != name {
 		t.Fatalf("candidate name changed: %q != %q", again, name)
+	}
+}
+
+func TestRemoveOrphanApplicationCandidatesPreservesStableContainers(t *testing.T) {
+	candidate := "selfhost-svc-svc_one-next-abc123"
+	deleted := []string{}
+	docker := &Docker{client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.Method {
+		case http.MethodGet:
+			if request.URL.Path != "/containers/json" || !strings.Contains(request.URL.Query().Get("filters"), "selfhost.service.kind") {
+				t.Fatalf("unexpected list request: %s", request.URL.String())
+			}
+			body := `[
+				{"Names":["/selfhost-svc-svc_one"],"Labels":{"selfhost.managed":"true","selfhost.service.kind":"application"}},
+				{"Names":["/` + candidate + `"],"Labels":{"selfhost.managed":"true","selfhost.service.kind":"application"}},
+				{"Names":["/unmanaged-next-container"],"Labels":{}}
+			]`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		case http.MethodDelete:
+			deleted = append(deleted, request.URL.Path)
+			return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+		default:
+			t.Fatalf("unexpected request method %s", request.Method)
+			return nil, nil
+		}
+	})}}
+
+	removed, err := docker.RemoveOrphanApplicationCandidates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != candidate {
+		t.Fatalf("removed candidates = %#v, want %q", removed, candidate)
+	}
+	if len(deleted) != 1 || deleted[0] != "/containers/"+candidate {
+		t.Fatalf("delete requests = %#v", deleted)
+	}
+}
+
+func TestApplicationHTTPHealthCheckUsesValidHostHeader(t *testing.T) {
+	receivedHost := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		receivedHost <- request.Host
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(target.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkApplicationHTTP(context.Background(), target.Hostname(), port, "/health"); err != nil {
+		t.Fatal(err)
+	}
+	if host := <-receivedHost; host != "localhost" {
+		t.Fatalf("health check Host = %q, want localhost", host)
 	}
 }
 
