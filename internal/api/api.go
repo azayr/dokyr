@@ -163,6 +163,7 @@ func (a *API) Handler() http.Handler {
 	protected.HandleFunc("GET /api/integrations/sources/{id}/repositories", a.repositories)
 	protected.HandleFunc("DELETE /api/integrations/sources/{id}", a.deleteSourceConnection)
 	protected.HandleFunc("POST /api/integrations/registries", a.createRegistry)
+	protected.HandleFunc("POST /api/integrations/registries/{id}/check", a.checkRegistry)
 	protected.HandleFunc("DELETE /api/integrations/registries/{id}", a.deleteRegistry)
 	protected.HandleFunc("GET /api/caddy/config", a.caddyConfig)
 	protected.HandleFunc("PUT /api/caddy/config", a.applyCaddyConfig)
@@ -1677,6 +1678,29 @@ func (a *API) createRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, 201, created)
+}
+
+func (a *API) checkRegistry(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.FromContext(r.Context())
+	registryID := strings.TrimSpace(r.PathValue("id"))
+	registryAuth, err := a.registryAuthForService(r.Context(), registryID, claims.Subject)
+	if store.NotFound(err) {
+		write(w, http.StatusNotFound, map[string]string{"error": "registry not found"})
+		return
+	}
+	if err != nil {
+		a.log.Warn("load registry credential for connection check", "registry", registryID, "error", err)
+		write(w, http.StatusBadRequest, map[string]string{"error": "Registry credential could not be loaded"})
+		return
+	}
+	checkContext, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	if err := a.docker.CheckRegistryConnection(checkContext, registryAuth); err != nil {
+		a.log.Warn("check registry connection", "registry", registryID, "error", err)
+		write(w, http.StatusBadGateway, map[string]string{"error": "Connection failed: " + err.Error()})
+		return
+	}
+	write(w, http.StatusOK, map[string]any{"connected": true, "message": "Credentials accepted by the registry"})
 }
 
 func (a *API) deleteRegistry(w http.ResponseWriter, r *http.Request) {

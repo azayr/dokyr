@@ -38,6 +38,14 @@ type RegistryAuth struct {
 	ServerAddress string `json:"serveraddress"`
 }
 
+func encodeRegistryAuth(auth *RegistryAuth) (string, error) {
+	encoded, err := json.Marshal(auth)
+	if err != nil {
+		return "", err
+	}
+	return base64.URLEncoding.EncodeToString(encoded), nil
+}
+
 type ProgressFunc func(stage, eventType, message string)
 
 type ApplicationHealthCheck struct {
@@ -218,6 +226,27 @@ func (d *Docker) Health(ctx context.Context) Health {
 	return h
 }
 
+func (d *Docker) CheckRegistryConnection(ctx context.Context, auth *RegistryAuth) error {
+	if auth == nil || strings.TrimSpace(auth.ServerAddress) == "" {
+		return errors.New("registry credentials are incomplete")
+	}
+	res, err := d.request(ctx, http.MethodPost, "/auth", auth, nil)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	var result struct {
+		Status string `json:"Status"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return fmt.Errorf("decode registry response: %w", err)
+	}
+	if strings.TrimSpace(result.Status) == "" {
+		return errors.New("registry returned an empty authentication response")
+	}
+	return nil
+}
+
 func containerName(projectID string) string            { return "selfhost-" + projectID }
 func applicationContainerName(serviceID string) string { return "selfhost-svc-" + serviceID }
 func databaseContainerName(serviceID string) string    { return "selfhost-db-" + serviceID }
@@ -299,11 +328,11 @@ func (d *Docker) DeployImage(ctx context.Context, projectID, image string, conta
 	}
 	headers := map[string]string{}
 	if auth != nil {
-		encoded, err := json.Marshal(auth)
+		encoded, err := encodeRegistryAuth(auth)
 		if err != nil {
 			return Service{}, err
 		}
-		headers["X-Registry-Auth"] = base64.RawURLEncoding.EncodeToString(encoded)
+		headers["X-Registry-Auth"] = encoded
 	}
 	if progress != nil {
 		progress("pull", "start", "Pulling "+image)
@@ -383,11 +412,11 @@ func (d *Docker) DeployApplicationImage(ctx context.Context, serviceID, projectI
 	}
 	headers := map[string]string{}
 	if auth != nil {
-		encoded, err := json.Marshal(auth)
+		encoded, err := encodeRegistryAuth(auth)
 		if err != nil {
 			return Service{}, err
 		}
-		headers["X-Registry-Auth"] = base64.RawURLEncoding.EncodeToString(encoded)
+		headers["X-Registry-Auth"] = encoded
 	}
 	if progress != nil {
 		progress("pull", "start", "Pulling "+image)

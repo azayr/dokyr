@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"io"
@@ -116,6 +117,27 @@ func TestStoppedContainersReportStoppedStatus(t *testing.T) {
 	}
 }
 
+func TestCheckRegistryConnectionUsesDockerAuthEndpoint(t *testing.T) {
+	auth := &RegistryAuth{Username: "octocat", Password: "token", ServerAddress: "ghcr.io"}
+	docker := &Docker{client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPost || request.URL.Path != "/auth" {
+			t.Fatalf("request = %s %s, want POST /auth", request.Method, request.URL.Path)
+		}
+		var received RegistryAuth
+		if err := json.NewDecoder(request.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		if received != *auth {
+			t.Fatalf("auth = %#v, want %#v", received, *auth)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"Status":"Login Succeeded"}`)), Header: make(http.Header)}, nil
+	})}}
+
+	if err := docker.CheckRegistryConnection(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDecodeImagePullConsumesCompleteJSONStream(t *testing.T) {
 	events := []string{}
 	err := decodeImagePull(strings.NewReader("{\"status\":\"Pulling\",\"id\":\"layer-one\"}\n{\"status\":\"Download complete\",\"id\":\"layer-one\"}\n"), func(stage, eventType, message string) {
@@ -133,6 +155,28 @@ func TestDecodeImagePullReturnsRegistryError(t *testing.T) {
 	err := decodeImagePull(strings.NewReader("{\"errorDetail\":{\"message\":\"denied\"}}\n"), nil)
 	if err == nil || err.Error() != "denied" {
 		t.Fatalf("error = %v, want denied", err)
+	}
+}
+
+func TestEncodeRegistryAuthUsesDockerCompatiblePaddedBase64URL(t *testing.T) {
+	auth := &RegistryAuth{Username: "u", Password: "pw", ServerAddress: "ghcr.io"}
+	encoded, err := encodeRegistryAuth(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(encoded, "=") {
+		t.Fatalf("encoded auth = %q, want RFC 4648 padding", encoded)
+	}
+	decoded, err := base64.URLEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("decode auth: %v", err)
+	}
+	var roundTrip RegistryAuth
+	if err := json.Unmarshal(decoded, &roundTrip); err != nil {
+		t.Fatalf("unmarshal auth: %v", err)
+	}
+	if roundTrip != *auth {
+		t.Fatalf("decoded auth = %#v, want %#v", roundTrip, *auth)
 	}
 }
 

@@ -17,6 +17,7 @@
   let sourceError = '';
   let warning = '';
   let registry = { name: '', registryUrl: '', username: '', password: '' };
+  let registryChecks = {};
   let registryToRemove = null;
   let removeRegistryBusy = false;
   let accountToUnlink = null;
@@ -86,6 +87,33 @@
     registryToRemove = null;
     removeRegistryBusy = false;
     await load();
+  }
+
+  async function checkRegistry(item) {
+    registryChecks = {
+      ...registryChecks,
+      [item.id]: { status: 'checking', message: 'Contacting registry…' }
+    };
+    try {
+      const response = await api('/api/integrations/registries/' + item.id + '/check', { method: 'POST' });
+      const body = await response.json();
+      if (!response.ok) {
+        registryChecks = {
+          ...registryChecks,
+          [item.id]: { status: 'failed', message: body.error || 'Connection failed' }
+        };
+        return;
+      }
+      registryChecks = {
+        ...registryChecks,
+        [item.id]: { status: 'connected', message: body.message || 'Connection verified' }
+      };
+    } catch (checkError) {
+      registryChecks = {
+        ...registryChecks,
+        [item.id]: { status: 'failed', message: checkError.message || 'Connection failed' }
+      };
+    }
   }
 
   async function unlinkSource() {
@@ -247,11 +275,26 @@
         {:else}
           <div class="registry-rows">
             {#each data.registries as item}
-              <div class="registry-row">
-                <span class="registry-icon"><Icon name="database" size={14} /></span>
-                <span class="registry-text"><strong>{item.name}</strong><small>{item.registryUrl}</small></span>
-                <code>{item.username || 'anonymous'} / ••••••••</code>
-                <button class="btn btn-sm btn-danger" onclick={() => (registryToRemove = item)}>Remove</button>
+              {@const check = registryChecks[item.id]}
+              <div class="registry-item">
+                <div class="registry-row">
+                  <span class="registry-icon"><Icon name="database" size={14} /></span>
+                  <span class="registry-text"><strong>{item.name}</strong><small>{item.registryUrl}</small></span>
+                  <code>{item.username || 'anonymous'} / ••••••••</code>
+                  <div class="registry-actions">
+                    <button class="btn btn-sm registry-check" disabled={check?.status === 'checking'} onclick={() => checkRegistry(item)}>
+                      <span class:spin={check?.status === 'checking'}><Icon name={check?.status === 'checking' ? 'refresh' : 'activity'} size={13} /></span>
+                      {check?.status === 'checking' ? 'Checking…' : 'Check connection'}
+                    </button>
+                    <button class="btn btn-sm btn-danger" onclick={() => (registryToRemove = item)}>Remove</button>
+                  </div>
+                </div>
+                {#if check}
+                  <div class:connected={check.status === 'connected'} class:failed={check.status === 'failed'} class:checking={check.status === 'checking'} class="registry-check-result" role="status">
+                    <span class:spin={check.status === 'checking'}><Icon name={check.status === 'connected' ? 'check-circle' : check.status === 'failed' ? 'x-circle' : 'refresh'} size={13} /></span>
+                    <span>{check.message}</span>
+                  </div>
+                {/if}
               </div>
             {/each}
           </div>
@@ -508,6 +551,12 @@
   .registry-rows {
     display: grid;
   }
+  .registry-item {
+    border-bottom: 1px solid var(--color-rule);
+  }
+  .registry-item:last-child {
+    border-bottom: 0;
+  }
   .registry-row {
     min-height: 60px;
     padding: var(--space-2) var(--space-5);
@@ -515,10 +564,6 @@
     grid-template-columns: 32px minmax(0, 1fr) auto auto;
     align-items: center;
     gap: var(--space-3);
-    border-bottom: 1px solid var(--color-rule);
-  }
-  .registry-row:last-child {
-    border-bottom: 0;
   }
   .registry-icon {
     width: 32px;
@@ -551,6 +596,39 @@
     color: var(--color-muted);
     font-size: var(--text-xs);
     white-space: nowrap;
+  }
+  .registry-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .registry-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .spin {
+    display: inline-flex;
+    animation: registry-spin 0.8s linear infinite;
+  }
+  .registry-check-result {
+    min-height: 32px;
+    padding: 0 var(--space-5) var(--space-2);
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .registry-check-result.connected {
+    color: var(--color-success);
+  }
+  .registry-check-result.failed {
+    color: var(--color-danger);
+  }
+  @keyframes registry-spin {
+    to { transform: rotate(360deg); }
   }
   .rows-loading {
     padding: var(--space-3) var(--space-5);
@@ -595,6 +673,14 @@
     }
     .registry-row code {
       display: none;
+    }
+    .registry-actions {
+      grid-column: 2 / -1;
+      justify-content: flex-start;
+    }
+    .registry-check-result {
+      justify-content: flex-start;
+      padding-left: calc(var(--space-5) + 32px + var(--space-3));
     }
   }
 </style>
