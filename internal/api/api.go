@@ -129,6 +129,7 @@ func (a *API) Handler() http.Handler {
 	protected.HandleFunc("POST /api/services/{id}/deploy", a.deployApplicationService)
 	protected.HandleFunc("POST /api/services/{id}/stop", a.stopApplicationService)
 	protected.HandleFunc("POST /api/services/{id}/restart", a.restartApplicationService)
+	protected.HandleFunc("POST /api/services/{id}/exec", a.executeApplicationServiceCommand)
 	protected.HandleFunc("GET /api/services/{id}/deployment-triggers", a.applicationServiceDeploymentTriggers)
 	protected.HandleFunc("PUT /api/services/{id}/deployment-triggers", a.updateApplicationServiceDeploymentTriggers)
 	protected.HandleFunc("GET /api/services/{id}/logs", a.applicationServiceLogs)
@@ -157,6 +158,8 @@ func (a *API) Handler() http.Handler {
 	protected.HandleFunc("PUT /api/caddy/config", a.applyCaddyConfig)
 	protected.HandleFunc("POST /api/caddy/reset", a.resetCaddyConfig)
 	protected.HandleFunc("GET /api/infrastructure/metrics", a.infrastructureMetrics)
+	protected.HandleFunc("GET /api/infrastructure/control-plane/metrics", a.controlPlaneMetrics)
+	protected.HandleFunc("GET /api/infrastructure/control-plane/logs", a.controlPlaneLogs)
 	protected.HandleFunc("GET /api/infrastructure/cleanup", a.dockerCleanupPreview)
 	protected.HandleFunc("POST /api/infrastructure/cleanup", a.dockerCleanup)
 	protected.HandleFunc("GET /api/infrastructure/cleanup/schedule", a.cleanupSchedule)
@@ -194,6 +197,44 @@ func (a *API) infrastructureMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, 200, metrics)
+}
+
+func (a *API) controlPlaneMetrics(w http.ResponseWriter, r *http.Request) {
+	metrics, err := a.docker.ControlPlaneMetrics(r.Context())
+	if err != nil {
+		a.log.Warn("read Dokyr control-plane metrics", "error", err)
+		write(w, 502, map[string]string{"error": "Dokyr control-plane metrics are unavailable: " + err.Error()})
+		return
+	}
+	write(w, 200, metrics)
+}
+
+func (a *API) controlPlaneLogs(w http.ResponseWriter, r *http.Request) {
+	service := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("service")))
+	if service != "selfhost" && service != "postgres" && service != "caddy" {
+		bad(w, "service must be selfhost, postgres, or caddy")
+		return
+	}
+	tail := 300
+	if requested := strings.TrimSpace(r.URL.Query().Get("lines")); requested != "" {
+		parsed, err := strconv.Atoi(requested)
+		if err != nil || parsed < 1 || parsed > 1000 {
+			bad(w, "lines must be a number between 1 and 1000")
+			return
+		}
+		tail = parsed
+	}
+	lines, container, err := a.docker.ControlPlaneLogs(r.Context(), service, tail)
+	if errors.Is(err, runtime.ErrNotFound) {
+		write(w, 404, map[string]string{"error": "control-plane container is not available"})
+		return
+	}
+	if err != nil {
+		a.log.Warn("read Dokyr control-plane logs", "service", service, "error", err)
+		write(w, 502, map[string]string{"error": "could not read control-plane logs"})
+		return
+	}
+	write(w, 200, map[string]any{"service": service, "container": container, "lines": lines, "count": len(lines), "limit": tail})
 }
 
 func (a *API) projectMetrics(w http.ResponseWriter, r *http.Request) {
@@ -3547,6 +3588,91 @@ func (a *API) restartApplicationService(w http.ResponseWriter, r *http.Request) 
 	service.Status = runtimeService.Status
 	service.Container = runtimeService.Container
 	write(w, 200, map[string]any{"service": service, "message": service.Name + " restarted"})
+}
+
+type applicationCommandInput struct {
+	Command    string `json:"command"`
+	WorkingDir string `json:"workingDir"`
+}
+
+func cleanApplicationCommandInput(input applicationCommandInput) (applicationCommandInput, error) {
+	input.Command = strings.TrimSpace(input.Command)
+	input.WorkingDir = strings.TrimSpace(input.WorkingDir)
+	if input.Command == "" {
+		return applicationCommandInput{}, errors.New("command is required")
+	}
+	if len(input.Command) > 4096 || strings.ContainsRune(input.Command, '\x00') {
+		return applicationCommandInput{}, errors.New("command must be at most 4096 characters and cannot contain null bytes")
+	}
+	if input.WorkingDir != "" {
+		if len(input.WorkingDir) > 512 || !strings.HasPrefix(input.WorkingDir, "/") || strings.ContainsAny(input.WorkingDir, "\x00\r\n") {
+			return applicationCommandInput{}, errors.New("working directory must be an absolute container path")
+		}
+	}
+	return input, nil
+}
+
+func canExecuteContainerCommands(role string) bool {
+	return role == "owner" || role == "admin" || role == "developer"
+}
+
+func (a *API) executeApplicationServiceCommand(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.FromContext(r.Context())
+	if !ok || !canExecuteContainerCommands(claims.Role) {
+		write(w, http.StatusForbidden, map[string]string{"error": "your role cannot execute commands in containers"})
+		return
+	}
+	var input applicationCommandInput
+	if !decode(w, r, &input) {
+		return
+	}
+	clean, err := cleanApplicationCommandInput(input)
+	if err != nil {
+		bad(w, err.Error())
+		return
+	}
+	service, err := a.store.ApplicationService(r.Context(), strings.TrimSpace(r.PathValue("id")))
+	if store.NotFound(err) {
+		write(w, http.StatusNotFound, map[string]string{"error": "application service not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	runtimeService, err := a.docker.ApplicationService(r.Context(), service.ID, service.Name)
+	if errors.Is(err, runtime.ErrNotFound) {
+		write(w, http.StatusConflict, map[string]string{"error": "deploy this service before opening its terminal"})
+		return
+	}
+	if err != nil {
+		a.log.Warn("inspect application service before command", "service", service.ID, "error", err)
+		write(w, http.StatusBadGateway, map[string]string{"error": "could not inspect the service container"})
+		return
+	}
+	if runtimeService.Status == "stopped" {
+		write(w, http.StatusConflict, map[string]string{"error": "start this service before executing a command"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	result, err := a.docker.ExecuteApplicationCommand(ctx, service.ID, clean.Command, clean.WorkingDir)
+	if err != nil {
+		a.log.Warn("execute application service command", "service", service.ID, "user", claims.Subject, "error", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			write(w, http.StatusGatewayTimeout, map[string]string{"error": "command response exceeded 30 seconds; the process may still be running in the container"})
+			return
+		}
+		if errors.Is(err, runtime.ErrNotFound) {
+			write(w, http.StatusConflict, map[string]string{"error": "the service container is no longer available"})
+			return
+		}
+		write(w, http.StatusBadGateway, map[string]string{"error": "could not execute the container command: " + err.Error()})
+		return
+	}
+	a.log.Info("application service command executed", "service", service.ID, "user", claims.Subject, "exit_code", result.ExitCode, "duration_ms", result.DurationMS)
+	write(w, http.StatusOK, map[string]any{"result": result})
 }
 
 func (a *API) applicationEnvironmentVariables(service store.ApplicationService) ([]environmentVariableInput, []string, error) {

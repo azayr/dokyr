@@ -510,6 +510,7 @@ Successful application-service update returns `{ "variables": [...], "service": 
 | `POST` | `/api/services/{serviceId}/deploy` | Start async deployment |
 | `POST` | `/api/services/{serviceId}/stop` | Stop its current container |
 | `POST` | `/api/services/{serviceId}/restart` | Restart or start its current container |
+| `POST` | `/api/services/{serviceId}/exec` | Execute a shell command in its current container |
 | `GET` | `/api/services/{serviceId}/deployment-triggers` | Read Git/registry deployment automation |
 | `PUT` | `/api/services/{serviceId}/deployment-triggers` | Enable or update deployment automation |
 | `GET` | `/api/services/{serviceId}/logs?lines=300` | Runtime logs |
@@ -631,6 +632,14 @@ Automatic deployments use the same zero-downtime execution path as the manual de
 ### Service lifecycle, logs, and removal
 
 `POST /api/services/{serviceId}/stop` and `POST /api/services/{serviceId}/restart` have no body and return `{ "service": ApplicationService, "message": "…" }`. Restart uses the current container and does not pull, clone, or rebuild; call deploy when the source or image should be refreshed. Lifecycle actions return `409` while a deployment is in progress or before the service has its first container.
+
+`POST /api/services/{serviceId}/exec` executes one command through `/bin/sh -lc` in the stable service container:
+
+```json
+{ "command": "php artisan about", "workingDir": "/app" }
+```
+
+`workingDir` is optional and must be an absolute path inside the container. The response contains `stdout`, `stderr`, `exitCode`, `durationMs`, and the resolved container name. Output is capped at 2 MB and the HTTP request times out after 30 seconds; Docker does not provide an API to terminate an individual exec process, so a long-running command can continue in the container after the request times out. Owner, admin, and developer roles can use this endpoint; viewer accounts receive `403`.
 
 `GET /api/services/{serviceId}/logs?lines=300` has the same response shape and `lines` limits as project logs, but uses the service container.
 
@@ -818,10 +827,13 @@ Returns `201` with `{ "registry": RegistryCredential }`. `registryUrl` must be a
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/api/infrastructure/metrics` | Global Docker/host metrics |
+| `GET` | `/api/infrastructure/control-plane/metrics` | Metrics for Dokyr, PostgreSQL, and Caddy |
+| `GET` | `/api/infrastructure/control-plane/logs?service=selfhost&lines=300` | Logs for one Dokyr control-plane service |
 | `GET` | `/api/infrastructure/cleanup` | Cleanup preview |
 | `POST` | `/api/infrastructure/cleanup` | Run selected Docker cleanup |
 
 Metrics are global to the Docker host. Per-project metrics belong at `/api/projects/{projectId}/metrics`.
+Control-plane metrics are restricted to the current Dokyr Compose project and the `selfhost`, `postgres`, and `caddy` services. Control-plane logs accept only those service names and between 1 and 1000 lines.
 
 Cleanup preview returns Docker’s reclaimable-resource information. To perform cleanup:
 

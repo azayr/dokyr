@@ -1,7 +1,10 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -43,6 +46,51 @@ func TestContainerLifecycleActionsUseExpectedDockerEndpoints(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestExecuteApplicationCommandUsesScopedContainerAndDecodesOutput(t *testing.T) {
+	requests := []string{}
+	docker := &Docker{client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests = append(requests, request.Method+" "+request.URL.RequestURI())
+		switch request.URL.Path {
+		case "/containers/selfhost-svc-svc_one/exec":
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			command, _ := body["Cmd"].([]any)
+			if len(command) != 3 || command[2] != "printf test" || body["WorkingDir"] != "/app" {
+				t.Fatalf("unexpected exec body: %#v", body)
+			}
+			return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(`{"Id":"exec_one"}`)), Header: make(http.Header)}, nil
+		case "/exec/exec_one/start":
+			var stream bytes.Buffer
+			for streamID, value := range map[byte]string{1: "hello\n", 2: "warning\n"} {
+				header := make([]byte, 8)
+				header[0] = streamID
+				binary.BigEndian.PutUint32(header[4:], uint32(len(value)))
+				stream.Write(header)
+				stream.WriteString(value)
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(stream.Bytes())), Header: make(http.Header)}, nil
+		case "/exec/exec_one/json":
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"Running":false,"ExitCode":7}`)), Header: make(http.Header)}, nil
+		default:
+			t.Fatalf("unexpected Docker request: %s %s", request.Method, request.URL.RequestURI())
+			return nil, nil
+		}
+	})}}
+
+	result, err := docker.ExecuteApplicationCommand(context.Background(), "svc_one", "printf test", "/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Container != "selfhost-svc-svc_one" || result.Stdout != "hello" || result.Stderr != "warning" || result.ExitCode != 7 {
+		t.Fatalf("unexpected command result: %#v", result)
+	}
+	if len(requests) != 3 {
+		t.Fatalf("requests = %#v", requests)
 	}
 }
 
@@ -265,6 +313,49 @@ func TestProjectMetricsFiltersAndAggregatesContainers(t *testing.T) {
 	}
 	if snapshot.Global.DiskIO != (IOMetrics{Read: 15, Write: 27}) || snapshot.Global.NetworkIO != (NetworkMetrics{Receive: 41, Transmit: 53}) {
 		t.Fatalf("unexpected project I/O totals: %#v", snapshot.Global)
+	}
+}
+
+func TestControlPlaneMetricsFiltersAndOrdersDependencies(t *testing.T) {
+	docker := &Docker{metrics: &metricsCache{snapshot: MetricsSnapshot{
+		CheckedAt: time.Now(),
+		Global:    GlobalMetrics{CPUCores: 4, MemoryLimit: 1000},
+		Containers: []ContainerMetrics{
+			{ID: "project", ProjectID: "project-one", State: "running", CPUPercent: 20},
+			{ID: "proxy", ControlPlaneService: "caddy", State: "running", CPUPercent: 2, MemoryUsage: 50},
+			{ID: "api", ControlPlaneService: "selfhost", State: "running", CPUPercent: 5, MemoryUsage: 100},
+			{ID: "database", ControlPlaneService: "postgres", State: "running", CPUPercent: 3, MemoryUsage: 200},
+		},
+	}}}
+	snapshot, err := docker.ControlPlaneMetrics(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Global.Containers != 3 || snapshot.Global.Running != 3 {
+		t.Fatalf("control-plane counts = %d/%d, want 3/3", snapshot.Global.Running, snapshot.Global.Containers)
+	}
+	if snapshot.Global.CPUPercent != 10 || snapshot.Global.MemoryUsage != 350 {
+		t.Fatalf("control-plane aggregate = cpu %.2f memory %d", snapshot.Global.CPUPercent, snapshot.Global.MemoryUsage)
+	}
+	got := []string{}
+	for _, container := range snapshot.Containers {
+		got = append(got, container.ControlPlaneService)
+	}
+	if strings.Join(got, ",") != "selfhost,postgres,caddy" {
+		t.Fatalf("control-plane order = %v", got)
+	}
+}
+
+func TestControlPlaneServiceUsesCurrentComposeProject(t *testing.T) {
+	labels := map[string]string{
+		"com.docker.compose.project": "dokyr",
+		"com.docker.compose.service": "postgres",
+	}
+	if got := controlPlaneService(labels, "dokyr"); got != "postgres" {
+		t.Fatalf("controlPlaneService = %q, want postgres", got)
+	}
+	if got := controlPlaneService(labels, "another-project"); got != "" {
+		t.Fatalf("controlPlaneService accepted a different Compose project: %q", got)
 	}
 }
 

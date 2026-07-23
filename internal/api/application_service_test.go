@@ -83,6 +83,39 @@ func TestCleanApplicationServiceInputClearsRepositoryFieldsForImage(t *testing.T
 	}
 }
 
+func TestCleanApplicationCommandInput(t *testing.T) {
+	clean, err := cleanApplicationCommandInput(applicationCommandInput{Command: "  php artisan about  ", WorkingDir: " /app "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clean.Command != "php artisan about" || clean.WorkingDir != "/app" {
+		t.Fatalf("unexpected cleaned command input: %#v", clean)
+	}
+	for _, input := range []applicationCommandInput{
+		{},
+		{Command: "pwd", WorkingDir: "app"},
+		{Command: "pwd", WorkingDir: "/app\n/tmp"},
+		{Command: "echo \x00"},
+	} {
+		if _, err := cleanApplicationCommandInput(input); err == nil {
+			t.Fatalf("expected input to be rejected: %#v", input)
+		}
+	}
+}
+
+func TestContainerCommandRoles(t *testing.T) {
+	for _, role := range []string{"owner", "admin", "developer"} {
+		if !canExecuteContainerCommands(role) {
+			t.Fatalf("expected %q to execute container commands", role)
+		}
+	}
+	for _, role := range []string{"", "viewer"} {
+		if canExecuteContainerCommands(role) {
+			t.Fatalf("expected %q to be denied container commands", role)
+		}
+	}
+}
+
 func TestDeploymentCancellationCanOnlyBeClaimedOnce(t *testing.T) {
 	api := &API{}
 	ctx, cancel := context.WithCancel(context.Background())

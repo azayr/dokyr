@@ -438,6 +438,15 @@
     background: var(--color-paper-subtle);
     color: var(--color-ink);
   }
+  .topbar [data-tip]::after {
+    top: calc(100% + 7px);
+    bottom: auto;
+    transform: translate(-50%, -2px);
+  }
+  .topbar [data-tip]:hover::after,
+  .topbar [data-tip]:focus-visible::after {
+    transform: translate(-50%, 0);
+  }
   .crumbs {
     min-width: 0;
     display: none;

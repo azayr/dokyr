@@ -1,10 +1,15 @@
 <script>
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import Shell from '$lib/components/Shell.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import { api } from '$lib/auth.js';
 
   const infrastructureViews = ['monitoring', 'cleanup'];
+  const controlServices = [
+    { key: 'selfhost', name: 'Dokyr', role: 'Control plane', icon: 'box' },
+    { key: 'postgres', name: 'PostgreSQL', role: 'State database', icon: 'database' },
+    { key: 'caddy', name: 'Caddy', role: 'Ingress proxy', icon: 'globe' }
+  ];
   const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const defaultCleanupSchedule = {
     configured: false,
@@ -44,11 +49,26 @@
   let cleanupScheduleSaving = false;
   let cleanupScheduleError = '';
   let cleanupScheduleSaved = false;
+  let controlPlane = { global: { diskIo: {}, networkIo: {} }, containers: [] };
+  let controlPlaneLoading = false;
+  let controlPlaneRefreshing = false;
+  let controlPlaneLoaded = false;
+  let controlPlaneError = '';
+  let selectedControlService = 'selfhost';
+  let controlLogs = [];
+  let controlLogsLoading = false;
+  let controlLogsLoaded = false;
+  let controlLogsError = '';
+  let controlLogsAutoRefresh = true;
+  let controlLogViewport;
+  let controlLogsCopied = false;
+  let controlLogsRequest = 0;
 
   $: selectedBytes = ['containers', 'images', 'buildCache', 'networks', 'volumes'].reduce((total, key) => total + (cleanupSelection[key] ? cleanup[key]?.bytes || 0 : 0), 0);
   $: selectedItems = ['containers', 'images', 'buildCache', 'networks', 'volumes'].reduce((total, key) => total + (cleanupSelection[key] ? cleanup[key]?.count || 0 : 0), 0);
   $: hostDiskAvailable = (metrics.global.disk?.total || 0) > 0;
   $: automaticResourceCount = ['containers', 'images', 'buildCache', 'networks'].filter((key) => cleanupSchedule[key]).length;
+  $: selectedControlContainer = controlPlane.containers?.find((container) => container.controlPlaneService === selectedControlService);
 
   onMount(async () => {
     hashListener = syncViewFromURL;
@@ -57,7 +77,10 @@
 
     await loadMetrics();
     pollTimer = setInterval(() => {
-      if (activeView === 'monitoring' && !metricsRefreshing) loadMetrics(true);
+      if (activeView !== 'monitoring') return;
+      if (!metricsRefreshing) loadMetrics(true);
+      if (!controlPlaneRefreshing) loadControlPlane(true);
+      if (controlLogsAutoRefresh && !controlLogsLoading) loadControlLogs(true);
     }, 5000);
   });
 
@@ -82,6 +105,64 @@
       metricsLoading = false;
       metricsRefreshing = false;
     }
+  }
+
+  async function loadControlPlane(silent = false) {
+    if (silent) controlPlaneRefreshing = true;
+    else controlPlaneLoading = true;
+    controlPlaneError = '';
+    try {
+      const response = await api('/api/infrastructure/control-plane/metrics');
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not read Dokyr control-plane metrics');
+      controlPlane = payload;
+      controlPlaneLoaded = true;
+    } catch (cause) {
+      controlPlaneError = cause instanceof Error ? cause.message : 'Could not read Dokyr control-plane metrics';
+    } finally {
+      controlPlaneLoading = false;
+      controlPlaneRefreshing = false;
+    }
+  }
+
+  async function loadControlLogs(silent = false) {
+    const request = ++controlLogsRequest;
+    controlLogsLoading = true;
+    controlLogsError = '';
+    try {
+      const response = await api(`/api/infrastructure/control-plane/logs?service=${selectedControlService}&lines=300`);
+      const payload = await response.json();
+      if (request !== controlLogsRequest) return;
+      if (!response.ok) throw new Error(payload.error || 'Could not read control-plane logs');
+      controlLogs = payload.lines || [];
+      controlLogsLoaded = true;
+      await tick();
+      if (controlLogsAutoRefresh && controlLogViewport) {
+        controlLogViewport.scrollTop = controlLogViewport.scrollHeight;
+      }
+    } catch (cause) {
+      if (request === controlLogsRequest) {
+        controlLogsError = cause instanceof Error ? cause.message : 'Could not read control-plane logs';
+      }
+    } finally {
+      if (request === controlLogsRequest) controlLogsLoading = false;
+    }
+  }
+
+  function selectControlService(service) {
+    if (selectedControlService === service && controlLogsLoaded) return;
+    selectedControlService = service;
+    controlLogs = [];
+    controlLogsLoaded = false;
+    controlLogsCopied = false;
+    loadControlLogs();
+  }
+
+  async function copyControlLogs() {
+    if (!controlLogs.length) return;
+    await navigator.clipboard.writeText(controlLogs.join('\n'));
+    controlLogsCopied = true;
+    setTimeout(() => (controlLogsCopied = false), 1500);
   }
 
   async function loadCleanup() {
@@ -122,7 +203,10 @@
 
   function activateView(view) {
     activeView = view;
-    if (view === 'cleanup') {
+    if (view === 'monitoring') {
+      if (!controlPlaneLoaded && !controlPlaneLoading) loadControlPlane();
+      if (!controlLogsLoaded && !controlLogsLoading) loadControlLogs();
+    } else if (view === 'cleanup') {
       if (!cleanupLoaded && !cleanupLoading) loadCleanup();
       if (!cleanupScheduleLoaded && !cleanupScheduleLoading) loadCleanupSchedule();
     }
@@ -305,6 +389,98 @@
           <strong>{formatBytes(metrics.global.networkIo.receive)}</strong>
           <div class="io-pair"><span>Received</span><b>{formatBytes(metrics.global.networkIo.receive)}</b><span>Sent</span><b>{formatBytes(metrics.global.networkIo.transmit)}</b></div>
         </article>
+      </section>
+
+      <section class="panel control-plane-panel" aria-labelledby="control-plane-title">
+        <header class="control-plane-header">
+          <div>
+            <span class="eyebrow">Platform internals</span>
+            <h2 id="control-plane-title">Dokyr control plane</h2>
+            <p>Health, resource pressure, and logs for Dokyr and the services it depends on.</p>
+          </div>
+          <div class="control-plane-total">
+            {#if controlPlaneRefreshing}<span class="spinner small"></span>{/if}
+            <strong>{controlPlane.global?.running || 0}/{controlServices.length}</strong>
+            <span>services online · {formatBytes(controlPlane.global?.memoryUsage)}</span>
+          </div>
+        </header>
+
+        {#if controlPlaneError}
+          <div class="alert alert-error control-plane-alert">
+            <Icon name="x-circle" size={15} />
+            <div><strong>Control-plane monitoring unavailable</strong><span>{controlPlaneError}</span></div>
+            <button class="btn btn-sm alert-action" onclick={() => loadControlPlane()}>Retry</button>
+          </div>
+        {/if}
+
+        <div class="control-service-grid" role="tablist" aria-label="Control-plane service logs">
+          {#each controlServices as service}
+            {@const container = controlPlane.containers?.find((item) => item.controlPlaneService === service.key)}
+            <button
+              type="button"
+              role="tab"
+              aria-selected={selectedControlService === service.key}
+              class:selected={selectedControlService === service.key}
+              onclick={() => selectControlService(service.key)}
+            >
+              <span class="service-card-head">
+                <i><Icon name={service.icon} size={17} /></i>
+                <span>
+                  <strong>{service.name}</strong>
+                  <small>{service.role}</small>
+                </span>
+                <em class:online={container?.state === 'running'}>
+                  <b></b>{container?.state === 'running' ? 'Online' : controlPlaneLoading ? 'Checking' : 'Offline'}
+                </em>
+              </span>
+              <code title={container?.image || 'Container unavailable'}>{container?.image || 'Container unavailable'}</code>
+              <dl>
+                <div><dt>CPU</dt><dd>{percent(container?.cpuPercent || 0)}</dd></div>
+                <div><dt>Memory</dt><dd>{formatBytes(container?.memoryUsage)}</dd></div>
+                <div><dt>Network</dt><dd>↓ {formatBytes(container?.networkIo?.receive)}</dd></div>
+              </dl>
+              <span class="service-card-foot">
+                <span>{container?.status || 'Not detected'}</span>
+                <strong>View logs <Icon name="arrow-right" size={13} /></strong>
+              </span>
+            </button>
+          {/each}
+        </div>
+
+        <section class="control-log-console" aria-label={`${selectedControlService} logs`}>
+          <header>
+            <div class="console-title">
+              <span class="console-lights"><i></i><i></i><i></i></span>
+              <span>
+                <strong>{controlServices.find((service) => service.key === selectedControlService)?.name} logs</strong>
+                <code>{selectedControlContainer?.name || 'container unavailable'}</code>
+              </span>
+              {#if controlLogsAutoRefresh}<em><i></i>LIVE</em>{/if}
+            </div>
+            <div class="console-actions">
+              <label><input type="checkbox" bind:checked={controlLogsAutoRefresh} /> Auto-refresh</label>
+              <button type="button" onclick={() => loadControlLogs()} disabled={controlLogsLoading}><Icon name="refresh" size={13} /> Refresh</button>
+              <button type="button" onclick={copyControlLogs} disabled={!controlLogs.length}><Icon name="copy" size={13} /> {controlLogsCopied ? 'Copied' : 'Copy'}</button>
+            </div>
+          </header>
+          <div class="control-log-output" bind:this={controlLogViewport}>
+            {#if controlLogsError}
+              <div class="console-message error"><Icon name="x-circle" size={16} /><span><strong>Logs unavailable</strong>{controlLogsError}</span></div>
+            {:else if controlLogsLoading && !controlLogsLoaded}
+              <div class="console-message"><span class="spinner small"></span><span><strong>Reading container output</strong>Loading the latest 300 lines…</span></div>
+            {:else if !controlLogs.length}
+              <div class="console-message"><Icon name="logs" size={16} /><span><strong>No output yet</strong>This container has not written any recent logs.</span></div>
+            {:else}
+              {#each controlLogs as line, index}
+                <div class="control-log-line"><span>{String(index + 1).padStart(3, '0')}</span><code>{line}</code></div>
+              {/each}
+            {/if}
+          </div>
+          <footer>
+            <span>{controlLogs.length} line{controlLogs.length === 1 ? '' : 's'} · last 300</span>
+            <span>{controlPlane.checkedAt ? `Metrics sampled ${new Date(controlPlane.checkedAt).toLocaleTimeString()}` : 'Metrics warming up'}</span>
+          </footer>
+        </section>
       </section>
 
       <section class="panel pressure-panel">
@@ -688,6 +864,363 @@
   .io-pair b {
     color: var(--color-ink-secondary);
     font: 500 var(--text-xs) var(--font-mono);
+  }
+
+  .control-plane-panel {
+    margin-bottom: var(--space-4);
+    overflow: hidden;
+  }
+  .control-plane-header {
+    min-height: 86px;
+    padding: var(--space-4) var(--space-5);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-5);
+    border-bottom: 1px solid var(--color-rule);
+    background:
+      linear-gradient(105deg, color-mix(in srgb, var(--color-accent) 7%, transparent), transparent 38%),
+      var(--color-paper-raised);
+  }
+  .control-plane-header h2 {
+    margin: 2px 0 0;
+    font-size: var(--text-lg);
+  }
+  .control-plane-header p {
+    margin: 3px 0 0;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .control-plane-total {
+    flex: 0 0 auto;
+    display: grid;
+    grid-template-columns: auto auto;
+    align-items: center;
+    justify-items: end;
+    gap: 0 var(--space-2);
+  }
+  .control-plane-total strong {
+    font: 700 var(--text-xl) var(--font-mono);
+  }
+  .control-plane-total > span:last-child {
+    grid-column: 1 / -1;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .control-plane-alert {
+    margin: var(--space-4) var(--space-5) 0;
+  }
+  .control-service-grid {
+    padding: var(--space-4) var(--space-5);
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-3);
+  }
+  .control-service-grid > button {
+    min-width: 0;
+    padding: var(--space-4);
+    display: grid;
+    gap: var(--space-3);
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-md);
+    background: var(--color-paper-raised);
+    color: var(--color-ink);
+    text-align: left;
+    cursor: pointer;
+    transition:
+      border-color var(--duration-fast) var(--ease-out),
+      box-shadow var(--duration-fast) var(--ease-out),
+      transform var(--duration-fast) var(--ease-out);
+  }
+  .control-service-grid > button:hover {
+    border-color: var(--color-rule-strong);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-whisper);
+  }
+  .control-service-grid > button.selected {
+    border-color: var(--color-accent);
+    background: linear-gradient(145deg, var(--color-accent-softer), var(--color-paper-raised) 55%);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 8%, transparent);
+  }
+  .service-card-head {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .service-card-head > i {
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-sm);
+    background: var(--color-paper-subtle);
+    color: var(--color-accent);
+    font-style: normal;
+  }
+  .service-card-head > span {
+    min-width: 0;
+    display: grid;
+    gap: 1px;
+  }
+  .service-card-head strong {
+    font-size: var(--text-sm);
+  }
+  .service-card-head small {
+    color: var(--color-muted);
+    font-size: var(--text-2xs);
+  }
+  .service-card-head em {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--color-muted);
+    font-size: var(--text-2xs);
+    font-style: normal;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .service-card-head em b {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-faint);
+  }
+  .service-card-head em.online {
+    color: var(--color-success);
+  }
+  .service-card-head em.online b {
+    background: var(--color-success);
+    box-shadow: 0 0 0 3px var(--color-success-soft);
+  }
+  .control-service-grid > button > code {
+    overflow: hidden;
+    color: var(--color-muted);
+    font: 500 var(--text-2xs) var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .control-service-grid dl {
+    margin: 0;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-2);
+  }
+  .control-service-grid dl > div {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+  .control-service-grid dt {
+    color: var(--color-faint);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .control-service-grid dd {
+    margin: 0;
+    overflow: hidden;
+    color: var(--color-ink-secondary);
+    font: 600 var(--text-xs) var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .service-card-foot {
+    padding-top: var(--space-2);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    border-top: 1px solid var(--color-rule);
+  }
+  .service-card-foot > span {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--color-muted);
+    font-size: var(--text-2xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .service-card-foot > strong {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--color-accent);
+    font-size: var(--text-2xs);
+  }
+  .control-log-console {
+    margin: 0 var(--space-5) var(--space-5);
+    overflow: hidden;
+    border: 1px solid #29384a;
+    border-radius: var(--radius-md);
+    background: #0d1723;
+    box-shadow: 0 14px 32px color-mix(in srgb, #07101a 22%, transparent);
+    color: #d5deea;
+  }
+  .control-log-console > header {
+    min-height: 54px;
+    padding: 0 var(--space-4);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    border-bottom: 1px solid #29384a;
+    background: #111e2c;
+  }
+  .console-title,
+  .console-title > span:nth-child(2) {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .console-title > span:nth-child(2) {
+    gap: 7px;
+  }
+  .console-title strong {
+    color: #e8eef7;
+    font-size: var(--text-xs);
+  }
+  .console-title code {
+    max-width: 260px;
+    overflow: hidden;
+    color: #8292a7;
+    font: 500 var(--text-2xs) var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .console-lights {
+    display: flex;
+    gap: 5px;
+  }
+  .console-lights i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ef6b67;
+  }
+  .console-lights i:nth-child(2) {
+    background: #e7b34c;
+  }
+  .console-lights i:nth-child(3) {
+    background: #5dbc83;
+  }
+  .console-title em {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: #65d994;
+    font-size: 9px;
+    font-style: normal;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+  }
+  .console-title em i {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 15%, transparent);
+  }
+  .console-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .console-actions label,
+  .console-actions button {
+    min-height: 29px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #91a0b3;
+    font-size: var(--text-2xs);
+  }
+  .console-actions label {
+    cursor: pointer;
+  }
+  .console-actions input {
+    accent-color: #2c8cff;
+  }
+  .console-actions button {
+    padding: 0 var(--space-2);
+    border: 1px solid #334459;
+    border-radius: var(--radius-xs);
+    background: #152334;
+    cursor: pointer;
+  }
+  .console-actions button:hover:not(:disabled) {
+    border-color: #4a6380;
+    color: #d5deea;
+  }
+  .console-actions button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .control-log-output {
+    height: 330px;
+    overflow: auto;
+    padding: var(--space-3) 0;
+    scrollbar-color: #34475e #0d1723;
+  }
+  .control-log-line {
+    min-width: max-content;
+    padding: 2px var(--space-4);
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: var(--space-3);
+    color: #c5d0dd;
+    font-size: 11px;
+    line-height: 1.55;
+  }
+  .control-log-line:hover {
+    background: #132132;
+  }
+  .control-log-line > span {
+    color: #4e6178;
+    font-family: var(--font-mono);
+    text-align: right;
+    user-select: none;
+  }
+  .control-log-line code {
+    color: inherit;
+    font-family: var(--font-mono);
+    white-space: pre;
+  }
+  .console-message {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+    color: #72849a;
+  }
+  .console-message > span:last-child {
+    display: grid;
+    gap: 2px;
+    font-size: var(--text-xs);
+  }
+  .console-message strong {
+    color: #b9c5d4;
+  }
+  .console-message.error,
+  .console-message.error strong {
+    color: #f1918d;
+  }
+  .control-log-console > footer {
+    min-height: 35px;
+    padding: 0 var(--space-4);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    border-top: 1px solid #29384a;
+    background: #111e2c;
+    color: #6f8095;
+    font: 500 10px var(--font-mono);
   }
 
   .legend {
@@ -1201,6 +1734,18 @@
     }
   }
   @media (max-width: 58rem) {
+    .control-service-grid {
+      grid-template-columns: 1fr;
+    }
+    .control-log-console > header {
+      min-height: 0;
+      padding-block: var(--space-3);
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .console-actions {
+      width: 100%;
+    }
     .cleanup-layout {
       grid-template-columns: 1fr;
     }
@@ -1232,6 +1777,37 @@
       border-bottom: 0;
     }
     .pressure-chart {
+      gap: 2px;
+    }
+    .control-plane-header {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .control-plane-total {
+      justify-items: start;
+    }
+    .control-service-grid {
+      padding-inline: var(--space-3);
+    }
+    .control-log-console {
+      margin-inline: var(--space-3);
+    }
+    .console-title {
+      max-width: 100%;
+      flex-wrap: wrap;
+    }
+    .console-title code {
+      max-width: 170px;
+    }
+    .console-actions {
+      flex-wrap: wrap;
+    }
+    .control-log-console > footer {
+      min-height: 46px;
+      padding-block: var(--space-2);
+      align-items: flex-start;
+      flex-direction: column;
+      justify-content: center;
       gap: 2px;
     }
     .cleanup-intro {

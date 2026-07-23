@@ -55,6 +55,15 @@ type Service struct {
 	HostPort  string `json:"hostPort,omitempty"`
 }
 
+type CommandResult struct {
+	Container  string `json:"container"`
+	Stdout     string `json:"stdout"`
+	Stderr     string `json:"stderr"`
+	ExitCode   int    `json:"exitCode"`
+	DurationMS int64  `json:"durationMs"`
+	Truncated  bool   `json:"truncated,omitempty"`
+}
+
 type DatabasePreset struct {
 	Engine       string
 	Image        string
@@ -884,6 +893,115 @@ func (d *Docker) checkApplicationCommand(ctx context.Context, container, command
 	return nil
 }
 
+func (d *Docker) ExecuteApplicationCommand(ctx context.Context, serviceID, command, workingDir string) (CommandResult, error) {
+	container := applicationContainerName(serviceID)
+	body := map[string]any{
+		"AttachStdout": true,
+		"AttachStderr": true,
+		"Cmd":          []string{"/bin/sh", "-lc", command},
+	}
+	if workingDir != "" {
+		body["WorkingDir"] = workingDir
+	}
+	startedAt := time.Now()
+	created, err := d.request(ctx, http.MethodPost, "/containers/"+url.PathEscape(container)+"/exec", body, nil)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	var execution struct {
+		ID string `json:"Id"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&execution); err != nil {
+		created.Body.Close()
+		return CommandResult{}, err
+	}
+	created.Body.Close()
+	if execution.ID == "" {
+		return CommandResult{}, errors.New("docker did not return an exec ID")
+	}
+
+	started, err := d.request(ctx, http.MethodPost, "/exec/"+url.PathEscape(execution.ID)+"/start", map[string]any{"Detach": false, "Tty": false}, nil)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	const outputLimit = 2 << 20
+	output := &cappedOutput{limit: outputLimit}
+	_, copyErr := io.Copy(output, started.Body)
+	closeErr := started.Body.Close()
+	if copyErr != nil {
+		return CommandResult{}, copyErr
+	}
+	if closeErr != nil {
+		return CommandResult{}, closeErr
+	}
+
+	var inspected struct {
+		Running  bool `json:"Running"`
+		ExitCode int  `json:"ExitCode"`
+	}
+	if err := d.get(ctx, "/exec/"+url.PathEscape(execution.ID)+"/json", &inspected); err != nil {
+		return CommandResult{}, err
+	}
+	if inspected.Running {
+		return CommandResult{}, errors.New("container command is still running")
+	}
+	stdout, stderr := decodeExecStream(output.Bytes())
+	return CommandResult{
+		Container:  container,
+		Stdout:     stdout,
+		Stderr:     stderr,
+		ExitCode:   inspected.ExitCode,
+		DurationMS: time.Since(startedAt).Milliseconds(),
+		Truncated:  output.truncated,
+	}, nil
+}
+
+type cappedOutput struct {
+	bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (output *cappedOutput) Write(value []byte) (int, error) {
+	originalLength := len(value)
+	remaining := output.limit - output.Len()
+	if remaining <= 0 {
+		output.truncated = output.truncated || originalLength > 0
+		return originalLength, nil
+	}
+	if len(value) > remaining {
+		value = value[:remaining]
+		output.truncated = true
+	}
+	_, err := output.Buffer.Write(value)
+	return originalLength, err
+}
+
+func decodeExecStream(raw []byte) (string, string) {
+	var stdout strings.Builder
+	var stderr strings.Builder
+	remaining := raw
+	decodedFrames := false
+	for len(remaining) >= 8 && remaining[0] <= 2 {
+		size := int(binary.BigEndian.Uint32(remaining[4:8]))
+		if size < 0 || size > len(remaining)-8 {
+			break
+		}
+		decodedFrames = true
+		payload := remaining[8 : 8+size]
+		if remaining[0] == 2 {
+			stderr.Write(payload)
+		} else {
+			stdout.Write(payload)
+		}
+		remaining = remaining[8+size:]
+	}
+	if !decodedFrames {
+		return strings.TrimRight(string(raw), "\r\n"), ""
+	}
+	return strings.TrimRight(stdout.String(), "\r\n"), strings.TrimRight(stderr.String(), "\r\n")
+}
+
 func parseContainerCommand(value string) ([]string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -1409,6 +1527,20 @@ func (d *Docker) ApplicationLogs(ctx context.Context, serviceID string, tail int
 
 func (d *Docker) DatabaseLogs(ctx context.Context, serviceID string, tail int) ([]string, error) {
 	return d.containerLogs(ctx, databaseContainerName(serviceID), tail)
+}
+
+func (d *Docker) ControlPlaneLogs(ctx context.Context, service string, tail int) ([]string, string, error) {
+	snapshot, err := d.ControlPlaneMetrics(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, container := range snapshot.Containers {
+		if container.ControlPlaneService == service {
+			lines, err := d.containerLogs(ctx, container.Name, tail)
+			return lines, container.Name, err
+		}
+	}
+	return nil, "", ErrNotFound
 }
 
 func (d *Docker) containerLogs(ctx context.Context, name string, tail int) ([]string, error) {

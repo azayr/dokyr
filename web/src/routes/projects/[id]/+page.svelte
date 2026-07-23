@@ -5,7 +5,7 @@
   import Shell from '$lib/components/Shell.svelte';
   import Status from '$lib/components/Status.svelte';
   import Icon from '$lib/components/Icon.svelte';
-  import { api } from '$lib/auth.js';
+  import { api, currentUser } from '$lib/auth.js';
 
   const tabs = ['overview', 'metrics', 'deployments', 'logs', 'environment', 'databases', 'domains', 'settings'];
   let activeTab = 'overview';
@@ -22,6 +22,9 @@
   let domainSaving = false;
   let domainError = '';
   let domainNotice = '';
+  let domainModal = false;
+  let domainDraft = null;
+  let domainEditingIndex = -1;
   let serviceModal = false;
   let serviceSaving = false;
   let serviceError = '';
@@ -64,6 +67,16 @@
   let logsCopyTimer;
   let logsCopied = false;
   let logConsole;
+  let terminalService = null;
+  let terminalCommand = '';
+  let terminalWorkingDir = '';
+  let terminalEntries = [];
+  let terminalHistory = [];
+  let terminalHistoryIndex = -1;
+  let terminalRunning = false;
+  let terminalReturnFocus;
+  let terminalInput;
+  let terminalOutput;
   const databasePresets = {
     mysql: { label: 'MySQL', version: '8.4', port: 3306 },
     postgres: { label: 'PostgreSQL', version: '17', port: 5432 },
@@ -559,6 +572,88 @@
     selectTab('logs');
   }
 
+  async function openServiceTerminal(item, trigger) {
+    if (terminalService?.id !== item.id) {
+      terminalEntries = [];
+      terminalHistory = [];
+      terminalWorkingDir = '';
+    }
+    terminalService = item;
+    terminalReturnFocus = trigger;
+    terminalHistoryIndex = -1;
+    await tick();
+    terminalInput?.focus();
+  }
+
+  async function closeServiceTerminal() {
+    if (terminalRunning) return;
+    terminalService = null;
+    terminalCommand = '';
+    terminalHistoryIndex = -1;
+    await tick();
+    terminalReturnFocus?.focus();
+  }
+
+  function clearTerminal() {
+    if (terminalRunning) return;
+    terminalEntries = [];
+    terminalInput?.focus();
+  }
+
+  function terminalKeydown(event) {
+    if (event.key === 'ArrowUp') {
+      if (terminalHistory.length === 0) return;
+      event.preventDefault();
+      terminalHistoryIndex = Math.min(terminalHistory.length - 1, terminalHistoryIndex + 1);
+      terminalCommand = terminalHistory[terminalHistory.length - 1 - terminalHistoryIndex];
+    } else if (event.key === 'ArrowDown') {
+      if (terminalHistoryIndex < 0) return;
+      event.preventDefault();
+      terminalHistoryIndex -= 1;
+      terminalCommand = terminalHistoryIndex < 0 ? '' : terminalHistory[terminalHistory.length - 1 - terminalHistoryIndex];
+    }
+  }
+
+  async function runTerminalCommand() {
+    const command = terminalCommand.trim();
+    if (!terminalService || !command || terminalRunning) return;
+    const entry = {
+      id: `${Date.now()}-${terminalEntries.length}`,
+      command,
+      workingDir: terminalWorkingDir.trim(),
+      status: 'running',
+      startedAt: new Date().toLocaleTimeString()
+    };
+    terminalEntries = [...terminalEntries, entry];
+    if (terminalHistory.at(-1) !== command) terminalHistory = [...terminalHistory, command];
+    terminalHistoryIndex = -1;
+    terminalCommand = '';
+    terminalRunning = true;
+    await tick();
+    if (terminalOutput) terminalOutput.scrollTop = terminalOutput.scrollHeight;
+    try {
+      const response = await api(`/api/services/${terminalService.id}/exec`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command, workingDir: entry.workingDir })
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not execute command');
+      terminalEntries = terminalEntries.map((item) => item.id === entry.id
+        ? { ...item, status: 'complete', ...payload.result }
+        : item);
+    } catch (cause) {
+      terminalEntries = terminalEntries.map((item) => item.id === entry.id
+        ? { ...item, status: 'error', error: cause instanceof Error ? cause.message : 'Could not execute command' }
+        : item);
+    } finally {
+      terminalRunning = false;
+      await tick();
+      if (terminalOutput) terminalOutput.scrollTop = terminalOutput.scrollHeight;
+      terminalInput?.focus();
+    }
+  }
+
   async function selectLogTarget(key) {
     stopLogPolling();
     logTargetId = key;
@@ -641,55 +736,84 @@
     }
   }
 
-  async function saveDomain() {
+  function newDomainBinding() {
+    const target = routeTargets[0];
+    return { domain: '', httpsEnabled: false, rules: [{ path: '/*', port: target?.containerPort || 80, serviceId: target?.id || '' }] };
+  }
+
+  function copyDomainBinding(binding) {
+    return { ...binding, rules: binding.rules.map((rule) => ({ ...rule })) };
+  }
+
+  function openDomainModal(index = -1) {
+    domainEditingIndex = index;
+    domainDraft = index === -1 ? newDomainBinding() : copyDomainBinding(domainBindings[index]);
+    domainError = '';
+    domainModal = true;
+  }
+
+  function closeDomainModal() {
+    if (domainSaving) return;
+    domainModal = false;
+    domainDraft = null;
+    domainEditingIndex = -1;
+  }
+
+  async function persistDomainBindings(bindings) {
     domainSaving = true;
     domainError = '';
     domainNotice = '';
     try {
       const response = await api('/api/projects/' + page.params.id + '/domain', {
         method: 'PUT',
-        body: JSON.stringify({ domains: domainBindings.map((binding) => ({ domain: binding.domain.trim(), httpsEnabled: binding.httpsEnabled, rules: binding.rules.map((rule) => ({ path: rule.path.trim(), port: Number(rule.port), serviceId: rule.serviceId || '' })) })) })
+        body: JSON.stringify({ domains: bindings.map((binding) => ({ domain: binding.domain.trim(), httpsEnabled: binding.httpsEnabled, rules: binding.rules.map((rule) => ({ path: rule.path.trim(), port: Number(rule.port), serviceId: rule.serviceId || '' })) })) })
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Could not update domain');
       data = { ...data, project: payload.project };
       domainBindings = (payload.domainBindings || []).map((binding) => ({ domain: binding.domain, httpsEnabled: binding.httpsEnabled || false, rules: (binding.rules || []).map((rule) => ({ path: rule.path, port: rule.port, serviceId: rule.serviceId || '' })) }));
       domainNotice = payload.active ? `Caddy activated ${domainBindings.length} domain${domainBindings.length === 1 ? '' : 's'} and all path rules.` : 'All domain routes were removed.';
+      return true;
     } catch (cause) {
       domainError = cause instanceof Error ? cause.message : 'Could not update domain';
+      return false;
     } finally {
       domainSaving = false;
     }
   }
 
-  function addDomainBinding() {
+  async function saveDomainDraft() {
+    if (!domainDraft) return;
+    const bindings = domainEditingIndex === -1
+      ? [...domainBindings, domainDraft]
+      : domainBindings.map((binding, index) => index === domainEditingIndex ? domainDraft : binding);
+    if (await persistDomainBindings(bindings)) closeDomainModal();
+  }
+
+  async function deleteDomainDraft() {
+    if (domainEditingIndex === -1) return;
+    if (await persistDomainBindings(domainBindings.filter((_, index) => index !== domainEditingIndex))) closeDomainModal();
+  }
+
+  function addDomainRule() {
+    if (!domainDraft) return;
     const target = routeTargets[0];
-    domainBindings = [...domainBindings, { domain: '', httpsEnabled: false, rules: [{ path: '/*', port: target?.containerPort || 80, serviceId: target?.id || '' }] }];
+    domainDraft = { ...domainDraft, rules: [...domainDraft.rules, { path: '/api/*', port: target?.containerPort || 8080, serviceId: target?.id || '' }] };
   }
 
-  function removeDomainBinding(index) {
-    domainBindings = domainBindings.filter((_, bindingIndex) => bindingIndex !== index);
-  }
-
-  function addDomainRule(bindingIndex) {
-    const target = routeTargets[0];
-    domainBindings = domainBindings.map((binding, index) => index === bindingIndex ? { ...binding, rules: [...binding.rules, { path: '/api/*', port: target?.containerPort || 8080, serviceId: target?.id || '' }] } : binding);
-  }
-
-  function removeDomainRule(bindingIndex, ruleIndex) {
-    domainBindings = domainBindings.map((binding, index) => index === bindingIndex ? { ...binding, rules: binding.rules.filter((_, index) => index !== ruleIndex) } : binding);
+  function removeDomainRule(ruleIndex) {
+    if (!domainDraft) return;
+    domainDraft = { ...domainDraft, rules: domainDraft.rules.filter((_, index) => index !== ruleIndex) };
   }
 
   function routeTargetName(serviceId) {
     return routeTargets.find((target) => target.id === (serviceId || ''))?.name || 'application';
   }
 
-  function setRuleService(bindingIndex, ruleIndex, serviceId) {
+  function setRuleService(ruleIndex, serviceId) {
+    if (!domainDraft) return;
     const target = routeTargets.find((item) => item.id === serviceId) || routeTargets[0];
-    domainBindings = domainBindings.map((binding, index) => index === bindingIndex ? {
-      ...binding,
-      rules: binding.rules.map((rule, index) => index === ruleIndex ? { ...rule, serviceId, port: target.containerPort || 80 } : rule)
-    } : binding);
+    domainDraft = { ...domainDraft, rules: domainDraft.rules.map((rule, index) => index === ruleIndex ? { ...rule, serviceId, port: target?.containerPort || 80 } : rule) };
   }
 
   function openServiceModal() {
@@ -1212,9 +1336,7 @@
             <div><strong>{item.name}</strong><small>{item.sourceType === 'repository' ? `${item.repository}@${item.branch}` : (item.imageUrl || 'No image configured')} · :{item.containerPort}{item.command ? ` · command ${item.command}` : ''} · {item.container || 'container not created'}</small></div>
             <Status value={item.status} />
             <div class="application-service-actions">
-              <button onclick={() => openWorkloadLogs(item, 'application')} disabled={!item.container}><Icon name="logs" size={13}/> Logs</button>
-              <button onclick={() => openEnvironmentFor(item.id)}><Icon name="settings" size={13}/> Env</button>
-              {#if !item.legacy}<button class="icon-only" title="Configure service" aria-label={'Configure ' + item.name} onclick={() => openServiceSettings(item)}><Icon name="settings" size={14}/></button>{/if}
+              {#if !item.legacy && $currentUser && $currentUser.role !== 'viewer'}<button class="terminal-action" title={'Open terminal for ' + item.name} onclick={(event) => openServiceTerminal(item, event.currentTarget)} disabled={!item.container || item.status === 'stopped' || item.status === 'deploying'}><Icon name="terminal" size={13}/> Terminal</button>{/if}
               {#if item.status !== 'stopped'}<button class="lifecycle-stop" onclick={() => controlWorkload(item, 'application', 'stop')} disabled={!item.container || item.status === 'deploying' || lifecycleBusy !== ''}><Icon name="stop" size={12}/>{workloadActionBusy(item, 'application', 'stop') ? 'Stopping…' : 'Stop'}</button>{/if}
               <button class="lifecycle-restart" onclick={() => controlWorkload(item, 'application', 'restart')} disabled={!item.container || item.status === 'deploying' || lifecycleBusy !== ''}><Icon name={item.status === 'stopped' ? 'play' : 'refresh'} size={13}/>{workloadActionBusy(item, 'application', 'restart') ? (item.status === 'stopped' ? 'Starting…' : 'Restarting…') : (item.status === 'stopped' ? 'Start' : 'Restart')}</button>
               <button onclick={() => item.legacy ? deploy() : deployApplicationService(item)} disabled={item.status === 'deploying' || lifecycleBusy !== '' || item.legacy && project.sourceType !== 'image'}><Icon name="rocket" size={13}/>{item.status === 'deploying' ? 'Pulling…' : 'Deploy'}</button>
@@ -1228,7 +1350,6 @@
             <div><strong>{item.name}</strong><small>{databasePresets[item.engine]?.label || item.engine} · {item.internalAddress}</small></div>
             <div class="database-state"><Status value={item.status} /><em class:public={item.publicEnabled}>{item.publicEnabled ? `Public · ${item.publicPort}` : 'Private'}</em></div>
             <div class="database-actions">
-              <button onclick={() => openWorkloadLogs(item, 'database')}><Icon name="logs" size={13}/> Logs</button>
               <button onclick={() => showCredentials(item)}><Icon name="key" size={13}/> Credentials</button>
               {#if item.status !== 'stopped'}<button class="lifecycle-stop" onclick={() => controlWorkload(item, 'database', 'stop')} disabled={!item.container || item.status === 'deploying' || lifecycleBusy !== ''}><Icon name="stop" size={12}/>{workloadActionBusy(item, 'database', 'stop') ? 'Stopping…' : 'Stop'}</button>{/if}
               <button class="lifecycle-restart" onclick={() => controlWorkload(item, 'database', 'restart')} disabled={!item.container || item.status === 'deploying' || lifecycleBusy !== ''}><Icon name={item.status === 'stopped' ? 'play' : 'refresh'} size={13}/>{workloadActionBusy(item, 'database', 'restart') ? (item.status === 'stopped' ? 'Starting…' : 'Restarting…') : (item.status === 'stopped' ? 'Start' : 'Restart')}</button>
@@ -1426,10 +1547,6 @@
       {#if !activeEnvironmentTarget}
         <div class="empty"><div class="empty-icon"><Icon name="settings" size={22}/></div><div><h4>No application services</h4><p>Add a service first. Its isolated environment editor will appear here automatically.</p><button class="deploy-small" onclick={openServiceModal}><Icon name="plus" size={14}/> Add service</button></div></div>
       {:else}
-      <div class="environment-intro">
-        <div class="restart-mark"><Icon name="refresh" size={16}/></div>
-        <div><strong>Restart {activeEnvironmentTarget.name} only—no rebuild</strong><p>Saving recreates only this service from its current local image. Other project services keep running.</p></div>
-      </div>
       {#if environmentError}<div class="environment-feedback error"><strong>Variables not applied</strong><span>{environmentError}</span></div>{/if}
       {#if environmentNotice}<div class="environment-feedback success" aria-live="polite"><strong>Runtime updated</strong><span>{environmentNotice}</span></div>{/if}
       {#if environmentLoading}
@@ -1440,7 +1557,7 @@
           <div class="variable-list">
             {#each environmentVariables as variable, index}
               <div class="variable-row">
-                <label><span class="sr-only">Variable key</span><input bind:value={variable.key} placeholder="APP_ENV" autocomplete="off" spellcheck="false" /></label>
+                <label class="variable-key-field"><span class="sr-only">Variable key</span><input type="text" bind:value={variable.key} title={variable.key || 'Variable key'} placeholder="APP_ENV" autocomplete="off" spellcheck="false" /></label>
                 <label class="value-field"><span class="sr-only">Variable value</span><input type={variable.secret && !variable.revealed ? 'password' : 'text'} bind:value={variable.value} placeholder="production" autocomplete="off" spellcheck="false" />{#if variable.secret}<button type="button" onclick={() => toggleEnvironmentValue(index)} aria-label={variable.revealed ? 'Hide value' : 'Reveal value'}>{variable.revealed ? 'Hide' : 'Show'}</button>{/if}</label>
                 <label class="secret-toggle"><input type="checkbox" bind:checked={variable.secret} /><span>Mask</span></label>
                 <button class="remove-variable" type="button" onclick={() => removeEnvironmentVariable(index)} aria-label={'Remove ' + (variable.key || 'variable')}>×</button>
@@ -1457,43 +1574,29 @@
     </section>
   {:else if activeTab === 'domains'}
     <section class="panel domain-panel">
-      <header><div><span>Traffic</span><h3>Domain routing</h3></div>{#if domainBindings.length}<span class="route-state"><i></i> {domainBindings.length} active</span>{/if}</header>
+      <header><div><span>Traffic</span><h3>Domain routing</h3></div><div class="domain-header-actions">{#if domainBindings.length}<span class="route-state"><i></i> {domainBindings.length} active</span>{/if}<button class="add-domain" type="button" onclick={() => openDomainModal()}>＋ Add domain</button></div></header>
       <div class="domain-layout">
-        <form class="domain-form" onsubmit={(event) => { event.preventDefault(); saveDomain(); }}>
-          <div class="domain-editor-head"><div class="form-copy"><h4>Domains, paths, and services</h4><p>Send each hostname and path to a specific application service and its internal port.</p></div><button class="add-domain" type="button" onclick={addDomainBinding}>＋ Add domain</button></div>
+        <div class="domain-form">
+          <div class="domain-editor-head"><div class="form-copy"><h4>Domains, paths, and services</h4><p>Review every hostname and its routing rules. Add or edit a domain in its own focused workspace.</p></div></div>
           {#if domainError}<div class="domain-feedback error"><strong>Route not changed</strong><span>{domainError}</span></div>{/if}
           {#if domainNotice}<div class="domain-feedback success"><strong>Route updated</strong><span>{domainNotice}</span></div>{/if}
           {#if domainBindings.length === 0}
-            <button class="domain-empty" type="button" onclick={addDomainBinding}><span>＋</span><strong>Add your first domain</strong><small>Then choose which paths and container ports it should serve.</small></button>
+            <button class="domain-empty" type="button" onclick={() => openDomainModal()}><span>＋</span><strong>Add your first domain</strong><small>Then choose which paths and container ports it should serve.</small></button>
           {:else}
             <div class="domain-binding-list">
               {#each domainBindings as binding, bindingIndex}
                 <section class="domain-binding">
-                  <header class="binding-head">
-                    <div class="binding-domain"><label for={'domain-' + bindingIndex}>Domain name</label><input id={'domain-' + bindingIndex} bind:value={binding.domain} placeholder={bindingIndex === 0 ? 'domain.local' : 'domain2.local'} autocomplete="off" spellcheck="false" required /></div>
-                    <label class="binding-https"><input type="checkbox" bind:checked={binding.httpsEnabled} /><span>HTTPS</span></label>
-                    <button class="remove-domain" type="button" onclick={() => removeDomainBinding(bindingIndex)} aria-label={'Remove ' + (binding.domain || 'domain')}>Remove</button>
-                  </header>
-                  <div class="binding-rules-head"><div><strong>Path forwarding</strong><small>Unmatched requests return 404.</small></div><button type="button" onclick={() => addDomainRule(bindingIndex)}>＋ Add path</button></div>
-                  <div class="binding-rules">
-                    {#each binding.rules as rule, ruleIndex}
-                      <div class="route-rule editable-rule">
-                        <input aria-label={'Path pattern for ' + (binding.domain || 'domain')} bind:value={rule.path} placeholder={ruleIndex === 0 ? '/*' : '/api/**'} required />
-                        <span>→</span>
-                        <label class="service-target"><small>Service</small><select aria-label="Target application service" bind:value={rule.serviceId} onchange={(event) => setRuleService(bindingIndex, ruleIndex, event.currentTarget.value)} required>{#if routeTargets.length === 0}<option value="">Add a service first</option>{/if}{#each routeTargets as item}<option value={item.id}>{item.name}{item.legacy ? ' (legacy)' : ''}</option>{/each}</select></label>
-                        <div class="port-input"><small>Container port</small><input aria-label="Internal container port" bind:value={rule.port} type="number" min="1" max="65535" required /></div>
-                        <button type="button" aria-label="Remove path" onclick={() => removeDomainRule(bindingIndex, ruleIndex)} disabled={binding.rules.length === 1}>×</button>
-                      </div>
-                    {/each}
+                  <div class="domain-list-row">
+                    <div class="domain-list-copy"><strong>{binding.domain || 'Untitled domain'}</strong><span>{binding.rules.length} path{binding.rules.length === 1 ? '' : 's'} · {binding.rules.map((rule) => `${rule.path || '/*'} → ${routeTargetName(rule.serviceId)}:${rule.port || '—'}`).join(' · ')}</span></div>
+                    {#if binding.httpsEnabled}<span class="https-badge">HTTPS</span>{/if}
+                    {#if binding.domain}<a href={domainEndpoint(binding)} target="_blank" rel="noreferrer">Open ↗</a>{/if}
+                    <button type="button" onclick={() => openDomainModal(bindingIndex)}>Edit</button>
                   </div>
-                  <footer class="binding-preview"><span>{binding.domain || 'domain.local'}</span><code>{binding.rules.map((rule) => `${rule.path || '/*'} → ${routeTargetName(rule.serviceId)}:${rule.port || '—'}`).join(' · ')}</code>{#if binding.domain}<a href={domainEndpoint(binding)} target="_blank" rel="noreferrer">Open ↗</a>{/if}</footer>
                 </section>
               {/each}
             </div>
           {/if}
-          <p class="route-hint">Use <code>/api/**</code> or <code>/static/**</code> for prefixes. Caddy preserves the complete request path when forwarding.</p>
-          <div class="route-rules-footer domain-save-footer"><span>One save updates every hostname and path as a single Caddy configuration.</span><button type="submit" disabled={domainSaving}>{domainSaving ? 'Applying routing…' : 'Save domain routing'}</button></div>
-        </form>
+        </div>
         <aside class="route-guide">
           <span class="guide-label">How traffic reaches it</span>
           <ol>
@@ -1616,6 +1719,83 @@
     </div>
   {/if}
 </Shell>
+
+{#if terminalService}
+  <div class="modal-backdrop terminal-modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) closeServiceTerminal(); }}>
+    <div class="modal service-terminal-modal" role="dialog" aria-modal="true" aria-labelledby="service-terminal-title">
+      <header>
+        <div><span>Container terminal</span><h2 id="service-terminal-title">{terminalService.name}</h2></div>
+        <button aria-label="Close terminal" onclick={closeServiceTerminal} disabled={terminalRunning}>×</button>
+      </header>
+      <div class="terminal-modal-toolbar">
+        <div><span><i></i> Connected</span><code>{terminalService.container}</code></div>
+        <small>/bin/sh · 30 second response limit · runs as the container user</small>
+        <label><span>Working directory</span><input bind:value={terminalWorkingDir} placeholder="Image default" disabled={terminalRunning} aria-label="Container working directory"/></label>
+        <button type="button" onclick={clearTerminal} disabled={terminalRunning || terminalEntries.length === 0}>Clear output</button>
+      </div>
+      <div class="terminal-session">
+        <div class="terminal-command-output" bind:this={terminalOutput} aria-live="polite">
+          {#if terminalEntries.length === 0}
+            <div class="terminal-welcome"><Icon name="terminal" size={22}/><strong>Ready for a command</strong><span>Run diagnostics, framework CLIs, or maintenance commands inside this service container. Output is limited to 2 MB.</span></div>
+          {:else}
+            {#each terminalEntries as entry}
+              <article class="terminal-entry" class:failed={entry.status === 'error' || entry.exitCode > 0}>
+                <div class="terminal-prompt"><span>{entry.workingDir || '~'} $</span><code>{entry.command}</code><time>{entry.startedAt}</time></div>
+                {#if entry.status === 'running'}
+                  <div class="terminal-running"><span class="spinner"></span> Executing…</div>
+                {:else if entry.status === 'error'}
+                  <pre class="terminal-stderr">{entry.error}</pre>
+                {:else}
+                  {#if entry.stdout}<pre>{entry.stdout}</pre>{/if}
+                  {#if entry.stderr}<pre class="terminal-stderr">{entry.stderr}</pre>{/if}
+                  {#if !entry.stdout && !entry.stderr}<span class="terminal-empty-output">Command completed without output.</span>{/if}
+                  <footer><span class:failed={entry.exitCode > 0}>exit {entry.exitCode}</span><span>{entry.durationMs} ms</span>{#if entry.truncated}<strong>Output truncated at 2 MB</strong>{/if}</footer>
+                {/if}
+              </article>
+            {/each}
+          {/if}
+        </div>
+        <form class="terminal-command-form" onsubmit={(event) => { event.preventDefault(); runTerminalCommand(); }}>
+          <span aria-hidden="true">$</span>
+          <input bind:this={terminalInput} bind:value={terminalCommand} onkeydown={terminalKeydown} placeholder="Type a command, for example: php artisan about" autocomplete="off" spellcheck="false" disabled={terminalRunning} aria-label={'Command for ' + terminalService.name}/>
+          <button type="submit" disabled={terminalRunning || !terminalCommand.trim()}>{terminalRunning ? 'Running…' : 'Run'} <Icon name="arrow-right" size={14}/></button>
+        </form>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if domainModal && domainDraft}
+  <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) closeDomainModal(); }}>
+    <div class="modal domain-editor-modal" role="dialog" aria-modal="true" aria-labelledby="domain-editor-title">
+      <header><div><span>Traffic routing</span><h2 id="domain-editor-title">{domainEditingIndex === -1 ? 'Add domain' : 'Edit domain'}</h2></div><button aria-label="Close" onclick={closeDomainModal} disabled={domainSaving}>×</button></header>
+      <form class="domain-editor-form" onsubmit={(event) => { event.preventDefault(); saveDomainDraft(); }}>
+        <div class="domain-editor-body">
+          <p>Send requests for this hostname to one or more application paths on the private Docker network.</p>
+          {#if domainError}<div class="domain-feedback error"><strong>Route not changed</strong><span>{domainError}</span></div>{/if}
+          <div class="domain-draft-head">
+            <label class="binding-domain"><span>Domain name</span><input bind:value={domainDraft.domain} placeholder="domain.local" autocomplete="off" spellcheck="false" required /></label>
+            <label class="binding-https"><input type="checkbox" bind:checked={domainDraft.httpsEnabled} /><span>HTTPS</span></label>
+          </div>
+          <div class="binding-rules-head"><div><strong>Path forwarding</strong><small>Unmatched requests return 404.</small></div><button type="button" onclick={addDomainRule}>＋ Add path</button></div>
+          <div class="binding-rules">
+            {#each domainDraft.rules as rule, ruleIndex}
+              <div class="route-rule editable-rule">
+                <input aria-label={'Path pattern for ' + (domainDraft.domain || 'domain')} bind:value={rule.path} placeholder={ruleIndex === 0 ? '/*' : '/api/**'} required />
+                <span>→</span>
+                <label class="service-target"><small>Service</small><select aria-label="Target application service" bind:value={rule.serviceId} onchange={(event) => setRuleService(ruleIndex, event.currentTarget.value)} required>{#if routeTargets.length === 0}<option value="">Add a service first</option>{/if}{#each routeTargets as item}<option value={item.id}>{item.name}{item.legacy ? ' (legacy)' : ''}</option>{/each}</select></label>
+                <div class="port-input"><small>Container port</small><input aria-label="Internal container port" bind:value={rule.port} type="number" min="1" max="65535" required /></div>
+                <button type="button" aria-label="Remove path" onclick={() => removeDomainRule(ruleIndex)} disabled={domainDraft.rules.length === 1}>×</button>
+              </div>
+            {/each}
+          </div>
+          <p class="route-hint">Use <code>/api/**</code> or <code>/static/**</code> for prefixes. Caddy preserves the complete request path when forwarding.</p>
+        </div>
+        <footer><button type="button" onclick={closeDomainModal} disabled={domainSaving}>Cancel</button>{#if domainEditingIndex !== -1}<button class="danger" type="button" onclick={deleteDomainDraft} disabled={domainSaving}>Remove domain</button>{/if}<button class="primary" type="submit" disabled={domainSaving}>{domainSaving ? 'Applying routing…' : 'Save domain'}</button></footer>
+      </form>
+    </div>
+  </div>
+{/if}
 
 {#if bulkEnvironmentModal}
   <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) bulkEnvironmentModal = false; }}>
@@ -1933,10 +2113,52 @@
   .application-service-actions .danger-text, .database-actions .danger-text { color: var(--color-danger); }
   .application-service-actions .lifecycle-stop, .database-actions .lifecycle-stop, .database-card-actions .lifecycle-stop { border-color: color-mix(in srgb, var(--color-warning) 36%, var(--color-rule)); color: var(--color-warning); }
   .application-service-actions .lifecycle-restart, .database-actions .lifecycle-restart, .database-card-actions .lifecycle-restart { border-color: color-mix(in srgb, var(--color-info) 34%, var(--color-rule)); color: var(--color-info); }
+  .application-service-actions .terminal-action { border-color: color-mix(in srgb, var(--color-accent) 34%, var(--color-rule)); color: var(--color-accent); }
   .application-service-actions .icon-only, .database-actions .icon-only { width: 32px; padding: 0; }
   .database-state { justify-items: end; gap: var(--space-1) !important; }
   .database-state em { color: var(--color-muted); font-size: var(--text-2xs); font-style: normal; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
   .database-state em.public { color: var(--color-warning); }
+
+  /* ---------- Service terminal ---------- */
+  .terminal-modal-backdrop { z-index: 220; }
+  .service-terminal-modal { width: min(1080px, 100%); height: min(760px, calc(100vh - 32px)); display: grid; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; }
+  .service-terminal-modal > header { background: var(--color-paper-raised); }
+  .terminal-modal-toolbar { min-height: 58px; padding: var(--space-2) var(--space-4); display: grid; grid-template-columns: minmax(220px, 1fr) minmax(260px, auto) 190px auto; align-items: center; gap: var(--space-3); border-bottom: 1px solid var(--color-rule); background: var(--color-surface-subtle); }
+  .terminal-modal-toolbar > div { min-width: 0; display: flex; align-items: center; gap: var(--space-3); font: var(--text-2xs) var(--font-mono); }
+  .terminal-modal-toolbar > div span { display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto; color: var(--color-success); }
+  .terminal-modal-toolbar i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-success) 12%, transparent); }
+  .terminal-modal-toolbar code { min-width: 0; overflow: hidden; color: var(--color-ink); text-overflow: ellipsis; white-space: nowrap; }
+  .terminal-modal-toolbar > small { color: var(--color-muted); font: var(--text-2xs) var(--font-mono); white-space: nowrap; }
+  .terminal-modal-toolbar label { min-width: 0; display: grid; gap: 3px; }
+  .terminal-modal-toolbar label span { color: var(--color-muted); font-size: var(--text-2xs); font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
+  .terminal-modal-toolbar input { width: 100%; height: 32px; padding: 0 var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font: var(--text-xs) var(--font-mono); outline: none; }
+  .terminal-modal-toolbar input:focus { border-color: var(--color-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 14%, transparent); }
+  .terminal-modal-toolbar > button { min-height: 32px; padding: 0 var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-xs); font-weight: 600; white-space: nowrap; cursor: pointer; }
+  .terminal-session { min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; background: var(--color-log-bg); color: var(--color-log-text); }
+  .terminal-command-output { min-height: 0; overflow: auto; font-family: var(--font-mono); }
+  .terminal-welcome { min-height: 100%; padding: var(--space-8); display: grid; place-content: center; justify-items: center; gap: var(--space-2); color: var(--color-log-muted); text-align: center; }
+  .terminal-welcome strong { color: var(--color-log-text); font-size: var(--text-sm); }
+  .terminal-welcome span { max-width: 62ch; font-size: var(--text-xs); line-height: 1.6; }
+  .terminal-entry { border-bottom: 1px solid var(--color-log-rule); }
+  .terminal-entry.failed { box-shadow: inset 2px 0 var(--color-danger); }
+  .terminal-prompt { min-height: 38px; padding: var(--space-2) var(--space-4); display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: var(--space-2); background: color-mix(in srgb, var(--color-log-surface) 78%, transparent); }
+  .terminal-prompt span { color: var(--color-success); font-size: var(--text-xs); white-space: nowrap; }
+  .terminal-prompt code { overflow-wrap: anywhere; color: var(--color-log-text); font: var(--text-xs)/1.55 var(--font-mono); }
+  .terminal-prompt time { color: var(--color-log-muted); font-size: var(--text-2xs); }
+  .terminal-entry pre { margin: 0; padding: var(--space-3) var(--space-4); overflow-x: auto; color: var(--color-log-text); font: var(--text-xs)/1.65 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .terminal-entry pre.terminal-stderr { color: color-mix(in srgb, var(--color-danger) 75%, var(--color-log-text)); }
+  .terminal-running { min-height: 48px; padding: 0 var(--space-4); display: flex; align-items: center; gap: var(--space-2); color: var(--color-log-muted); font-size: var(--text-xs); }
+  .terminal-running .spinner { width: 14px; height: 14px; }
+  .terminal-empty-output { display: block; padding: var(--space-3) var(--space-4); color: var(--color-log-muted); font-size: var(--text-xs); font-style: italic; }
+  .terminal-entry footer { min-height: 30px; padding: 0 var(--space-4); display: flex; align-items: center; gap: var(--space-3); border-top: 1px solid var(--color-log-rule); color: var(--color-log-muted); font-size: var(--text-2xs); }
+  .terminal-entry footer span:first-child { color: var(--color-success); }
+  .terminal-entry footer span.failed, .terminal-entry footer strong { color: var(--color-danger); }
+  .terminal-entry footer strong { margin-left: auto; font-weight: 500; }
+  .terminal-command-form { min-height: 54px; padding: var(--space-2) var(--space-3); display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); border-top: 1px solid var(--color-log-rule); background: var(--color-log-surface); }
+  .terminal-command-form > span { color: var(--color-success); font: 600 var(--text-sm) var(--font-mono); text-align: center; }
+  .terminal-command-form input { width: 100%; height: 36px; border: 0; outline: 0; background: transparent; color: var(--color-log-text); font: var(--text-sm) var(--font-mono); }
+  .terminal-command-form input::placeholder { color: var(--color-log-muted); }
+  .terminal-command-form button { min-height: 34px; padding: 0 var(--space-3); display: inline-flex; align-items: center; gap: var(--space-2); border: 1px solid var(--color-accent); border-radius: var(--radius-sm); background: var(--color-accent); color: var(--color-accent-ink); font-size: var(--text-xs); font-weight: 600; cursor: pointer; }
 
   /* ---------- Recent / deployment rows ---------- */
   .recent { margin-bottom: var(--space-4); }
@@ -2093,19 +2315,17 @@
   .environment-service-tabs strong, .environment-service-tabs small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .environment-service-tabs strong { color: var(--color-ink); font-size: var(--text-sm); }
   .environment-service-tabs small { font-size: var(--text-xs); }
-  .environment-intro { margin: var(--space-5); padding: var(--space-4); display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: var(--space-3); border: 1px solid color-mix(in srgb, var(--color-info) 26%, var(--color-rule)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-info) 5%, var(--color-paper-raised)); }
-  .restart-mark { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; background: var(--color-info-soft); color: var(--color-info); }
-  .environment-intro strong { font-size: var(--text-sm); }
-  .environment-intro p { margin: var(--space-1) 0 0; color: var(--color-muted); font-size: var(--text-sm); line-height: 1.55; }
   .environment-feedback { margin: 0 var(--space-5) var(--space-4); padding: var(--space-3); display: grid; gap: var(--space-1); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); font-size: var(--text-sm); }
   .environment-feedback span { color: var(--color-muted); }
   .environment-feedback.error { border-color: color-mix(in srgb, var(--color-danger) 35%, var(--color-rule)); background: color-mix(in srgb, var(--color-danger) 6%, var(--color-paper-raised)); }
   .environment-feedback.success { border-color: color-mix(in srgb, var(--color-success) 35%, var(--color-rule)); background: var(--color-success-soft); }
   .environment-loading { min-height: 240px; display: flex; align-items: center; justify-content: center; gap: var(--space-3); color: var(--color-muted); font-size: var(--text-sm); }
-  .environment-columns, .variable-row { display: grid; grid-template-columns: minmax(180px, 0.8fr) minmax(260px, 1.5fr) 72px 34px; gap: var(--space-2); }
-  .environment-columns { padding: 0 var(--space-5) var(--space-2); color: var(--color-muted); font-size: var(--text-2xs); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+  .environment-columns, .variable-row { display: grid; grid-template-columns: minmax(220px, 0.8fr) minmax(320px, 1.7fr) 72px 34px; gap: var(--space-2); }
+  .environment-columns { margin-top: var(--space-5); padding: 0 var(--space-5) var(--space-2); color: var(--color-muted); font-size: var(--text-2xs); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
   .variable-list { padding: 0 var(--space-5) var(--space-5); display: grid; gap: var(--space-2); }
   .variable-row { align-items: center; }
+  .variable-key-field { min-width: 0; }
+  .variable-key-field input { letter-spacing: 0.01em; }
   .variable-row input[type='text'], .variable-row input[type='password'] { width: 100%; height: 38px; padding: 0 var(--space-3); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); background: var(--color-log-bg); color: var(--color-log-text); font: var(--text-sm) var(--font-mono); outline: none; }
   .variable-row input:focus { border-color: var(--color-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent); }
   .value-field { position: relative; }
@@ -2136,6 +2356,7 @@
   .route-state i { width: 7px; height: 7px; border-radius: 50%; background: var(--color-success); box-shadow: 0 0 0 4px var(--color-success-soft); }
   .domain-layout { display: grid; }
   .domain-form { padding: var(--space-5); }
+  .domain-header-actions { display: flex; align-items: center; gap: var(--space-3); }
   .domain-editor-head { margin-bottom: var(--space-4); display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
   .domain-editor-head .form-copy { min-width: 0; }
   .domain-editor-head .form-copy p { margin-bottom: 0; }
@@ -2146,9 +2367,15 @@
   .domain-empty small { color: var(--color-muted); font-size: var(--text-sm); }
   .domain-binding-list { display: grid; gap: var(--space-4); }
   .domain-binding { overflow: hidden; border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface-subtle); }
-  .domain-binding > .binding-head { min-height: auto; padding: var(--space-4); display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: end; gap: var(--space-3); border-bottom: 1px solid var(--color-rule); background: var(--color-paper-raised); }
+  .domain-list-row { min-height: 82px; padding: var(--space-4); display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: var(--space-3); }
+  .domain-list-copy { min-width: 0; display: grid; gap: var(--space-1); }
+  .domain-list-copy strong { overflow: hidden; font: 600 var(--text-sm) var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+  .domain-list-copy span { overflow: hidden; color: var(--color-muted); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+  .domain-list-row > a, .domain-list-row > button { min-height: 32px; padding: 0 var(--space-3); display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-accent); font-size: var(--text-xs); font-weight: 600; text-decoration: none; cursor: pointer; }
+  .domain-list-row > button { color: var(--color-ink); }
+  .https-badge { padding: 4px 7px; border-radius: var(--radius-xs); background: var(--color-success-soft); color: var(--color-success); font: 700 var(--text-2xs) var(--font-mono); letter-spacing: 0.04em; }
   .binding-domain { min-width: 0; display: grid; gap: var(--space-2); }
-  .binding-domain label { color: var(--color-muted); font-size: var(--text-2xs); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+  .binding-domain > span { color: var(--color-muted); font-size: var(--text-2xs); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
   .binding-domain input { width: 100%; min-width: 0; height: 38px; padding: 0 var(--space-3); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font: var(--text-sm) var(--font-mono); outline: none; }
   .binding-domain input:focus { border-color: var(--color-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 14%, transparent); }
   .binding-https { height: 38px; padding: 0 var(--space-3); display: inline-flex; align-items: center; gap: var(--space-2); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); color: var(--color-muted); font-size: var(--text-sm); font-weight: 600; cursor: pointer; }
@@ -2177,19 +2404,27 @@
   .binding-preview { padding: var(--space-3) var(--space-4); display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); border-top: 1px solid var(--color-rule); background: var(--color-paper-raised); }
   .binding-preview > span { overflow: hidden; font: 500 var(--text-xs) var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
   .binding-preview code { overflow: hidden; color: var(--color-muted); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
-  .binding-preview a { color: var(--color-accent); font-size: var(--text-xs); font-weight: 600; text-decoration: none; }
   .form-copy h4 { margin: 0 0 var(--space-2); font-size: var(--text-lg); }
   .form-copy p { max-width: 62ch; margin: 0 0 var(--space-5); color: var(--color-muted); font-size: var(--text-sm); line-height: 1.6; }
   .route-hint { margin: var(--space-2) 0 0; color: var(--color-muted); font-size: var(--text-xs); }
   .route-hint code, .domain-form code, .route-guide code { font-family: var(--font-mono); }
   .route-rules-footer { margin-top: var(--space-4); padding-top: var(--space-3); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); border-top: 1px dashed var(--color-rule); }
   .route-rules-footer span { color: var(--color-muted); font-size: var(--text-xs); }
-  .route-rules-footer button { min-height: 36px; padding: 0 var(--space-4); border: 1px solid var(--color-accent); border-radius: var(--radius-sm); background: var(--color-accent); color: var(--color-accent-ink); font-size: var(--text-sm); font-weight: 600; cursor: pointer; }
   .domain-save-footer { margin-top: var(--space-4); padding-top: var(--space-4); border-top-style: solid; }
   .domain-feedback { margin-bottom: var(--space-4); padding: var(--space-3); display: grid; gap: var(--space-1); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); font-size: var(--text-sm); }
   .domain-feedback span { color: var(--color-muted); }
   .domain-feedback.error { border-color: color-mix(in srgb, var(--color-danger) 35%, var(--color-rule)); background: color-mix(in srgb, var(--color-danger) 6%, var(--color-paper-raised)); }
   .domain-feedback.success { border-color: color-mix(in srgb, var(--color-success) 35%, var(--color-rule)); background: var(--color-success-soft); }
+  .domain-editor-modal { width: min(780px, calc(100vw - 32px)); }
+  .domain-editor-form { display: grid; }
+  .domain-editor-body { padding: var(--space-5); }
+  .domain-editor-body > p { margin: 0 0 var(--space-5); color: var(--color-muted); font-size: var(--text-sm); line-height: 1.6; }
+  .domain-draft-head { margin-bottom: var(--space-4); display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: var(--space-3); }
+  .domain-editor-form > footer { padding: var(--space-4) var(--space-5); display: flex; justify-content: flex-end; gap: var(--space-2); border-top: 1px solid var(--color-rule); }
+  .domain-editor-form > footer button { min-height: 36px; padding: 0 var(--space-4); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-sm); font-weight: 600; cursor: pointer; }
+  .domain-editor-form > footer .primary { border-color: var(--color-accent); background: var(--color-accent); color: var(--color-accent-ink); }
+  .domain-editor-form > footer .danger { margin-right: auto; border-color: color-mix(in srgb, var(--color-danger) 35%, var(--color-rule)); color: var(--color-danger); }
+  .domain-editor-form > footer button:disabled { opacity: 0.55; cursor: wait; }
   .route-guide { padding: var(--space-5); border-top: 1px solid var(--color-rule); background: var(--color-surface-subtle); }
   .guide-label { color: var(--color-muted); font-size: var(--text-2xs); font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
   .route-guide ol { margin: var(--space-4) 0 0; padding: 0; display: grid; gap: var(--space-4); list-style: none; }
@@ -2407,7 +2642,7 @@
   @media (max-width: 48rem) { .recent > a, .deployment-row { grid-template-columns: 104px minmax(0, 1fr) 20px; } .recent code, .deployment-row code, .recent time, .deployment-row time { display: none; } .services article { grid-template-columns: 40px minmax(0, 1fr) auto; } }
   @media (max-width: 32rem) { .hero-actions { width: 100%; } .hero-actions button { flex: 1; padding-inline: var(--space-3); } .services article { grid-template-columns: 40px minmax(0, 1fr); } .services article :global(.status) { grid-column: 2; } .database-state, .database-actions { grid-column: 2; justify-items: start; } .feedback { grid-template-columns: 1fr auto; } .feedback span { grid-row: 2; grid-column: 1 / -1; } .engine-picker { grid-template-columns: 1fr; } .credential-list > div { grid-template-columns: 1fr 54px; padding: var(--space-2) 0; } .credential-list span { grid-column: 1 / -1; } .settings-grid { grid-template-columns: 1fr; } .settings-grid .wide { grid-column: auto; } .danger-zone, .project-editor form > footer, .runtime-settings-form > footer, .deployment-triggers > footer { align-items: flex-start; flex-direction: column; } .runtime-settings-panel > header { align-items: flex-start; flex-direction: column; } .runtime-settings-panel > header > p { margin-left: 0; text-align: left; } .runtime-settings-form > footer > div, .runtime-settings-form > footer button, .deployment-triggers > footer button { width: 100%; } .runtime-settings-empty { grid-template-columns: 42px minmax(0, 1fr); } .runtime-settings-empty button { grid-column: 1 / -1; width: 100%; } .trigger-row { grid-template-columns: 36px minmax(0, 1fr); } .trigger-row .switch { grid-column: 2; } .webhook-endpoint { grid-template-columns: 1fr; } .webhook-endpoint button { width: 100%; } }
   @media (max-width: 48rem) { .project-identity-layout { grid-template-columns: 1fr; } }
-  @media (max-width: 44rem) { .log-panel > header { align-items: flex-start; flex-direction: column; } .log-actions { width: 100%; justify-content: flex-start; } .log-actions small { width: 100%; } .log-toolbar { align-items: stretch; flex-direction: column; } .log-filter-group { align-items: stretch; flex-direction: column; } .log-toolbar label { width: 100%; } .log-line { grid-template-columns: 34px 62px minmax(0, 1fr); } .log-line time { display: none; } .environment-panel > header { align-items: flex-start; flex-direction: column; gap: var(--space-3); } .environment-columns { display: none; } .variable-row { grid-template-columns: 1fr 64px 34px; padding: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-md); } .variable-row > label:first-child, .value-field { grid-column: 1 / -1; } .environment-editor > footer { align-items: stretch; flex-direction: column; } .environment-editor > footer button { width: 100%; } .domain-editor-head { align-items: stretch; flex-direction: column; } .add-domain { width: 100%; } .domain-binding > .binding-head { grid-template-columns: minmax(0, 1fr) auto; } .binding-domain { grid-column: 1 / -1; } .binding-preview { grid-template-columns: minmax(0, 1fr) auto; } .binding-preview code { grid-row: 2; grid-column: 1 / -1; } .route-rules-footer { align-items: stretch; flex-direction: column; } .route-rules-footer button { width: 100%; } }
+  @media (max-width: 44rem) { .log-panel > header { align-items: flex-start; flex-direction: column; } .log-actions { width: 100%; justify-content: flex-start; } .log-actions small { width: 100%; } .log-toolbar { align-items: stretch; flex-direction: column; } .log-filter-group { align-items: stretch; flex-direction: column; } .log-toolbar label { width: 100%; } .log-line { grid-template-columns: 34px 62px minmax(0, 1fr); } .log-line time { display: none; } .terminal-modal-backdrop { padding: var(--space-2); } .service-terminal-modal { height: calc(100vh - 16px); } .terminal-modal-toolbar { grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; } .terminal-modal-toolbar > div, .terminal-modal-toolbar > small { grid-column: 1 / -1; } .terminal-modal-toolbar > small { white-space: normal; } .terminal-prompt { grid-template-columns: auto minmax(0, 1fr); } .terminal-prompt time { display: none; } .terminal-command-form { grid-template-columns: 18px minmax(0, 1fr); } .terminal-command-form button { grid-column: 1 / -1; justify-content: center; } .environment-panel > header { align-items: flex-start; flex-direction: column; gap: var(--space-3); } .environment-columns { display: none; } .variable-row { grid-template-columns: 1fr 64px 34px; padding: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-md); } .variable-row > label:first-child, .value-field { grid-column: 1 / -1; } .environment-editor > footer { align-items: stretch; flex-direction: column; } .environment-editor > footer button { width: 100%; } .domain-editor-head { align-items: stretch; flex-direction: column; } .add-domain { width: 100%; } .binding-domain { grid-column: 1 / -1; } .binding-preview { grid-template-columns: minmax(0, 1fr) auto; } .binding-preview code { grid-row: 2; grid-column: 1 / -1; } .route-rules-footer { align-items: stretch; flex-direction: column; } }
   @media (max-width: 78rem) { .project-metric-grid { grid-template-columns: repeat(3, 1fr); } .project-metric-grid article:nth-child(3) { border-right: 0; } .project-metric-grid article:nth-child(-n+3) { border-bottom: 1px solid var(--color-rule); } .workload-columns, .workload-row { grid-template-columns: minmax(210px, 1.35fr) minmax(74px, 0.5fr) minmax(105px, 0.7fr) minmax(100px, 0.65fr); } .workload-columns span:nth-child(n+5), .workload-row > :nth-child(n+5) { display: none; } }
   @media (max-width: 52rem) { .project-metrics-head { align-items: flex-start; flex-direction: column; } .metrics-freshness { width: 100%; } .metrics-freshness button { margin-left: auto; } .project-metric-grid { grid-template-columns: 1fr 1fr; } .project-metric-grid article, .project-metric-grid article:nth-child(3) { border-right: 1px solid var(--color-rule); border-bottom: 1px solid var(--color-rule); } .project-metric-grid article:nth-child(even) { border-right: 0; } .project-metric-grid article:last-child { border-bottom: 0; } .workload-columns { display: none; } .workload-row { grid-template-columns: minmax(0, 1fr) 80px 105px; } .workload-row > :nth-child(n+4) { display: none; } }
   @media (max-width: 34rem) { .project-metric-grid { grid-template-columns: 1fr; } .project-metric-grid article, .project-metric-grid article:nth-child(3), .project-metric-grid article:nth-child(even) { border-right: 0; } .workload-row { grid-template-columns: minmax(0, 1fr) 74px; } .workload-row > :nth-child(n+3) { display: none; } }
@@ -2433,5 +2668,6 @@
       flex: 0 0 auto;
     }
   }
+  @media (max-width: 44rem) { .domain-header-actions { width: 100%; justify-content: space-between; } .domain-header-actions .add-domain { width: auto; } .domain-list-row { grid-template-columns: minmax(0, 1fr) auto; } .domain-list-copy { grid-column: 1 / -1; } .domain-draft-head { grid-template-columns: 1fr; } .domain-editor-form > footer { flex-wrap: wrap; } }
   @media (prefers-reduced-motion: reduce) { .spinner, .live-toggle.live i, .metrics-freshness > i.spinning { animation: none; } }
 </style>

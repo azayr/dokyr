@@ -45,22 +45,23 @@ type DiskMetrics struct {
 }
 
 type ContainerMetrics struct {
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	Image         string         `json:"image"`
-	State         string         `json:"state"`
-	Status        string         `json:"status"`
-	Managed       bool           `json:"managed"`
-	ProjectID     string         `json:"projectId,omitempty"`
-	ServiceKind   string         `json:"serviceKind,omitempty"`
-	CPUPercent    float64        `json:"cpuPercent"`
-	MemoryUsage   int64          `json:"memoryUsage"`
-	MemoryLimit   int64          `json:"memoryLimit"`
-	MemoryPercent float64        `json:"memoryPercent"`
-	DiskIO        IOMetrics      `json:"diskIo"`
-	NetworkIO     NetworkMetrics `json:"networkIo"`
-	Disk          DiskMetrics    `json:"disk"`
-	Error         string         `json:"error,omitempty"`
+	ID                  string         `json:"id"`
+	Name                string         `json:"name"`
+	Image               string         `json:"image"`
+	State               string         `json:"state"`
+	Status              string         `json:"status"`
+	Managed             bool           `json:"managed"`
+	ProjectID           string         `json:"projectId,omitempty"`
+	ServiceKind         string         `json:"serviceKind,omitempty"`
+	ControlPlaneService string         `json:"controlPlaneService,omitempty"`
+	CPUPercent          float64        `json:"cpuPercent"`
+	MemoryUsage         int64          `json:"memoryUsage"`
+	MemoryLimit         int64          `json:"memoryLimit"`
+	MemoryPercent       float64        `json:"memoryPercent"`
+	DiskIO              IOMetrics      `json:"diskIo"`
+	NetworkIO           NetworkMetrics `json:"networkIo"`
+	Disk                DiskMetrics    `json:"disk"`
+	Error               string         `json:"error,omitempty"`
 }
 
 type GlobalMetrics struct {
@@ -246,6 +247,51 @@ func (d *Docker) ProjectMetrics(ctx context.Context, projectID string) (MetricsS
 	return project, nil
 }
 
+// ControlPlaneMetrics returns only the containers that run Dokyr itself and its
+// PostgreSQL and Caddy dependencies. The containers are identified from the
+// Compose project label of the currently running Dokyr container.
+func (d *Docker) ControlPlaneMetrics(ctx context.Context) (MetricsSnapshot, error) {
+	snapshot, err := d.Metrics(ctx)
+	if err != nil {
+		return MetricsSnapshot{}, err
+	}
+	controlPlane := MetricsSnapshot{
+		CheckedAt:  snapshot.CheckedAt,
+		EngineName: snapshot.EngineName,
+		Global: GlobalMetrics{
+			CPUCores:    snapshot.Global.CPUCores,
+			MemoryLimit: snapshot.Global.MemoryLimit,
+		},
+		Stale: snapshot.Stale,
+		Error: snapshot.Error,
+	}
+	for _, container := range snapshot.Containers {
+		if container.ControlPlaneService == "" {
+			continue
+		}
+		controlPlane.Containers = append(controlPlane.Containers, container)
+		controlPlane.Global.Containers++
+		if container.State == "running" {
+			controlPlane.Global.Running++
+		}
+		controlPlane.Global.CPUPercent += container.CPUPercent
+		controlPlane.Global.MemoryUsage += container.MemoryUsage
+		controlPlane.Global.DiskIO.Read += container.DiskIO.Read
+		controlPlane.Global.DiskIO.Write += container.DiskIO.Write
+		controlPlane.Global.NetworkIO.Receive += container.NetworkIO.Receive
+		controlPlane.Global.NetworkIO.Transmit += container.NetworkIO.Transmit
+		controlPlane.Global.Disk.Writable += container.Disk.Writable
+		controlPlane.Global.Disk.RootFS += container.Disk.RootFS
+	}
+	if controlPlane.Global.MemoryLimit > 0 {
+		controlPlane.Global.MemoryPercent = float64(controlPlane.Global.MemoryUsage) / float64(controlPlane.Global.MemoryLimit) * 100
+	}
+	sort.Slice(controlPlane.Containers, func(i, j int) bool {
+		return controlPlaneOrder(controlPlane.Containers[i].ControlPlaneService) < controlPlaneOrder(controlPlane.Containers[j].ControlPlaneService)
+	})
+	return controlPlane, nil
+}
+
 func (d *Docker) runtimeMetricsLoop(ctx context.Context) {
 	ticker := time.NewTicker(runtimeMetricsInterval)
 	defer ticker.Stop()
@@ -302,6 +348,7 @@ func (d *Docker) refreshRuntimeMetrics(ctx context.Context) error {
 	if err := d.get(ctx, "/containers/json?all=1", &containers); err != nil {
 		return err
 	}
+	controlProject := currentControlPlaneProject(containers)
 
 	d.metrics.mu.RLock()
 	containerDisks := make(map[string]DiskMetrics, len(d.metrics.containerDisks))
@@ -323,7 +370,8 @@ func (d *Docker) refreshRuntimeMetrics(ctx context.Context) error {
 				ID: container.ID, Name: strings.TrimPrefix(firstString(container.Names), "/"), Image: container.Image,
 				State: container.State, Status: container.Status, Managed: container.Labels["selfhost.managed"] == "true",
 				ProjectID: container.Labels["selfhost.project.id"], ServiceKind: container.Labels["selfhost.service.kind"],
-				Disk: containerDisks[container.ID],
+				ControlPlaneService: controlPlaneService(container.Labels, controlProject),
+				Disk:                containerDisks[container.ID],
 			}
 			if container.State == "running" {
 				workers <- struct{}{}
@@ -403,6 +451,44 @@ func (d *Docker) refreshRuntimeMetrics(ctx context.Context) error {
 	d.metrics.lastError = nil
 	d.metrics.mu.Unlock()
 	return nil
+}
+
+func currentControlPlaneProject(containers []dockerContainerSummary) string {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		return ""
+	}
+	for _, container := range containers {
+		if strings.HasPrefix(container.ID, hostname) {
+			return container.Labels["com.docker.compose.project"]
+		}
+	}
+	return ""
+}
+
+func controlPlaneService(labels map[string]string, project string) string {
+	if project == "" || labels["com.docker.compose.project"] != project {
+		return ""
+	}
+	switch service := labels["com.docker.compose.service"]; service {
+	case "selfhost", "postgres", "caddy":
+		return service
+	default:
+		return ""
+	}
+}
+
+func controlPlaneOrder(service string) int {
+	switch service {
+	case "selfhost":
+		return 0
+	case "postgres":
+		return 1
+	case "caddy":
+		return 2
+	default:
+		return 3
+	}
 }
 
 func (d *Docker) storeMetricsError(err error) {
