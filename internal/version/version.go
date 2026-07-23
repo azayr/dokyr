@@ -5,7 +5,7 @@ import "strings"
 // These values are replaced by the release build. Development builds keep
 // useful, explicit values instead of pretending to be a published release.
 var (
-	Version   = "dev"
+	Version   = "0.1.0-dev"
 	Revision  = "unknown"
 	BuildDate = "unknown"
 )

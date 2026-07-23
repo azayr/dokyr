@@ -10,7 +10,7 @@ RUN pnpm build
 FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS api
 ARG TARGETOS
 ARG TARGETARCH
-ARG VERSION=dev
+ARG VERSION=0.1.0-dev
 ARG REVISION=unknown
 ARG BUILD_DATE=unknown
 WORKDIR /src
@@ -34,7 +34,7 @@ FROM --platform=$BUILDPLATFORM alpine:3.22 AS runtime-deps
 RUN apk add --no-cache ca-certificates tzdata
 
 FROM alpine:3.22
-ARG VERSION=dev
+ARG VERSION=0.1.0-dev
 ARG REVISION=unknown
 ARG BUILD_DATE=unknown
 WORKDIR /app

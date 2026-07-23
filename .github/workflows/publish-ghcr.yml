@@ -54,7 +54,7 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
           else
-            VERSION="sha-${GITHUB_SHA::7}"
+            VERSION="$(node -p "require('./web/package.json').version")"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"

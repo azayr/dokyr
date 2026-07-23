@@ -7,7 +7,7 @@
   import CommandMenu from './CommandMenu.svelte';
   import { currentUser, logout } from '$lib/auth.js';
   import { themeMode, resolvedTheme, initTheme, setTheme } from '$lib/theme.js';
-  import { platformUpdate, loadPlatformUpdate } from '$lib/platform.js';
+  import { platformUpdate, loadPlatformUpdate, formatPlatformVersion } from '$lib/platform.js';
 
   export let eyebrow = 'Workspace';
   export let title = 'Overview';
@@ -105,8 +105,8 @@
       <a class="platform-version" class:update-ready={$platformUpdate?.updateAvailable} href="/settings?section=platform">
         <span class="version-mark"><Icon name={$platformUpdate?.updateAvailable ? 'arrow-right' : 'check'} size={12} /></span>
         <span>
-          <b>Dokyr {$platformUpdate?.current?.version || '…'}</b>
-          <small>{$platformUpdate?.updateAvailable ? `${$platformUpdate.latest?.version || 'New version'} available` : 'Platform version'}</small>
+          <b>Dokyr {formatPlatformVersion($platformUpdate?.current?.version, '…')}</b>
+          <small>{$platformUpdate?.updateAvailable ? `${formatPlatformVersion($platformUpdate.latest?.version, 'New version')} available` : 'Platform version'}</small>
         </span>
         {#if $platformUpdate?.updateAvailable}<i aria-label="Update available"></i>{/if}
       </a>

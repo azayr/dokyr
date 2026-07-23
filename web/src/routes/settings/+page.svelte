@@ -5,7 +5,7 @@
   import { api, currentUser, logout } from '$lib/auth.js';
   import { themeMode, setTheme } from '$lib/theme.js';
   import { toast } from '$lib/toast.js';
-  import { platformUpdate, loadPlatformUpdate, checkPlatformUpdate } from '$lib/platform.js';
+  import { platformUpdate, loadPlatformUpdate, checkPlatformUpdate, formatPlatformVersion } from '$lib/platform.js';
 
   let section = 'profile';
   let loading = true;
@@ -527,7 +527,7 @@
           <header class="panel-header">
             <div>
               <span class="eyebrow">Control plane</span>
-              <h2>Dokyr {$platformUpdate?.current?.version || 'development'}</h2>
+              <h2>Dokyr {formatPlatformVersion($platformUpdate?.current?.version, 'Development')}</h2>
             </div>
             <span class="badge" class:badge-warning={$platformUpdate?.updateAvailable} class:badge-success={!$platformUpdate?.updateAvailable && $platformUpdate?.updateSupported}>
               <i></i>{$platformUpdate?.updateAvailable ? 'Update available' : $platformUpdate?.updateSupported ? 'Up to date' : 'Development build'}
@@ -537,14 +537,14 @@
             <div class="release-track" aria-label="Platform release comparison">
               <div>
                 <span>RUNNING</span>
-                <strong>{$platformUpdate?.current?.version || 'dev'}</strong>
-                <small>{$platformUpdate?.current?.revision?.slice(0, 12) || 'Local build'}</small>
+                <strong>{formatPlatformVersion($platformUpdate?.current?.version, 'Development')}</strong>
+                <small>Installed version</small>
               </div>
               <span class="release-line" class:active={$platformUpdate?.updateAvailable}><i></i><Icon name="arrow-right" size={15} /><i></i></span>
               <div>
                 <span>LATEST</span>
-                <strong>{$platformUpdate?.latest?.version || 'Unavailable'}</strong>
-                <small>{$platformUpdate?.latest?.revision?.slice(0, 12) || 'Registry channel'}</small>
+                <strong>{formatPlatformVersion($platformUpdate?.latest?.version, $platformUpdate?.updateSupported ? 'Unavailable' : 'Not checked')}</strong>
+                <small>{$platformUpdate?.updateSupported ? 'Stable channel' : 'Development build'}</small>
               </div>
             </div>
             {#if $platformUpdate?.error}
@@ -558,9 +558,11 @@
             {/if}
           </div>
           <footer class="panel-footer">
-            <span>{updateApplying ? 'The page will reconnect automatically after verification.' : 'The current container remains available for automatic rollback.'}</span>
+            <span>{updateApplying ? 'The page will reconnect automatically after verification.' : $platformUpdate?.updateSupported ? 'The current container remains available for automatic rollback.' : 'Self-update is disabled for development builds.'}</span>
             <div class="release-actions">
-              <button class="btn" onclick={checkForUpdate} disabled={updateChecking || updateApplying}><Icon name="refresh" size={14} /> {updateChecking ? 'Checking…' : 'Check again'}</button>
+              {#if $platformUpdate?.updateSupported}
+                <button class="btn" onclick={checkForUpdate} disabled={updateChecking || updateApplying}><Icon name="refresh" size={14} /> {updateChecking ? 'Checking…' : 'Check again'}</button>
+              {/if}
               {#if $platformUpdate?.updateAvailable}
                 <button class="btn btn-primary" onclick={applyUpdate} disabled={updateApplying || !$platformUpdate?.updateSupported}>
                   <Icon name="arrow-right" size={14} /> {updateApplying ? 'Updating…' : `Update to ${$platformUpdate.latest.version}`}

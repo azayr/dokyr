@@ -128,9 +128,12 @@ func (a *API) readPlatformUpdateStatus(ctx context.Context, force bool) platform
 	if current, err := a.docker.PlatformRuntime(ctx); err == nil {
 		status.CurrentImage = current.Image
 		status.CurrentDigest = current.Digest
-		status.UpdateSupported = status.Current.Version != "dev" && current.Digest != ""
+		status.UpdateSupported = !isDevelopmentVersion(status.Current.Version) && current.Digest != ""
 	} else {
 		status.Error = err.Error()
+	}
+	if !status.UpdateSupported {
+		return status
 	}
 
 	a.updateMu.Lock()
@@ -153,6 +156,11 @@ func (a *API) readPlatformUpdateStatus(ctx context.Context, force bool) platform
 		}
 	}
 	return status
+}
+
+func isDevelopmentVersion(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return value == "dev" || value == "development" || strings.HasSuffix(value, "-dev")
 }
 
 func (a *API) beginPlatformUpdate(sourceVersion string, release platformupdate.Release, requestedBy string) (store.PlatformUpdateJob, error) {
