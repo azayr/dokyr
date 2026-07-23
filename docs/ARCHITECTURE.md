@@ -12,6 +12,7 @@ The current release can:
 - connect GitHub and GitLab accounts through OAuth and list private repositories;
 - store private Registry V2 credentials;
 - create and deploy image-based projects;
+- validate and bulk-import image services and managed databases from a Docker Compose YAML file;
 - stream image-pull and container-start progress into deployment events;
 - view application container logs by polling the API;
 - assign a domain to an application through Caddy;

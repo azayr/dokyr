@@ -29,6 +29,13 @@
   let serviceSaving = false;
   let serviceError = '';
   let serviceForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '', healthCheckType: 'none', healthCheckPath: '/', healthCheckCommand: '', healthCheckTimeoutSeconds: 60, environment: '' };
+  let composeModal = false;
+  let composeText = '';
+  let composeFileName = '';
+  let composeValidation = null;
+  let composeValidating = false;
+  let composeImporting = false;
+  let composeError = '';
   let serviceRepositories = [];
   let serviceRepositoriesLoading = false;
   let serviceRepositoriesError = '';
@@ -831,6 +838,80 @@
     serviceModal = true;
   }
 
+  function openComposeModal() {
+    composeText = '';
+    composeFileName = '';
+    composeValidation = null;
+    composeError = '';
+    composeModal = true;
+  }
+
+  function updateComposeText(value) {
+    composeText = value;
+    composeValidation = null;
+    composeError = '';
+  }
+
+  async function chooseComposeFile(event) {
+    const file = event.currentTarget.files?.[0];
+    if (!file) return;
+    composeFileName = file.name;
+    composeValidation = null;
+    composeError = '';
+    try {
+      composeText = await file.text();
+    } catch {
+      composeError = 'Could not read this file.';
+    }
+    event.currentTarget.value = '';
+  }
+
+  async function validateCompose() {
+    composeValidating = true;
+    composeError = '';
+    try {
+      const response = await api('/api/projects/' + page.params.id + '/compose/validate', {
+        method: 'POST',
+        body: JSON.stringify({ compose: composeText })
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not validate Compose file');
+      composeValidation = payload;
+    } catch (cause) {
+      composeError = cause instanceof Error ? cause.message : 'Could not validate Compose file';
+    } finally {
+      composeValidating = false;
+    }
+  }
+
+  async function importCompose() {
+    if (!composeValidation?.valid) return;
+    composeImporting = true;
+    composeError = '';
+    try {
+      const response = await api('/api/projects/' + page.params.id + '/compose', {
+        method: 'POST',
+        body: JSON.stringify({ compose: composeText })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        if (payload.preview) composeValidation = payload.preview;
+        throw new Error(payload.error || 'Could not import Compose file');
+      }
+      const applications = payload.services?.length || 0;
+      const databases = payload.databases?.length || 0;
+      const deploymentErrors = payload.deploymentErrors?.length || 0;
+      composeModal = false;
+      notice = `Imported ${applications + databases} service${applications + databases === 1 ? '' : 's'} from Compose. ${applications - deploymentErrors} application deployment${applications - deploymentErrors === 1 ? '' : 's'} started${databases ? ` and ${databases} database${databases === 1 ? '' : 's'} created` : ''}.`;
+      if (deploymentErrors) error = `${deploymentErrors} imported application deployment${deploymentErrors === 1 ? '' : 's'} could not be started. Review the service rows for details.`;
+      await loadProject(true);
+    } catch (cause) {
+      composeError = cause instanceof Error ? cause.message : 'Could not import Compose file';
+    } finally {
+      composeImporting = false;
+    }
+  }
+
   async function chooseServiceSource(sourceType) {
     serviceForm = { ...serviceForm, sourceType, imageUrl: sourceType === 'image' ? serviceForm.imageUrl : '', registryId: sourceType === 'image' ? serviceForm.registryId : '', connectionId: sourceType === 'repository' ? serviceForm.connectionId : '', repository: sourceType === 'repository' ? serviceForm.repository : '' };
     serviceRepositoriesError = '';
@@ -1331,7 +1412,7 @@
   {:else if activeTab === 'overview'}
     <div class="overview-grid">
       <section class="panel services">
-        <header><div><span>Runtime</span><h3>Services</h3></div><div class="service-head-actions"><b>{displayApplicationServices.length + databaseServices.length}</b><button class="service-add-primary" onclick={openServiceModal}><Icon name="plus" size={14}/> Add service</button><button onclick={openDatabaseModal}><Icon name="database" size={14}/> Add database</button></div></header>
+        <header><div><span>Runtime</span><h3>Services</h3></div><div class="service-head-actions"><b>{displayApplicationServices.length + databaseServices.length}</b><button class="compose-add" onclick={openComposeModal}><Icon name="file-text" size={14}/> Add Compose</button><button class="service-add-primary" onclick={openServiceModal}><Icon name="plus" size={14}/> Add service</button><button onclick={openDatabaseModal}><Icon name="database" size={14}/> Add database</button></div></header>
         {#if displayApplicationServices.length === 0 && databaseServices.length === 0}
           <div class="empty"><div class="empty-icon"><Icon name="box" size={22} /></div><div><h4>No services yet</h4><p>Add a containerized frontend, API, admin tool, or database. Every service stays private until it receives a domain route.</p></div></div>
         {/if}
@@ -1885,6 +1966,60 @@
   </div>
 {/if}
 
+{#if composeModal}
+  <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget && !composeImporting) composeModal = false; }}>
+    <div class="modal compose-modal" role="dialog" aria-modal="true" aria-labelledby="compose-modal-title">
+      <header><div><span>Bulk service import</span><h2 id="compose-modal-title">Add a Compose file</h2></div><button aria-label="Close" onclick={() => composeModal = false} disabled={composeImporting}>×</button></header>
+      <div class="compose-workspace">
+        <div class="compose-intro">
+          <span class="compose-mark"><Icon name="layers" size={20}/></span>
+          <div><strong>Turn one Compose definition into Dokyr services</strong><p>Images become application services. Official PostgreSQL, MySQL, and MariaDB images become managed databases with persistent storage.</p></div>
+          <label class="compose-upload"><input type="file" accept=".yaml,.yml,application/yaml,text/yaml,text/x-yaml" onchange={chooseComposeFile}/><Icon name="file-text" size={14}/>{composeFileName || 'Choose file'}</label>
+        </div>
+        {#if composeError}<div class="domain-feedback error"><strong>Compose import failed</strong><span>{composeError}</span></div>{/if}
+        <label class="compose-editor">
+          <span>compose.yaml</span>
+          <textarea value={composeText} oninput={(event) => updateComposeText(event.currentTarget.value)} spellcheck="false" placeholder={'services:\n  web:\n    image: nginx:alpine\n    ports:\n      - "80"\n  db:\n    image: postgres:17-alpine\n    environment:\n      POSTGRES_PASSWORD: change-this-password'}></textarea>
+        </label>
+        {#if composeValidation}
+          <section class:invalid={!composeValidation.valid} class="compose-result">
+            <header>
+              <span class="validation-icon"><Icon name={composeValidation.valid ? 'check-circle' : 'x-circle'} size={18}/></span>
+              <div><strong>{composeValidation.valid ? 'Ready to import' : 'Changes required'}</strong><small>{composeValidation.applications} application{composeValidation.applications === 1 ? '' : 's'} · {composeValidation.databases} database{composeValidation.databases === 1 ? '' : 's'} · {composeValidation.warnings.length} warning{composeValidation.warnings.length === 1 ? '' : 's'}</small></div>
+            </header>
+            {#if composeValidation.errors.length}
+              <div class="compose-issues errors">
+                {#each composeValidation.errors as issue}<p><Icon name="x-circle" size={14}/><span>{issue.service ? `${issue.service}: ` : ''}{issue.message}</span></p>{/each}
+              </div>
+            {/if}
+            <div class="compose-service-list">
+              {#each composeValidation.services as item}
+                <article>
+                  <span class:database={item.kind === 'database'} class="compose-service-icon"><Icon name={item.kind === 'database' ? 'database' : 'box'} size={16}/></span>
+                  <div><strong>{item.name}</strong><small>{item.image} · :{item.containerPort}{item.publicPort ? ` → host ${item.publicPort}` : ''}</small></div>
+                  <em>{item.kind === 'database' ? item.engine : 'application'}</em>
+                </article>
+              {/each}
+            </div>
+            {#if composeValidation.warnings.length}
+              <details class="compose-warnings">
+                <summary>{composeValidation.warnings.length} mapping note{composeValidation.warnings.length === 1 ? '' : 's'}</summary>
+                <div>{#each composeValidation.warnings as issue}<p><Icon name="alert" size={14}/><span>{issue.service ? `${issue.service}: ` : ''}{issue.message}</span></p>{/each}</div>
+              </details>
+            {/if}
+          </section>
+        {/if}
+      </div>
+      <footer>
+        <span>Nothing is created until validation passes.</span>
+        <button type="button" onclick={() => composeModal = false} disabled={composeImporting}>Cancel</button>
+        <button type="button" onclick={validateCompose} disabled={composeValidating || composeImporting || !composeText.trim()}>{composeValidating ? 'Validating…' : composeValidation ? 'Validate again' : 'Validate file'}</button>
+        <button class="primary" type="button" onclick={importCompose} disabled={composeImporting || !composeValidation?.valid}>{composeImporting ? 'Creating services…' : 'Create & deploy all'}</button>
+      </footer>
+    </div>
+  </div>
+{/if}
+
 {#if serviceModal}
   <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget && !serviceSaving) serviceModal = false; }}>
     <div class="modal application-service-modal" role="dialog" aria-modal="true" aria-labelledby="service-modal-title">
@@ -2100,10 +2235,11 @@
 
   /* ---------- Services ---------- */
   .services { container-type: inline-size; }
-  .service-head-actions { display: flex !important; grid-auto-flow: column; align-items: center; gap: var(--space-2) !important; }
+  .service-head-actions { display: flex !important; grid-auto-flow: column; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-2) !important; }
   .service-head-actions b { min-width: 30px; height: 30px; display: grid; place-items: center; border-radius: var(--radius-sm); background: var(--color-paper-subtle); font: 600 var(--text-sm) var(--font-mono); }
   .service-head-actions button { min-height: 32px; padding: 0 var(--space-3); display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-sm); font-weight: 600; cursor: pointer; }
   .service-head-actions .service-add-primary { border-color: var(--color-accent); background: var(--color-accent); color: var(--color-accent-ink); }
+  .service-head-actions .compose-add { border-color: color-mix(in srgb, var(--color-info) 40%, var(--color-rule)); color: var(--color-info); }
   .services article { min-height: 72px; padding: var(--space-3) var(--space-5); display: grid; grid-template-columns: 40px minmax(0, 1fr) auto auto; align-items: center; gap: var(--space-3); }
   .service-icon { width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--radius-sm); background: var(--color-paper-subtle); color: var(--color-muted); }
   .service-icon.database { background: var(--color-info-soft); color: var(--color-info); }
@@ -2542,6 +2678,43 @@
 
   /* ---------- Modals (page-specific layouts) ---------- */
   .database-modal form { padding: var(--space-5); }
+  .compose-modal { width: min(820px, calc(100vw - 32px)); }
+  .compose-workspace { max-height: min(72vh, 760px); padding: var(--space-5); display: grid; gap: var(--space-4); overflow-y: auto; }
+  .compose-intro { padding: var(--space-4); display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); border: 1px solid color-mix(in srgb, var(--color-info) 30%, var(--color-rule)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-info) 5%, var(--color-paper-raised)); }
+  .compose-mark { width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--radius-sm); background: var(--color-info-soft); color: var(--color-info); }
+  .compose-intro > div { min-width: 0; }
+  .compose-intro strong { font-size: var(--text-sm); }
+  .compose-intro p { margin: var(--space-1) 0 0; color: var(--color-muted); font-size: var(--text-xs); line-height: 1.5; }
+  .compose-upload { min-height: 34px; max-width: 180px; padding: 0 var(--space-3); display: inline-flex; align-items: center; justify-content: center; gap: 7px; overflow: hidden; border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-xs); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+  .compose-upload input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
+  .compose-editor { display: grid; gap: var(--space-2); }
+  .compose-editor > span { color: var(--color-muted); font: 600 var(--text-xs) var(--font-mono); }
+  .compose-editor textarea { width: 100%; min-height: 250px; padding: var(--space-4); resize: vertical; border: 1px solid var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-log-bg); color: var(--color-log-text); font: var(--text-sm)/1.6 var(--font-mono); outline: none; tab-size: 2; }
+  .compose-editor textarea:focus { border-color: var(--color-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 14%, transparent); }
+  .compose-result { overflow: hidden; border: 1px solid color-mix(in srgb, var(--color-success) 36%, var(--color-rule)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-success) 3%, var(--color-paper-raised)); }
+  .compose-result.invalid { border-color: color-mix(in srgb, var(--color-danger) 36%, var(--color-rule)); background: color-mix(in srgb, var(--color-danger) 3%, var(--color-paper-raised)); }
+  .compose-result > header { min-height: 58px; padding: var(--space-3) var(--space-4); display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: center; gap: var(--space-3); border-bottom: 1px solid var(--color-rule); }
+  .validation-icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; background: var(--color-success-soft); color: var(--color-success); }
+  .compose-result.invalid .validation-icon { background: color-mix(in srgb, var(--color-danger) 10%, var(--color-paper-raised)); color: var(--color-danger); }
+  .compose-result > header div { display: grid; gap: 2px; }
+  .compose-result > header strong { font-size: var(--text-sm); }
+  .compose-result > header small { color: var(--color-muted); font-size: var(--text-xs); }
+  .compose-issues { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--color-rule); }
+  .compose-issues p, .compose-warnings p { margin: 0; padding: 4px 0; display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: var(--space-2); color: var(--color-muted); font-size: var(--text-xs); line-height: 1.45; }
+  .compose-issues.errors p { color: var(--color-danger); }
+  .compose-service-list article { min-height: 52px; padding: var(--space-2) var(--space-4); display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); border-bottom: 1px solid var(--color-rule); }
+  .compose-service-list article:last-child { border-bottom: 0; }
+  .compose-service-icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--radius-sm); background: var(--color-accent-soft); color: var(--color-accent); }
+  .compose-service-icon.database { background: var(--color-info-soft); color: var(--color-info); }
+  .compose-service-list article > div { min-width: 0; display: grid; gap: 2px; }
+  .compose-service-list strong { font-size: var(--text-sm); }
+  .compose-service-list small { overflow: hidden; color: var(--color-muted); font: var(--text-xs) var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+  .compose-service-list em { color: var(--color-muted); font-size: var(--text-2xs); font-style: normal; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+  .compose-warnings { border-top: 1px solid var(--color-rule); }
+  .compose-warnings summary { padding: var(--space-3) var(--space-4); color: var(--color-warning); font-size: var(--text-xs); font-weight: 600; cursor: pointer; }
+  .compose-warnings > div { padding: 0 var(--space-4) var(--space-3); }
+  .compose-modal > footer { min-height: 62px; padding: var(--space-3) var(--space-5); display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); border-top: 1px solid var(--color-rule); background: var(--color-surface-subtle); }
+  .compose-modal > footer > span { margin-right: auto; color: var(--color-muted); font-size: var(--text-xs); }
   .engine-picker { margin-bottom: var(--space-4); display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); }
   .engine-picker button { min-height: 84px; padding: var(--space-3); display: grid; grid-template-columns: 32px minmax(0, 1fr); grid-template-rows: auto auto; align-items: center; gap: 0 var(--space-2); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-paper-raised); color: var(--color-ink); text-align: left; cursor: pointer; }
   .engine-picker button.active { border-color: color-mix(in srgb, var(--color-accent) 50%, var(--color-rule)); background: var(--color-accent-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 16%, transparent); }
@@ -2642,7 +2815,7 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes live-pulse { 50% { box-shadow: 0 0 0 7px transparent; } }
   @media (min-width: 42rem) { .form-grid { grid-template-columns: 1fr 1fr; } }
-  @media (max-width: 41.99rem) { .service-source-picker { grid-template-columns: 1fr; } }
+  @media (max-width: 41.99rem) { .service-source-picker { grid-template-columns: 1fr; } .compose-intro { grid-template-columns: 40px minmax(0, 1fr); } .compose-upload { grid-column: 1 / -1; max-width: none; } .compose-modal > footer { align-items: stretch; flex-direction: column; } .compose-modal > footer > span { margin-right: 0; } }
   @media (min-width: 50rem) { .project-hero { flex-direction: row; align-items: center; } .overview-grid { grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr); } .domain-layout { grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr); } .route-guide { border-top: 0; border-left: 1px solid var(--color-rule); } }
   @media (max-width: 48rem) { .recent > a, .deployment-row { grid-template-columns: 104px minmax(0, 1fr) 20px; } .recent code, .deployment-row code, .recent time, .deployment-row time { display: none; } .services article { grid-template-columns: 40px minmax(0, 1fr) auto; } }
   @media (max-width: 32rem) { .hero-actions { width: 100%; } .hero-actions button { flex: 1; padding-inline: var(--space-3); } .services article { grid-template-columns: 40px minmax(0, 1fr); } .services article :global(.status) { grid-column: 2; } .database-state, .database-actions { grid-column: 2; justify-items: start; } .feedback { grid-template-columns: 1fr auto; } .feedback span { grid-row: 2; grid-column: 1 / -1; } .engine-picker { grid-template-columns: 1fr; } .credential-list > div { grid-template-columns: 1fr 54px; padding: var(--space-2) 0; } .credential-list span { grid-column: 1 / -1; } .settings-grid { grid-template-columns: 1fr; } .settings-grid .wide { grid-column: auto; } .danger-zone, .project-editor form > footer, .runtime-settings-form > footer, .deployment-triggers > footer { align-items: flex-start; flex-direction: column; } .runtime-settings-panel > header { align-items: flex-start; flex-direction: column; } .runtime-settings-panel > header > p { margin-left: 0; text-align: left; } .runtime-settings-form > footer > div, .runtime-settings-form > footer button, .deployment-triggers > footer button { width: 100%; } .runtime-settings-empty { grid-template-columns: 42px minmax(0, 1fr); } .runtime-settings-empty button { grid-column: 1 / -1; width: 100%; } .trigger-row { grid-template-columns: 36px minmax(0, 1fr); } .trigger-row .switch { grid-column: 2; } .webhook-endpoint { grid-template-columns: 1fr; } .webhook-endpoint button { width: 100%; } }

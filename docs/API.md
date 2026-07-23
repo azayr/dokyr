@@ -506,6 +506,8 @@ Successful application-service update returns `{ "variables": [...], "service": 
 | Method | Path | Description |
 | --- | --- | --- |
 | `POST` | `/api/projects/{projectId}/services` | Create an application service |
+| `POST` | `/api/projects/{projectId}/compose/validate` | Validate and preview a Compose import |
+| `POST` | `/api/projects/{projectId}/compose` | Create and deploy all validated Compose services |
 | `PUT` | `/api/services/{serviceId}` | Update its source/runtime definition |
 | `POST` | `/api/services/{serviceId}/deploy` | Start async deployment |
 | `POST` | `/api/services/{serviceId}/stop` | Stop its current container |
@@ -644,6 +646,16 @@ Automatic deployments use the same zero-downtime execution path as the manual de
 `GET /api/services/{serviceId}/logs?lines=300` has the same response shape and `lines` limits as project logs, but uses the service container.
 
 `DELETE /api/services/{serviceId}` has no body and returns `{ "ok": true }`. It returns `409` until every domain route targeting the service is removed.
+
+### Compose import
+
+Both Compose endpoints accept `{ "compose": "services:\n  ..." }`. Validation returns a normalized preview with `valid`, `services`, `applications`, `databases`, `errors`, and `warnings`; it never creates runtime resources.
+
+Import repeats validation against current project state, writes all service definitions in one database transaction, deploys managed databases, and starts application deployments. Official `postgres`, `mysql`, and `mariadb` images become managed databases. Other prebuilt images become application services. Compose environment references to service hostnames are rewritten to the corresponding Dokyr private container names.
+
+Build-only services, `env_file`, application volume mounts, configs, secrets, unresolved variable interpolation, port ranges, host-IP-specific bindings, and services without a prebuilt image fail validation. Published application ports are ignored in favor of domain routes. Managed databases keep an explicitly published port and replace Compose volumes and health checks with Dokyr-managed equivalents.
+
+Successful import returns `201` with `{ "services": ApplicationService[], "databases": DatabaseService[], "deployments": Deployment[], "deploymentErrors": [] }`. If a database cannot be deployed, the imported definitions, containers, and newly created volumes are rolled back.
 
 ## Database services
 

@@ -135,6 +135,8 @@ func (a *API) Handler() http.Handler {
 	protected.HandleFunc("PUT /api/projects/{id}/environment", a.updateProjectEnvironment)
 	protected.HandleFunc("POST /api/projects/{id}/databases", a.createDatabaseService)
 	protected.HandleFunc("POST /api/projects/{id}/services", a.createApplicationService)
+	protected.HandleFunc("POST /api/projects/{id}/compose/validate", a.validateCompose)
+	protected.HandleFunc("POST /api/projects/{id}/compose", a.importCompose)
 	protected.HandleFunc("PUT /api/services/{id}", a.updateApplicationService)
 	protected.HandleFunc("POST /api/services/{id}/deploy", a.deployApplicationService)
 	protected.HandleFunc("POST /api/services/{id}/stop", a.stopApplicationService)

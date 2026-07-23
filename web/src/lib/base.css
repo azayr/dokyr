@@ -477,7 +477,7 @@ textarea.input {
 /* ---------- Modals ---------- */
 .modal-backdrop {
   position: fixed;
-  z-index: 100;
+  z-index: 180;
   inset: 0;
   padding: var(--space-4);
   display: grid;

@@ -820,6 +820,39 @@ func (s *Store) CreateApplicationService(ctx context.Context, service Applicatio
 	return err
 }
 
+func (s *Store) CreateImportedServices(ctx context.Context, applications []ApplicationService, databases []DatabaseService) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, service := range applications {
+		var registryID any
+		if service.RegistryID != "" {
+			registryID = service.RegistryID
+		}
+		var connectionID any
+		if service.ConnectionID != "" {
+			connectionID = service.ConnectionID
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO application_services(id,project_id,name,source_type,image_url,registry_id,connection_id,repository,branch,dockerfile_path,build_context,build_strategy,auto_deploy,registry_webhook_secret_encrypted,registry_webhook_tag,container_port,command,health_check_type,health_check_path,health_check_command,health_check_timeout_seconds,environment,environment_secret_keys,status)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`, service.ID, service.ProjectID, service.Name, service.SourceType, service.ImageURL, registryID, connectionID, service.Repository, service.Branch, service.DockerfilePath, service.BuildContext, service.BuildStrategy, service.AutoDeploy, service.RegistryWebhookSecret, service.RegistryWebhookTag, service.ContainerPort, service.Command, service.HealthCheckType, service.HealthCheckPath, service.HealthCheckCommand, service.HealthCheckTimeout, service.EnvironmentEncrypted, strings.Join(service.EnvironmentSecretKeys, "\n"), service.Status); err != nil {
+			return err
+		}
+	}
+	for _, service := range databases {
+		var publicPort any
+		if service.PublicEnabled {
+			publicPort = service.PublicPort
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO database_services(id,project_id,name,engine,image,internal_port,public_enabled,public_port,volume_name,username,database_name,password_encrypted)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, service.ID, service.ProjectID, service.Name, service.Engine, service.Image, service.InternalPort, service.PublicEnabled, publicPort, service.VolumeName, service.Username, service.DatabaseName, service.PasswordEncrypted); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) UpdateApplicationService(ctx context.Context, service ApplicationService) error {
 	var registryID any
 	if service.RegistryID != "" {
@@ -1368,6 +1401,12 @@ func (s *Store) DatabaseService(ctx context.Context, id string) (DatabaseService
 	err := s.db.QueryRowContext(ctx, `SELECT id,project_id,name,engine,image,internal_port,public_enabled,COALESCE(public_port,0),volume_name,username,database_name,password_encrypted,created_at,updated_at
 		FROM database_services WHERE id=$1`, id).Scan(&service.ID, &service.ProjectID, &service.Name, &service.Engine, &service.Image, &service.InternalPort, &service.PublicEnabled, &service.PublicPort, &service.VolumeName, &service.Username, &service.DatabaseName, &service.PasswordEncrypted, &service.CreatedAt, &service.UpdatedAt)
 	return service, err
+}
+
+func (s *Store) DatabasePublicPortInUse(ctx context.Context, port int) (bool, error) {
+	var inUse bool
+	err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM database_services WHERE public_port=$1)", port).Scan(&inUse)
+	return inUse, err
 }
 
 func (s *Store) UpdateDatabaseExposure(ctx context.Context, id string, enabled bool, port int) error {
