@@ -114,6 +114,7 @@
   let environmentError = '';
   let environmentNotice = '';
   let environmentTargetId = 'main';
+  let environmentLoadRequest = 0;
   let deploymentFilter = 'all';
   let bulkEnvironmentModal = false;
   let bulkEnvironmentText = '';
@@ -348,25 +349,29 @@
 
   const emptyEnvironmentVariable = () => ({ key: '', value: '', secret: false, revealed: false });
 
-  async function loadEnvironment() {
-    if (!activeEnvironmentTarget) {
+  async function loadEnvironment(targetId = environmentTargetId) {
+    const target = environmentTargets.find((item) => item.id === targetId) || environmentTargets[0];
+    const requestId = ++environmentLoadRequest;
+    if (!target) {
       environmentVariables = [emptyEnvironmentVariable()];
+      environmentLoading = false;
       return;
     }
-    if (environmentLoading) return;
     environmentLoading = true;
     environmentError = '';
     try {
-      const endpoint = activeEnvironmentTarget.legacy ? '/api/projects/' + page.params.id + '/environment' : '/api/services/' + activeEnvironmentTarget.id + '/environment';
+      const endpoint = target.legacy ? '/api/projects/' + page.params.id + '/environment' : '/api/services/' + target.id + '/environment';
       const response = await api(endpoint);
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Could not load environment variables');
+      if (requestId !== environmentLoadRequest) return;
       environmentVariables = (payload.variables || []).map((variable) => ({ ...variable, revealed: false }));
       if (environmentVariables.length === 0) environmentVariables = [emptyEnvironmentVariable()];
     } catch (cause) {
+      if (requestId !== environmentLoadRequest) return;
       environmentError = cause instanceof Error ? cause.message : 'Could not load environment variables';
     } finally {
-      environmentLoading = false;
+      if (requestId === environmentLoadRequest) environmentLoading = false;
     }
   }
 
@@ -375,7 +380,7 @@
     environmentVariables = [];
     environmentNotice = '';
     environmentError = '';
-    await loadEnvironment();
+    await loadEnvironment(id);
   }
 
   function openEnvironmentFor(id) {
