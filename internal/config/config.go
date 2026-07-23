@@ -34,6 +34,8 @@ type Config struct {
 	GitLabBaseURL      string
 	CaddyAdminURL      string
 	ControlHosts       []string
+	PlatformImage      string
+	UpdateChannel      string
 	SMTP               SMTPBootstrap
 }
 
@@ -54,6 +56,8 @@ func Load() Config {
 		GitLabBaseURL:      env("GITLAB_BASE_URL", "https://gitlab.com"),
 		CaddyAdminURL:      env("CADDY_ADMIN_URL", "unix:///run/caddy-admin/admin.sock"),
 		ControlHosts:       splitHosts(env("SELFHOST_CONTROL_HOSTS", "localhost")),
+		PlatformImage:      env("SELFHOST_PLATFORM_IMAGE", "ghcr.io/azayr/dokyr"),
+		UpdateChannel:      env("SELFHOST_UPDATE_CHANNEL", "latest"),
 		SMTP: SMTPBootstrap{
 			Present:                   smtpHost != "" || smtpFromEmail != "",
 			Enabled:                   envBool("SMTP_ENABLED", true),

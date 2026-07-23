@@ -20,6 +20,10 @@ The current release can:
 - save encrypted environment variables and recreate the container without pulling or rebuilding its image;
 - create private-by-default MySQL, MariaDB, and PostgreSQL services with persistent volumes;
 - optionally publish a database on an explicitly selected host port.
+- report its embedded release version and running image digest;
+- discover a newer immutable control-plane image through the Registry V2 API;
+- manually or automatically replace its own container through an external
+  helper with health verification and rollback.
 
 Repository discovery exists, but cloning and building a repository is **not implemented yet**. A repository-backed project cannot currently be deployed. The runtime is also single-node: it has no worker fleet, scheduler, clustering, or high-availability coordination.
 
@@ -144,6 +148,7 @@ sequenceDiagram
     Store->>Store: Acquire advisory migration lock
     Store->>Store: Apply unapplied embedded migrations
     Store->>Store: Mark interrupted deployments failed
+    Main->>Store: Reconcile an interrupted platform update
     Main->>Auth: Validate JWT and encryption keys
     Main->>Docker: Create Unix-socket client
     Main->>Caddy: Create admin-socket client
@@ -156,6 +161,31 @@ sequenceDiagram
 ```
 
 Migrations run before the API starts. An advisory lock prevents two instances from applying the same migration concurrently, although the rest of the system is designed and tested as a single control-plane instance.
+
+### Control-plane release updates
+
+Release builds embed their version, Git revision, and build timestamp and carry
+the same values as OCI image labels. Availability is determined by comparing
+the running image's repository digest with the platform registry channel; the
+mutable `latest` name is never used as proof that two builds are identical.
+
+The authenticated API owns update policy and authorization, but it cannot
+replace its own container. After pulling the exact target digest it starts a
+one-shot helper from the currently trusted image. The helper:
+
+1. inspects and preserves the current container configuration;
+2. renames and stops the current container as a rollback candidate;
+3. creates the replacement with the same environment, mounts, networks,
+   labels, security settings, and restart policy;
+4. waits for the replacement's `/api/health` response;
+5. removes the previous container on success, or removes the replacement and
+   restores the previous container on failure.
+
+The update job is persisted before handoff. On startup, the running Dokyr
+version reconciles the job as successful when it matches the target; a restored
+old version records the failed rollback outcome. Only one platform update may
+be active at a time. Automatic updates use the identical path and are gated by
+the configured check interval, timezone, and maintenance hour.
 
 ## 6. Authentication and first-run setup
 

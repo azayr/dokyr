@@ -7,6 +7,7 @@
   import CommandMenu from './CommandMenu.svelte';
   import { currentUser, logout } from '$lib/auth.js';
   import { themeMode, resolvedTheme, initTheme, setTheme } from '$lib/theme.js';
+  import { platformUpdate, loadPlatformUpdate } from '$lib/platform.js';
 
   export let eyebrow = 'Workspace';
   export let title = 'Overview';
@@ -43,6 +44,7 @@
 
   onMount(() => {
     initTheme();
+    loadPlatformUpdate().catch(() => {});
   });
 
   $: if (page.url.pathname) {
@@ -100,6 +102,14 @@
     </nav>
 
     <div class="sidebar-bottom">
+      <a class="platform-version" class:update-ready={$platformUpdate?.updateAvailable} href="/settings?section=platform">
+        <span class="version-mark"><Icon name={$platformUpdate?.updateAvailable ? 'arrow-right' : 'check'} size={12} /></span>
+        <span>
+          <b>Dokyr {$platformUpdate?.current?.version || '…'}</b>
+          <small>{$platformUpdate?.updateAvailable ? `${$platformUpdate.latest?.version || 'New version'} available` : 'Platform version'}</small>
+        </span>
+        {#if $platformUpdate?.updateAvailable}<i aria-label="Update available"></i>{/if}
+      </a>
       <div class="user-menu-wrap" data-menu>
         {#if userMenuOpen}
           <div class="menu" role="menu">
@@ -281,6 +291,59 @@
   .sidebar-bottom {
     padding-top: var(--space-3);
     border-top: 1px solid var(--color-rule);
+  }
+  .platform-version {
+    min-height: 42px;
+    padding: var(--space-1) var(--space-2);
+    margin-bottom: var(--space-2);
+    display: grid;
+    grid-template-columns: 26px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-2);
+    border-radius: var(--radius-md);
+    color: var(--color-muted);
+    text-decoration: none;
+  }
+  .platform-version:hover {
+    background: var(--color-paper-subtle);
+    color: var(--color-ink);
+  }
+  .platform-version.update-ready {
+    background: var(--color-warning-soft);
+    color: var(--color-warning);
+  }
+  .version-mark {
+    width: 26px;
+    height: 26px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-sm);
+    background: var(--color-paper-raised);
+  }
+  .platform-version > span:nth-child(2) {
+    min-width: 0;
+    display: grid;
+  }
+  .platform-version b,
+  .platform-version small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .platform-version b {
+    color: var(--color-ink);
+    font: 600 var(--text-xs) var(--font-mono);
+  }
+  .platform-version small {
+    font-size: var(--text-2xs);
+  }
+  .platform-version i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-warning);
+    box-shadow: 0 0 0 3px var(--color-warning-soft);
   }
   .user-menu-wrap {
     position: relative;

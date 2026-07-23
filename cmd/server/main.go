@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,12 +15,31 @@ import (
 	"github.com/azayr/selfhost/internal/caddy"
 	"github.com/azayr/selfhost/internal/config"
 	"github.com/azayr/selfhost/internal/integration"
+	"github.com/azayr/selfhost/internal/platformupdate"
 	"github.com/azayr/selfhost/internal/runtime"
 	"github.com/azayr/selfhost/internal/secretbox"
 	"github.com/azayr/selfhost/internal/store"
+	"github.com/azayr/selfhost/internal/version"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "update-helper" {
+		flags := flag.NewFlagSet("update-helper", flag.ExitOnError)
+		container := flags.String("container", "", "running Dokyr container ID")
+		targetImage := flags.String("target-image", "", "immutable Dokyr image to install")
+		_ = flags.Parse(os.Args[2:])
+		if *container == "" || *targetImage == "" {
+			slog.Error("update helper requires --container and --target-image")
+			os.Exit(2)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		if err := runtime.RunPlatformUpdateHelper(ctx, *container, *targetImage); err != nil {
+			slog.Error("platform update failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	cfg := config.Load()
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	db, err := store.Open(context.Background(), cfg.DatabaseURL)
@@ -28,6 +48,9 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
+	if err := db.ReconcilePlatformUpdateJob(context.Background(), version.Current().Version); err != nil && !store.NotFound(err) {
+		log.Warn("reconcile interrupted platform update", "error", err)
+	}
 	authManager, err := auth.New(cfg.JWTSecret, cfg.JWTIssuer, cfg.CookieSecure)
 	if err != nil {
 		log.Error("configure authentication", "error", err)
@@ -69,7 +92,12 @@ func main() {
 		log.Error("configure Caddy client", "error", err)
 		os.Exit(1)
 	}
-	apiHandler := api.New(db, docker, authManager, integrations, box, caddyClient, cfg.PublicURL, log)
+	updateClient, err := platformupdate.NewClient(cfg.PlatformImage, cfg.UpdateChannel)
+	if err != nil {
+		log.Error("configure platform updates", "error", err)
+		os.Exit(1)
+	}
+	apiHandler := api.New(db, docker, authManager, integrations, box, caddyClient, updateClient, cfg.PublicURL, log)
 	smtpImported, err := apiHandler.BootstrapSMTPSettings(context.Background(), cfg.SMTP)
 	if err != nil {
 		log.Error("bootstrap SMTP settings", "error", err)
@@ -81,6 +109,7 @@ func main() {
 	schedulerContext, stopScheduler := context.WithCancel(context.Background())
 	defer stopScheduler()
 	apiHandler.StartCleanupScheduler(schedulerContext)
+	apiHandler.StartPlatformUpdateScheduler(schedulerContext)
 	go func() {
 		for attempt := 1; attempt <= 10; attempt++ {
 			if err := apiHandler.SyncDomains(context.Background()); err == nil {

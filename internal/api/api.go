@@ -29,6 +29,7 @@ import (
 	"github.com/azayr/selfhost/internal/config"
 	"github.com/azayr/selfhost/internal/integration"
 	"github.com/azayr/selfhost/internal/mailer"
+	"github.com/azayr/selfhost/internal/platformupdate"
 	"github.com/azayr/selfhost/internal/runtime"
 	"github.com/azayr/selfhost/internal/secretbox"
 	"github.com/azayr/selfhost/internal/store"
@@ -50,6 +51,10 @@ type API struct {
 	projectMu         sync.Mutex
 	cleanupMu         sync.Mutex
 	deploymentMu      sync.Mutex
+	updateMu          sync.Mutex
+	updateExecutionMu sync.Mutex
+	updates           *platformupdate.Client
+	latestRelease     *platformupdate.Release
 	deploymentCancels map[string]context.CancelFunc
 }
 
@@ -65,7 +70,7 @@ type domainBindingInput struct {
 	Rules        []domainRuleInput `json:"rules"`
 }
 
-func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integration.Service, box *secretbox.Box, caddyClient *caddy.Client, publicURL string, log *slog.Logger) *API {
+func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integration.Service, box *secretbox.Box, caddyClient *caddy.Client, updates *platformupdate.Client, publicURL string, log *slog.Logger) *API {
 	return &API{
 		store:             s,
 		docker:            d,
@@ -73,6 +78,7 @@ func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integ
 		integrations:      integrations,
 		box:               box,
 		caddy:             caddyClient,
+		updates:           updates,
 		publicURL:         strings.TrimRight(publicURL, "/"),
 		log:               log,
 		deploymentCancels: make(map[string]context.CancelFunc),
@@ -109,6 +115,10 @@ func (a *API) Handler() http.Handler {
 	protected.HandleFunc("GET /api/settings/smtp", a.smtpSettings)
 	protected.HandleFunc("PUT /api/settings/smtp", a.updateSMTPSettings)
 	protected.HandleFunc("POST /api/settings/smtp/test", a.testSMTPSettings)
+	protected.HandleFunc("GET /api/settings/platform/update", a.platformUpdateStatusHandler)
+	protected.HandleFunc("POST /api/settings/platform/update/check", a.checkPlatformUpdate)
+	protected.HandleFunc("PUT /api/settings/platform/update", a.updatePlatformUpdateSettings)
+	protected.HandleFunc("POST /api/settings/platform/update/apply", a.applyPlatformUpdate)
 	protected.HandleFunc("GET /api/dashboard", a.dashboard)
 	protected.HandleFunc("GET /api/projects", a.projects)
 	protected.HandleFunc("POST /api/projects", a.createProject)

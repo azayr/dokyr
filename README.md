@@ -4,7 +4,7 @@ A lightweight, self-hosted deployment control plane. The foundation combines a G
 
 The complete implementation guide—including container topology, request and deployment sequences, data model, security boundaries, configuration, operations, known limitations, and maintainer invariants—is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-The prebuilt control-plane image is available as `brahoul/selfhost:latest`. It contains the Go service and Svelte interface; PostgreSQL, Caddy, the Docker socket, networks, and volumes are still supplied by `compose.yaml`.
+The prebuilt control-plane image is available as `ghcr.io/azayr/dokyr:latest`. It contains the Go service and Svelte interface; PostgreSQL, Caddy, the Docker socket, networks, and volumes are still supplied by `compose.yaml`.
 
 ## Run it
 
@@ -13,6 +13,25 @@ docker compose up --build
 ```
 
 Open `http://localhost:8888`. The non-standard default avoids conflicts with local tools such as Laravel Herd. On the first visit, Dokyr asks you to create the owner account; public registration closes immediately afterward. PostgreSQL persists in the `postgres_data` volume and the control plane reads the host Docker Engine through `/var/run/docker.sock`.
+
+For a VPS using the published image, start without a local build:
+
+```sh
+docker compose pull
+docker compose up -d
+```
+
+After this initial Compose installation, Dokyr manages its own control-plane
+updates from **Settings → Platform**. The sidebar shows the running version and
+signals when the configured registry channel has a different immutable image
+digest. Manual and automatic updates pull that digest, hand replacement to an
+external helper container, verify `/api/health`, and restore the previous
+container if verification fails. Managed applications, Caddy, and PostgreSQL
+are not restarted.
+
+Automatic updates are off by default. When enabled, they run only during the
+configured maintenance hour. Release migrations must remain backward
+compatible so a container rollback can safely run the previous binary.
 
 Caddy rejects unknown hostnames with a 404 instead of forwarding them to the control panel. Direct IPv4 access is allowed automatically, so a fresh installation remains reachable at the VPS IP and published HTTP port. `CONTROL_HOSTS` is the allowlist for additional control-panel domain names. For example, on a VPS:
 

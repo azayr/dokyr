@@ -5,6 +5,7 @@
   import { api, currentUser, logout } from '$lib/auth.js';
   import { themeMode, setTheme } from '$lib/theme.js';
   import { toast } from '$lib/toast.js';
+  import { platformUpdate, loadPlatformUpdate, checkPlatformUpdate } from '$lib/platform.js';
 
   let section = 'profile';
   let loading = true;
@@ -41,6 +42,11 @@
   let smtpSaving = false;
   let smtpTesting = false;
   let smtpTestRecipient = '';
+  let updateLoading = false;
+  let updateChecking = false;
+  let updateSaving = false;
+  let updateApplying = false;
+  let updateSettings = { autoUpdate: false, checkIntervalMinutes: 60, maintenanceHour: 3, timezone: 'UTC' };
 
   const sections = [
     { id: 'profile', label: 'Profile', icon: 'user' },
@@ -57,6 +63,7 @@
     if (query.get('error')) error = query.get('error');
     await loadSecurity();
     if (section === 'smtp') await loadSMTP();
+    if (section === 'platform') await loadUpdateStatus();
   });
 
   async function loadSecurity() {
@@ -79,6 +86,87 @@
     error = '';
     history.replaceState(null, '', `/settings?section=${next}`);
     if (next === 'smtp' && !smtpLoaded) loadSMTP();
+    if (next === 'platform') loadUpdateStatus();
+  }
+
+  async function loadUpdateStatus(refresh = false) {
+    updateLoading = true;
+    try {
+      const data = await loadPlatformUpdate(refresh);
+      updateSettings = { ...updateSettings, ...data.settings };
+    } catch (cause) {
+      error = cause.message;
+    } finally {
+      updateLoading = false;
+    }
+  }
+
+  async function checkForUpdate() {
+    updateChecking = true;
+    try {
+      const data = await checkPlatformUpdate();
+      updateSettings = { ...updateSettings, ...data.settings };
+      toast.success(data.updateAvailable ? `Dokyr ${data.latest.version} is available` : 'Dokyr is up to date');
+    } catch (cause) {
+      error = cause.message;
+    } finally {
+      updateChecking = false;
+    }
+  }
+
+  async function saveUpdateSettings() {
+    updateSaving = true;
+    try {
+      const data = await request('/api/settings/platform/update', {
+        method: 'PUT',
+        body: JSON.stringify(updateSettings)
+      });
+      updateSettings = { ...updateSettings, ...data };
+      platformUpdate.update((state) => state ? { ...state, settings: data } : state);
+      toast.success('Update policy saved');
+    } catch (cause) {
+      error = cause.message;
+    } finally {
+      updateSaving = false;
+    }
+  }
+
+  async function applyUpdate() {
+    const target = $platformUpdate?.latest?.version || 'the latest release';
+    if (!confirm(`Update Dokyr to ${target}? The control panel will reconnect briefly while the new container is verified.`)) return;
+    updateApplying = true;
+    try {
+      const data = await request('/api/settings/platform/update/apply', { method: 'POST', body: '{}' });
+      notice = data.message;
+      toast.success('Platform update started');
+      watchPlatformRestart(target);
+    } catch (cause) {
+      error = cause.message;
+      updateApplying = false;
+    }
+  }
+
+  async function watchPlatformRestart(target) {
+    const deadline = Date.now() + 180000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      try {
+        const data = await loadPlatformUpdate();
+        if (data.current?.version === target || data.job?.status === 'failed') {
+          updateApplying = false;
+          if (data.job?.status === 'failed') error = data.job.message || 'The update failed and the previous version was restored.';
+          else {
+            toast.success(`Dokyr ${target} is running`);
+            location.reload();
+          }
+          return;
+        }
+      } catch {
+        // A short connection gap is expected while the control-plane container is exchanged.
+      }
+    }
+    updateApplying = false;
+    error = 'The update is taking longer than expected. Refresh to check the current platform status.';
   }
 
   async function loadSMTP() {
@@ -432,19 +520,86 @@
           </div>
         </section>
       {:else if section === 'platform'}
-        <section class="panel">
+        {#if updateLoading && !$platformUpdate}
+          <div class="panel loading-block"><span class="spinner"></span><span>Reading the running Dokyr release…</span></div>
+        {:else}
+        <section class="panel platform-release" class:update-available={$platformUpdate?.updateAvailable}>
           <header class="panel-header">
             <div>
               <span class="eyebrow">Control plane</span>
-              <h2>Platform</h2>
+              <h2>Dokyr {$platformUpdate?.current?.version || 'development'}</h2>
             </div>
+            <span class="badge" class:badge-warning={$platformUpdate?.updateAvailable} class:badge-success={!$platformUpdate?.updateAvailable && $platformUpdate?.updateSupported}>
+              <i></i>{$platformUpdate?.updateAvailable ? 'Update available' : $platformUpdate?.updateSupported ? 'Up to date' : 'Development build'}
+            </span>
           </header>
+          <div class="release-body">
+            <div class="release-track" aria-label="Platform release comparison">
+              <div>
+                <span>RUNNING</span>
+                <strong>{$platformUpdate?.current?.version || 'dev'}</strong>
+                <small>{$platformUpdate?.current?.revision?.slice(0, 12) || 'Local build'}</small>
+              </div>
+              <span class="release-line" class:active={$platformUpdate?.updateAvailable}><i></i><Icon name="arrow-right" size={15} /><i></i></span>
+              <div>
+                <span>LATEST</span>
+                <strong>{$platformUpdate?.latest?.version || 'Unavailable'}</strong>
+                <small>{$platformUpdate?.latest?.revision?.slice(0, 12) || 'Registry channel'}</small>
+              </div>
+            </div>
+            {#if $platformUpdate?.error}
+              <div class="alert alert-warning"><Icon name="alert" size={15} /><div><strong>Update check needs attention</strong><span>{$platformUpdate.error}</span></div></div>
+            {/if}
+            {#if $platformUpdate?.job}
+              <div class="update-job">
+                <span class="job-state" class:running={['pending','pulling','restarting'].includes($platformUpdate.job.status)}></span>
+                <div><b>Last update · {$platformUpdate.job.status}</b><p>{$platformUpdate.job.message || `${$platformUpdate.job.sourceVersion} → ${$platformUpdate.job.targetVersion}`}</p></div>
+              </div>
+            {/if}
+          </div>
+          <footer class="panel-footer">
+            <span>{updateApplying ? 'The page will reconnect automatically after verification.' : 'The current container remains available for automatic rollback.'}</span>
+            <div class="release-actions">
+              <button class="btn" onclick={checkForUpdate} disabled={updateChecking || updateApplying}><Icon name="refresh" size={14} /> {updateChecking ? 'Checking…' : 'Check again'}</button>
+              {#if $platformUpdate?.updateAvailable}
+                <button class="btn btn-primary" onclick={applyUpdate} disabled={updateApplying || !$platformUpdate?.updateSupported}>
+                  <Icon name="arrow-right" size={14} /> {updateApplying ? 'Updating…' : `Update to ${$platformUpdate.latest.version}`}
+                </button>
+              {/if}
+            </div>
+          </footer>
+        </section>
+
+        <form class="panel" onsubmit={(event) => { event.preventDefault(); saveUpdateSettings(); }}>
+          <header class="panel-header">
+            <div><span class="eyebrow">Release policy</span><h2>Automatic updates</h2></div>
+            <span class="badge" class:badge-success={updateSettings.autoUpdate}><i></i>{updateSettings.autoUpdate ? 'Enabled' : 'Manual'}</span>
+          </header>
+          <div class="panel-body form-stack">
+            <label class="toggle-row">
+              <input class="checkbox" type="checkbox" bind:checked={updateSettings.autoUpdate} />
+              <span><b>Install stable releases automatically</b><small>Dokyr checks the configured registry channel and uses the same verified rollback flow as a manual update.</small></span>
+            </label>
+            <div class="three-columns update-policy-fields">
+              <label class="field"><span>Check frequency</span><select class="select" bind:value={updateSettings.checkIntervalMinutes}><option value={15}>Every 15 minutes</option><option value={60}>Every hour</option><option value={360}>Every 6 hours</option><option value={1440}>Every day</option></select></label>
+              <label class="field"><span>Maintenance hour</span><select class="select" bind:value={updateSettings.maintenanceHour}>{#each Array(24) as _, hour}<option value={hour}>{String(hour).padStart(2, '0')}:00</option>{/each}</select></label>
+              <label class="field"><span>Timezone</span><input class="input input-mono" bind:value={updateSettings.timezone} placeholder="UTC" required /></label>
+            </div>
+            <p class="panel-note">Automatic installation begins only during the selected hour. Managed applications, databases, and Caddy continue running.</p>
+          </div>
+          <footer class="panel-footer"><span>Automatic updates are disabled by default.</span><button class="btn btn-primary" disabled={updateSaving}>{updateSaving ? 'Saving…' : 'Save update policy'}</button></footer>
+        </form>
+
+        <section class="panel">
+          <header class="panel-header"><div><span class="eyebrow">Runtime identity</span><h2>Platform details</h2></div></header>
           <dl class="identity-list">
+            <div><dt>Image</dt><dd><code>{$platformUpdate?.currentImage || 'Local development process'}</code></dd></div>
+            <div><dt>Image digest</dt><dd><code>{$platformUpdate?.currentDigest ? `${$platformUpdate.currentDigest.slice(0, 24)}…` : 'Not available'}</code></dd></div>
+            <div><dt>Build date</dt><dd>{$platformUpdate?.current?.buildDate || 'Unknown'}</dd></div>
             <div><dt>Public URL</dt><dd><code>{location.origin}</code></dd></div>
-            <div><dt>Session</dt><dd>HTTP-only cookie · 12 hours</dd></div>
-            <div><dt>GitHub callback</dt><dd><code>{security.providers.github.callbackUrl || `${location.origin}/api/integrations/oauth/github/callback`}</code></dd></div>
           </dl>
         </section>
+        {/if}
       {:else if smtpLoading}
         <div class="panel loading-block"><span class="spinner"></span><span>Loading SMTP configuration…</span></div>
       {:else}
@@ -802,6 +957,110 @@
     font-size: var(--text-xs);
   }
 
+  .platform-release.update-available {
+    border-color: color-mix(in srgb, var(--color-warning) 42%, var(--color-rule));
+    box-shadow: inset 3px 0 var(--color-warning), var(--shadow-panel);
+  }
+  .release-body {
+    padding: var(--space-5);
+    display: grid;
+    gap: var(--space-4);
+  }
+  .release-track {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(76px, 0.55fr) minmax(0, 1fr);
+    align-items: center;
+    gap: var(--space-3);
+  }
+  .release-track > div {
+    min-height: 88px;
+    padding: var(--space-3) var(--space-4);
+    display: grid;
+    align-content: center;
+    gap: 3px;
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-subtle);
+  }
+  .release-track > div:last-child {
+    background: var(--color-accent-softer);
+  }
+  .release-track span {
+    color: var(--color-faint);
+    font: 600 var(--text-2xs) var(--font-mono);
+    letter-spacing: 0.08em;
+  }
+  .release-track strong {
+    color: var(--color-ink);
+    font: 600 var(--text-xl) var(--font-mono);
+  }
+  .release-track small {
+    color: var(--color-muted);
+    font: 500 var(--text-xs) var(--font-mono);
+  }
+  .release-line {
+    display: flex;
+    align-items: center;
+    color: var(--color-faint);
+  }
+  .release-line i {
+    height: 1px;
+    flex: 1;
+    background: var(--color-rule-strong);
+  }
+  .release-line.active {
+    color: var(--color-warning);
+  }
+  .release-line.active i {
+    background: var(--color-warning);
+  }
+  .update-job {
+    padding: var(--space-3);
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-subtle);
+  }
+  .job-state {
+    width: 9px;
+    height: 9px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--color-success);
+  }
+  .job-state.running {
+    background: var(--color-warning);
+    box-shadow: 0 0 0 4px var(--color-warning-soft);
+    animation: update-pulse 1.6s ease-in-out infinite;
+  }
+  .update-job b {
+    font-size: var(--text-sm);
+    text-transform: capitalize;
+  }
+  .update-job p {
+    margin: 2px 0 0;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .release-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .three-columns {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-3);
+  }
+  .update-policy-fields {
+    padding-top: var(--space-1);
+  }
+  @keyframes update-pulse {
+    50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--color-warning) 8%, transparent); }
+  }
+
   .toggle-row {
     padding: var(--space-3);
     display: flex;
@@ -894,11 +1153,29 @@
       box-shadow: inset 0 -2px var(--color-accent);
     }
     .two-columns,
+    .three-columns,
     .smtp-grid,
     .smtp-section,
     .notification-toggles,
     .theme-options {
       grid-template-columns: 1fr;
+    }
+    .release-track {
+      grid-template-columns: 1fr;
+    }
+    .release-line {
+      min-height: 24px;
+      flex-direction: column;
+      transform: rotate(90deg);
+    }
+    .release-line i {
+      width: 24px;
+      flex: 0 0 1px;
+    }
+    .panel-footer,
+    .release-actions {
+      align-items: stretch;
+      flex-direction: column;
     }
     .split-row {
       align-items: flex-start;

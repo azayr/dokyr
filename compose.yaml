@@ -1,5 +1,6 @@
 services:
   selfhost:
+    image: ${DOKYR_IMAGE:-ghcr.io/azayr/dokyr:latest}
     build: .
     restart: unless-stopped
     environment:
@@ -27,6 +28,8 @@ services:
       SMTP_NOTIFY_DEPLOYMENT_SUCCESSES: ${SMTP_NOTIFY_DEPLOYMENT_SUCCESSES:-false}
       CADDY_ADMIN_URL: unix:///run/caddy-admin/admin.sock
       SELFHOST_CONTROL_HOSTS: ${CONTROL_HOSTS:-localhost}
+      SELFHOST_PLATFORM_IMAGE: ${DOKYR_REGISTRY_IMAGE:-ghcr.io/azayr/dokyr}
+      SELFHOST_UPDATE_CHANNEL: ${DOKYR_UPDATE_CHANNEL:-latest}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /proc:/host/proc:ro
