@@ -108,9 +108,9 @@ log "Welcome to the Dokyr installer."
 log "Install directory: ${INSTALL_DIR}"
 
 printf '\n'
-HTTP_PORT="${HTTP_PORT:-$(read_input "HTTP port" "8888")}"
-HTTPS_PORT="${HTTPS_PORT:-$(read_input "HTTPS port" "8443")}"
-PUBLIC_URL="${PUBLIC_URL:-$(read_input "Public URL (e.g. http://panel.example.com:8888)" "http://localhost:${HTTP_PORT}")}"
+HTTP_PORT="${HTTP_PORT:-80}"
+HTTPS_PORT="${HTTPS_PORT:-443}"
+PUBLIC_URL="${PUBLIC_URL:-$(read_input "Public URL (e.g. http://panel.example.com)" "http://localhost:${HTTP_PORT}")}"
 CONTROL_HOSTS="${CONTROL_HOSTS:-$(read_input "Control panel hostnames (space-separated, e.g. panel.example.com)" "localhost")}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(read_input "PostgreSQL password (leave blank to generate)" "")}"
 JWT_SECRET="${JWT_SECRET:-$(read_input "JWT secret (leave blank to generate)" "")}"

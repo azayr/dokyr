@@ -14,7 +14,7 @@ The fastest way to install Dokyr on a fresh server is the remote installer. It d
 curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/install.sh | sudo sh
 ```
 
-The installer defaults to `/opt/dokyr`. Run it as root so the control plane can access the host Docker socket. After the stack starts, open the printed URL and create the owner account.
+The installer defaults to `/opt/dokyr`, publishes the control panel on HTTP port `80` and HTTPS port `443`, and asks only for the public URL and control-panel hostname. Run it as root so the control plane can access the host Docker socket. After the stack starts, open the printed URL and create the owner account.
 
 For an automated install, download the script and run it with the variables you want preset:
 
@@ -27,6 +27,16 @@ sudo DOKYR_INSTALL_DIR=/srv/dokyr \
   POSTGRES_PASSWORD="..." JWT_SECRET="..." ENCRYPTION_KEY="..." \
   sh /tmp/install-dokyr.sh
 ```
+
+## Uninstall
+
+To remove the Dokyr control plane, PostgreSQL data, and configuration, run the uninstaller:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/uninstall.sh | sudo sh
+```
+
+This stops the containers, removes their volumes, and deletes the install directory. It does not remove Docker images, networks, or any project containers and volumes Dokyr created for your applications.
 
 ## Run it
 
