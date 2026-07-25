@@ -41,7 +41,7 @@ func TestNormalizeControlHost(t *testing.T) {
 
 func TestApplyLoadsHostRoutes(t *testing.T) {
 	var received string
-	client, err := New("http://caddy:2019", []string{"localhost", "127.0.0.1"})
+	client, err := New("http://caddy:2019", []string{"localhost", "127.0.0.1"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,15 +57,34 @@ func TestApplyLoadsHostRoutes(t *testing.T) {
 	if err := client.Apply(context.Background(), []Route{{Domain: "hello.test", Upstream: "selfhost-prj_demo:80"}}); err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"admin unix//run/caddy-admin/admin.sock", "@project0 host hello.test", "reverse_proxy selfhost-prj_demo:80", "@controlIP header_regexp Host", "@control host 127.0.0.1 localhost", "reverse_proxy selfhost:8080", "respond \"Not Found\" 404"} {
+	for _, expected := range []string{"admin unix//run/caddy-admin/admin.sock", "@project0 host hello.test", "reverse_proxy selfhost-prj_demo:80", "@controlIP header_regexp Host", "@control host 127.0.0.1 localhost", "reverse_proxy selfhost:8080", "@registry host registry.invalid", "handle /api/registry/token", "reverse_proxy registry:5000", "respond \"Not Found\" 404"} {
 		if !strings.Contains(received, expected) {
 			t.Fatalf("rendered config does not contain %q:\n%s", expected, received)
 		}
 	}
 }
 
+func TestRenderRegistryHostsBeforeCatchAll(t *testing.T) {
+	client, err := New("http://caddy:2019", []string{"panel.example.com"}, []string{"registry.example.com", "Registry2.Example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := client.Render(nil)
+	for _, expected := range []string{"@control host panel.example.com", "@registry host registry.example.com registry2.example.com", "handle /api/registry/token", "reverse_proxy registry:5000"} {
+		if !strings.Contains(configuration, expected) {
+			t.Fatalf("rendered registry config does not contain %q:\n%s", expected, configuration)
+		}
+	}
+	if strings.Index(configuration, "@registry host") < strings.Index(configuration, "@control host") {
+		t.Fatal("registry route should be rendered after the control route")
+	}
+	if strings.Index(configuration, "@registry host") > strings.LastIndex(configuration, "respond \"Not Found\" 404") {
+		t.Fatal("registry route should be rendered before the 404 catch-all")
+	}
+}
+
 func TestRenderAutomaticHTTPSRoute(t *testing.T) {
-	client, err := New("http://caddy:2019", []string{"panel.example.com"})
+	client, err := New("http://caddy:2019", []string{"panel.example.com"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +97,7 @@ func TestRenderAutomaticHTTPSRoute(t *testing.T) {
 }
 
 func TestRenderPathSpecificUpstreamsBeforeFallback(t *testing.T) {
-	client, err := New("http://caddy:2019", []string{"localhost"})
+	client, err := New("http://caddy:2019", []string{"localhost"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +113,7 @@ func TestRenderPathSpecificUpstreamsBeforeFallback(t *testing.T) {
 }
 
 func TestRenderRestrictedDefaultPath(t *testing.T) {
-	client, err := New("http://caddy:2019", []string{"localhost"})
+	client, err := New("http://caddy:2019", []string{"localhost"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +126,7 @@ func TestRenderRestrictedDefaultPath(t *testing.T) {
 }
 
 func TestRenderMultipleDomainsWithIndependentPaths(t *testing.T) {
-	client, err := New("http://caddy:2019", []string{"localhost"})
+	client, err := New("http://caddy:2019", []string{"localhost"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

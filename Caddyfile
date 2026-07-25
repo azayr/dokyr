@@ -12,6 +12,13 @@
   handle @control {
     reverse_proxy selfhost:8080
   }
+  @registry host {$REGISTRY_HOSTS:registry.invalid}
+  handle @registry {
+    handle /api/registry/token {
+      reverse_proxy selfhost:8080
+    }
+    reverse_proxy registry:5000
+  }
   handle {
     respond "Not Found" 404
   }

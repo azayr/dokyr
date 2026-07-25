@@ -144,6 +144,29 @@ type SMTPSettings struct {
 	CreatedAt                 time.Time `json:"createdAt"`
 	UpdatedAt                 time.Time `json:"updatedAt"`
 }
+type RegistrySettings struct {
+	Storage              string    `json:"storage"`
+	S3Region             string    `json:"s3Region"`
+	S3Bucket             string    `json:"s3Bucket"`
+	S3AccessKey          string    `json:"s3AccessKey"`
+	S3SecretKeyEncrypted string    `json:"-"`
+	S3Endpoint           string    `json:"s3Endpoint"`
+	S3ForcePathStyle     bool      `json:"s3ForcePathStyle"`
+	S3Secure             bool      `json:"s3Secure"`
+	CreatedBy            string    `json:"-"`
+	CreatedAt            time.Time `json:"createdAt"`
+	UpdatedAt            time.Time `json:"updatedAt"`
+}
+type RegistryAccessToken struct {
+	ID          string     `json:"id"`
+	UserID      string     `json:"-"`
+	Name        string     `json:"name"`
+	TokenHash   string     `json:"-"`
+	TokenPrefix string     `json:"prefix"`
+	Permission  string     `json:"permission"`
+	LastUsedAt  *time.Time `json:"lastUsedAt"`
+	CreatedAt   time.Time  `json:"createdAt"`
+}
 type RegistryCredential struct {
 	ID                string    `json:"id"`
 	Name              string    `json:"name"`
@@ -490,6 +513,111 @@ func (s *Store) CreateSMTPSettingsIfMissing(ctx context.Context, settings SMTPSe
 	}
 	rows, err := result.RowsAffected()
 	return rows == 1, err
+}
+
+func (s *Store) RegistrySettings(ctx context.Context) (RegistrySettings, error) {
+	var settings RegistrySettings
+	err := s.db.QueryRowContext(ctx, `SELECT storage,s3_region,s3_bucket,s3_access_key,s3_secret_key_encrypted,s3_endpoint,
+		s3_force_path_style,s3_secure,COALESCE(created_by,''),created_at,updated_at
+		FROM registry_settings WHERE singleton=TRUE`).Scan(&settings.Storage, &settings.S3Region, &settings.S3Bucket,
+		&settings.S3AccessKey, &settings.S3SecretKeyEncrypted, &settings.S3Endpoint,
+		&settings.S3ForcePathStyle, &settings.S3Secure, &settings.CreatedBy, &settings.CreatedAt, &settings.UpdatedAt)
+	return settings, err
+}
+
+func (s *Store) UpsertRegistrySettings(ctx context.Context, settings RegistrySettings) error {
+	var createdBy any
+	if settings.CreatedBy != "" {
+		createdBy = settings.CreatedBy
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO registry_settings(singleton,storage,s3_region,s3_bucket,s3_access_key,s3_secret_key_encrypted,
+		s3_endpoint,s3_force_path_style,s3_secure,created_by)
+		VALUES(TRUE,$1,$2,$3,$4,$5,$6,$7,$8,$9)
+		ON CONFLICT(singleton) DO UPDATE SET storage=EXCLUDED.storage,s3_region=EXCLUDED.s3_region,s3_bucket=EXCLUDED.s3_bucket,
+		s3_access_key=EXCLUDED.s3_access_key,s3_secret_key_encrypted=EXCLUDED.s3_secret_key_encrypted,
+		s3_endpoint=EXCLUDED.s3_endpoint,s3_force_path_style=EXCLUDED.s3_force_path_style,s3_secure=EXCLUDED.s3_secure,
+		created_by=COALESCE(registry_settings.created_by,EXCLUDED.created_by),updated_at=NOW()`,
+		settings.Storage, settings.S3Region, settings.S3Bucket, settings.S3AccessKey, settings.S3SecretKeyEncrypted,
+		settings.S3Endpoint, settings.S3ForcePathStyle, settings.S3Secure, createdBy)
+	return err
+}
+
+// CreateRegistrySettingsIfMissing follows the same bootstrap contract as SMTP:
+// a first-start environment configuration is imported once and PostgreSQL is
+// the source of truth from that point onward.
+func (s *Store) CreateRegistrySettingsIfMissing(ctx context.Context, settings RegistrySettings) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `INSERT INTO registry_settings(singleton,storage,s3_region,s3_bucket,s3_access_key,s3_secret_key_encrypted,
+		s3_endpoint,s3_force_path_style,s3_secure)
+		VALUES(TRUE,$1,$2,$3,$4,$5,$6,$7,$8)
+		ON CONFLICT(singleton) DO NOTHING`,
+		settings.Storage, settings.S3Region, settings.S3Bucket, settings.S3AccessKey, settings.S3SecretKeyEncrypted,
+		settings.S3Endpoint, settings.S3ForcePathStyle, settings.S3Secure)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows == 1, err
+}
+
+func (s *Store) RegistryAccessTokens(ctx context.Context, userID string) ([]RegistryAccessToken, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,user_id,name,token_prefix,permission,last_used_at,created_at
+		FROM registry_access_tokens WHERE user_id=$1 ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tokens := []RegistryAccessToken{}
+	for rows.Next() {
+		var token RegistryAccessToken
+		if err := rows.Scan(&token.ID, &token.UserID, &token.Name, &token.TokenPrefix, &token.Permission, &token.LastUsedAt, &token.CreatedAt); err != nil {
+			return nil, err
+		}
+		tokens = append(tokens, token)
+	}
+	return tokens, rows.Err()
+}
+
+func (s *Store) CreateRegistryAccessToken(ctx context.Context, token RegistryAccessToken) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO registry_access_tokens(id,user_id,name,token_hash,token_prefix,permission)
+		VALUES($1,$2,$3,$4,$5,$6)`, token.ID, token.UserID, token.Name, token.TokenHash, token.TokenPrefix, token.Permission)
+	return err
+}
+
+func (s *Store) DeleteRegistryAccessToken(ctx context.Context, id, userID string) error {
+	result, err := s.db.ExecContext(ctx, "DELETE FROM registry_access_tokens WHERE id=$1 AND user_id=$2", id, userID)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// UserByRegistryAccessToken authenticates the opaque password supplied by
+// Docker and atomically records its use. The username must be the token
+// owner's Dokyr email address.
+func (s *Store) UserByRegistryAccessToken(ctx context.Context, username, tokenHash string) (User, RegistryAccessToken, error) {
+	var user User
+	var token RegistryAccessToken
+	err := s.db.QueryRowContext(ctx, `UPDATE registry_access_tokens AS token SET last_used_at=NOW()
+		FROM users AS account
+		WHERE token.token_hash=$1 AND token.user_id=account.id AND LOWER(account.email)=LOWER($2)
+		RETURNING account.id,account.name,account.email,account.password_hash,account.role,
+			account.two_factor_secret_encrypted,account.two_factor_enabled,account.github_account_id,
+			account.github_login,account.created_at,
+			token.id,token.user_id,token.name,token.token_hash,token.token_prefix,token.permission,
+			token.last_used_at,token.created_at`, tokenHash, username).
+		Scan(&user.ID, &user.Name, &user.Email, &user.PasswordHash, &user.Role,
+			&user.TwoFactorSecretEncrypted, &user.TwoFactorEnabled, &user.GitHubAccountID,
+			&user.GitHubLogin, &user.CreatedAt,
+			&token.ID, &token.UserID, &token.Name, &token.TokenHash, &token.TokenPrefix,
+			&token.Permission, &token.LastUsedAt, &token.CreatedAt)
+	return user, token, err
 }
 
 func (s *Store) CreatePasswordResetToken(ctx context.Context, tokenHash, userID string, expiresAt time.Time) error {

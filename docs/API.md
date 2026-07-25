@@ -862,13 +862,42 @@ Cleanup preview returns Docker’s reclaimable-resource information. To perform 
 
 Select at least one category and use the exact confirmation text. Volumes can contain persistent database data; a frontend should make this option visually distinct and require an additional confirmation. Successful responses return Docker’s deleted resources and reclaimed-space result.
 
+## Built-in registry API
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/registry/status` | Registry container and authenticated API health |
+| `GET` | `/api/registry/settings` | Read the storage configuration |
+| `PUT` | `/api/registry/settings` | Save storage settings and recreate the registry |
+| `GET` | `/api/registry/access-tokens` | List the current user's registry credentials |
+| `POST` | `/api/registry/access-tokens` | Generate a registry credential |
+| `DELETE` | `/api/registry/access-tokens/{tokenId}` | Revoke one credential |
+| `GET` | `/api/registry/repositories` | List repositories and tags |
+| `DELETE` | `/api/registry/tags?name=…&tag=…` | Delete a manifest tag |
+| `POST` | `/api/registry/garbage-collection` | Run or preview garbage collection |
+| `GET` | `/api/registry/token` | Docker Distribution token exchange |
+
+Create a personal registry credential with:
+
+```json
+{ "name": "Production CI", "permission": "read_write" }
+```
+
+`permission` is `read_only` or `read_write`. The `201` response includes the
+opaque `secret` and the user's email in `username`; the secret is returned only
+once and only its SHA-256 hash is stored. Use the email and secret with
+`docker login`. Account passwords are not accepted. Viewer accounts can create
+only read-only credentials. The public token-exchange endpoint accepts HTTP
+Basic credentials from Docker and returns a short-lived, repository-scoped
+bearer token; clients should not call it directly.
+
 ## Frontend implementation notes
 
 1. Keep credentials enabled for every same-origin API call; authentication is cookie-based, not bearer-token based.
 2. Send only documented request fields. The server intentionally rejects unknown properties.
 3. Treat deployment endpoints as async. Navigate to deployment detail or poll it after receiving `202`.
 4. Runtime logs are snapshots, not WebSockets. Poll `?lines=` as desired and preserve the user-selected line limit.
-5. Never persist SMTP passwords, database credentials, Git tokens, TOTP secrets, or decoded environment secrets in local storage, analytics, or error reporting.
+5. Never persist SMTP passwords, database credentials, Git tokens, registry access-token secrets, TOTP secrets, or decoded environment secrets in local storage, analytics, or error reporting.
 6. When rendering Caddy route editors, allow multiple domains and ordered path rules, including multiple paths pointing to one service.
 7. Do not automatically expose databases publicly. `publicEnabled` must remain an explicit user action.
 

@@ -156,6 +156,22 @@ DOKYR_IMAGE=ghcr.io/azayr/dokyr:latest
 DOKYR_REGISTRY_IMAGE=ghcr.io/azayr/dokyr
 DOKYR_UPDATE_CHANNEL=latest
 
+# Built-in Docker Distribution registry. Caddy routes these hostnames to the
+# internal registry service; no registry port is exported directly.
+REGISTRY_HOSTS=registry.invalid
+REGISTRY_TOKEN_ISSUER=dokyr-registry
+REGISTRY_TOKEN_SERVICE=dokyr-registry
+REGISTRY_STORAGE=filesystem
+
+# Optional S3-compatible storage for the registry.
+REGISTRY_S3_REGION=
+REGISTRY_S3_BUCKET=
+REGISTRY_S3_ACCESSKEY=
+REGISTRY_S3_SECRETKEY=
+REGISTRY_S3_ENDPOINT=
+REGISTRY_S3_FORCEPATHSTYLE=false
+REGISTRY_S3_SECURE=true
+
 GITLAB_CLIENT_ID=
 GITLAB_CLIENT_SECRET=
 GITLAB_BASE_URL=https://gitlab.com

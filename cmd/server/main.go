@@ -16,6 +16,7 @@ import (
 	"github.com/azayr/selfhost/internal/config"
 	"github.com/azayr/selfhost/internal/integration"
 	"github.com/azayr/selfhost/internal/platformupdate"
+	"github.com/azayr/selfhost/internal/registry"
 	"github.com/azayr/selfhost/internal/runtime"
 	"github.com/azayr/selfhost/internal/secretbox"
 	"github.com/azayr/selfhost/internal/store"
@@ -67,6 +68,16 @@ func main() {
 		GitLabClientSecret: cfg.GitLabClientSecret,
 		GitLabBaseURL:      cfg.GitLabBaseURL,
 	})
+	registryTokens, err := registry.NewTokenIssuer(registry.TokenAuthConfig{
+		Issuer:          cfg.RegistryTokenIssuer,
+		Service:         cfg.RegistryTokenService,
+		PrivateKeyPath:  cfg.RegistryTokenPrivateKeyPath,
+		CertificatePath: cfg.RegistryTokenCertificatePath,
+	})
+	if err != nil {
+		log.Error("configure registry token auth", "error", err)
+		os.Exit(1)
+	}
 	docker, err := runtime.NewDocker()
 	if err != nil {
 		log.Error("create docker client", "error", err)
@@ -87,7 +98,7 @@ func main() {
 	if err := docker.StartMetricsCollector(metricsContext); err != nil {
 		log.Warn("initial Docker metrics sample failed; collector will retry", "error", err)
 	}
-	caddyClient, err := caddy.New(cfg.CaddyAdminURL, cfg.ControlHosts)
+	caddyClient, err := caddy.New(cfg.CaddyAdminURL, cfg.ControlHosts, cfg.RegistryHosts)
 	if err != nil {
 		log.Error("configure Caddy client", "error", err)
 		os.Exit(1)
@@ -97,7 +108,7 @@ func main() {
 		log.Error("configure platform updates", "error", err)
 		os.Exit(1)
 	}
-	apiHandler := api.New(db, docker, authManager, integrations, box, caddyClient, updateClient, cfg.PublicURL, log)
+	apiHandler := api.New(db, docker, authManager, integrations, registryTokens, box, caddyClient, updateClient, cfg.PublicURL, cfg.RegistryHosts, log)
 	smtpImported, err := apiHandler.BootstrapSMTPSettings(context.Background(), cfg.SMTP)
 	if err != nil {
 		log.Error("bootstrap SMTP settings", "error", err)
@@ -105,6 +116,14 @@ func main() {
 	}
 	if smtpImported {
 		log.Info("SMTP settings imported from environment into PostgreSQL")
+	}
+	registryImported, err := apiHandler.BootstrapRegistrySettings(context.Background(), cfg.Registry)
+	if err != nil {
+		log.Error("bootstrap registry settings", "error", err)
+		os.Exit(1)
+	}
+	if registryImported {
+		log.Info("registry settings imported from environment into PostgreSQL")
 	}
 	schedulerContext, stopScheduler := context.WithCancel(context.Background())
 	defer stopScheduler()

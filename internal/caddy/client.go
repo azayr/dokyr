@@ -31,12 +31,13 @@ type PathRoute struct {
 }
 
 type Client struct {
-	adminURL     string
-	controlHosts []string
-	http         *http.Client
+	adminURL      string
+	controlHosts  []string
+	registryHosts []string
+	http          *http.Client
 }
 
-func New(adminURL string, controlHosts []string) (*Client, error) {
+func New(adminURL string, controlHosts []string, registryHosts []string) (*Client, error) {
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	if strings.HasPrefix(adminURL, "unix://") {
 		socketPath := strings.TrimPrefix(adminURL, "unix://")
@@ -62,12 +63,37 @@ func New(adminURL string, controlHosts []string) (*Client, error) {
 	if len(normalizedHosts) == 0 {
 		return nil, fmt.Errorf("at least one control host is required")
 	}
+	normalizedRegistryHosts, err := normalizeOptionalHosts(registryHosts)
+	if err != nil {
+		return nil, fmt.Errorf("registry host: %w", err)
+	}
+	if len(normalizedRegistryHosts) == 0 {
+		normalizedRegistryHosts = []string{"registry.invalid"}
+	}
 	sort.Strings(normalizedHosts)
+	sort.Strings(normalizedRegistryHosts)
 	return &Client{
-		adminURL:     strings.TrimRight(adminURL, "/"),
-		controlHosts: normalizedHosts,
-		http:         httpClient,
+		adminURL:      strings.TrimRight(adminURL, "/"),
+		controlHosts:  normalizedHosts,
+		registryHosts: normalizedRegistryHosts,
+		http:          httpClient,
 	}, nil
+}
+
+func normalizeOptionalHosts(values []string) ([]string, error) {
+	normalized := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		host, err := NormalizeControlHost(value)
+		if err != nil {
+			return nil, fmt.Errorf("%q: %w", value, err)
+		}
+		if !seen[host] {
+			normalized = append(normalized, host)
+			seen[host] = true
+		}
+	}
+	return normalized, nil
 }
 
 func NormalizeControlHost(value string) (string, error) {
@@ -120,7 +146,7 @@ func (c *Client) Apply(ctx context.Context, routes []Route) error {
 }
 
 func (c *Client) Render(routes []Route) string {
-	return render(routes, c.controlHosts)
+	return render(routes, c.controlHosts, c.registryHosts)
 }
 
 func (c *Client) Ping(ctx context.Context) error {
@@ -168,7 +194,7 @@ func (c *Client) ApplyRaw(ctx context.Context, body string) error {
 	return fmt.Errorf("Caddy rejected configuration (%s): %s", res.Status, strings.TrimSpace(string(message)))
 }
 
-func render(routes []Route, controlHosts []string) string {
+func render(routes []Route, controlHosts []string, registryHosts []string) string {
 	sorted := append([]Route(nil), routes...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Domain < sorted[j].Domain })
 	var body strings.Builder
@@ -192,6 +218,7 @@ func render(routes []Route, controlHosts []string) string {
 	}
 	body.WriteString("\t@controlIP header_regexp Host \"^(?:[0-9]{1,3}[.]){3}[0-9]{1,3}(?::[0-9]+)?$\"\n\thandle @controlIP {\n\t\treverse_proxy selfhost:8080\n\t}\n")
 	fmt.Fprintf(&body, "\t@control host %s\n\thandle @control {\n\t\treverse_proxy selfhost:8080\n\t}\n", strings.Join(controlHosts, " "))
+	fmt.Fprintf(&body, "\t@registry host %s\n\thandle @registry {\n\t\thandle /api/registry/token {\n\t\t\treverse_proxy selfhost:8080\n\t\t}\n\t\treverse_proxy registry:5000\n\t}\n", strings.Join(registryHosts, " "))
 	body.WriteString("\thandle {\n\t\trespond \"Not Found\" 404\n\t}\n}\n")
 	return body.String()
 }
