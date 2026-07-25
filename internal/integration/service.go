@@ -211,7 +211,7 @@ func (s *Service) StartGitHubManifest(ctx context.Context, userID string) (GitHu
 		return GitHubManifestStart{}, err
 	}
 	manifest := map[string]any{
-		"name":            "deployforge-selfhost-" + hex.EncodeToString(suffix),
+		"name":            "dokyr-selfhost-" + hex.EncodeToString(suffix),
 		"url":             s.cfg.PublicURL,
 		"redirect_url":    s.manifestCallbackURL(),
 		"callback_urls":   []string{s.accountCallbackURL()},

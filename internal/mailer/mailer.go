@@ -109,7 +109,7 @@ func Send(ctx context.Context, config Config, message Message) error {
 }
 
 func buildMessage(config Config, message Message) []byte {
-	boundary := "deployforge-alternative"
+	boundary := "dokyr-alternative"
 	from := (&mail.Address{Name: config.FromName, Address: config.FromEmail}).String()
 	to := (&mail.Address{Address: message.To}).String()
 	subject := mime.QEncoding.Encode("utf-8", message.Subject)
