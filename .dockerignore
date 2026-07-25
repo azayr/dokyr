@@ -1,6 +1,16 @@
 .git
 .env
+.env.example
+.gitignore
+**/.DS_Store
+README.md
+Makefile
+compose.yaml
+Caddyfile
+server
+scripts/
+docs/
+.github/
 web/node_modules
 web/.svelte-kit
 web/build
-**/.DS_Store

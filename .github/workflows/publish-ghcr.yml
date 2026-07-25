@@ -6,6 +6,22 @@ on:
       - main
     tags:
       - "v*"
+    paths-ignore:
+      - .gitignore
+      - .env
+      - .env.example
+      - README.md
+      - Makefile
+      - compose.yaml
+      - Caddyfile
+      - server
+      - scripts/**
+      - docs/**
+      - .github/**
+      - web/node_modules/**
+      - web/.svelte-kit/**
+      - web/build/**
+      - "**/.DS_Store"
   workflow_dispatch:
 
 permissions:
