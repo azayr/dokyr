@@ -3668,14 +3668,17 @@ func (a *API) registryWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) internalRegistryEvents(w http.ResponseWriter, r *http.Request) {
+	a.log.Debug("internal registry event received", "remote_addr", r.RemoteAddr, "content_length", r.ContentLength)
 	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
 	expected := "Bearer " + a.registryInternalSecret
 	if a.registryInternalSecret == "" || !hmac.Equal([]byte(authorization), []byte(expected)) {
+		a.log.Warn("internal registry event auth failed", "remote_addr", r.RemoteAddr)
 		write(w, http.StatusUnauthorized, map[string]string{"error": "invalid registry event credentials"})
 		return
 	}
 	body, err := webhookBody(w, r)
 	if err != nil {
+		a.log.Warn("internal registry event body read failed", "error", err)
 		bad(w, "registry event body is too large")
 		return
 	}
@@ -3705,7 +3708,9 @@ func (a *API) internalRegistryEvents(w http.ResponseWriter, r *http.Request) {
 	for _, event := range envelope.Events {
 		repository := strings.Trim(strings.TrimSpace(event.Target.Repository), "/")
 		tag := strings.TrimSpace(event.Target.Tag)
+		a.log.Debug("internal registry event", "action", event.Action, "repository", repository, "tag", tag, "digest", event.Target.Digest)
 		if event.Action != "push" || repository == "" || !validRegistryTag(tag) {
+			a.log.Debug("internal registry event skipped", "action", event.Action, "repository", repository, "tag", tag)
 			continue
 		}
 		deliveryID := strings.TrimSpace(event.ID)
@@ -3728,6 +3733,7 @@ func (a *API) internalRegistryEvents(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if !claimed {
+			a.log.Debug("internal registry event duplicate", "delivery_id", deliveryID)
 			duplicates++
 			continue
 		}
@@ -3737,6 +3743,7 @@ func (a *API) internalRegistryEvents(w http.ResponseWriter, r *http.Request) {
 			a.log.Warn("list internal registry auto-deploy services", "image", image, "error", listErr)
 			continue
 		}
+		a.log.Debug("internal registry event matched services", "image", image, "count", len(services))
 		for _, service := range services {
 			_, deployment, startErr := a.startApplicationServiceDeployment(r.Context(), service.ID, owner.ID, "Auto-deploy "+service.Name+" from Dokyr Registry", event.Target.Digest)
 			if startErr != nil {
@@ -3746,6 +3753,7 @@ func (a *API) internalRegistryEvents(w http.ResponseWriter, r *http.Request) {
 			deploymentIDs = append(deploymentIDs, deployment.ID)
 		}
 	}
+	a.log.Debug("internal registry event processed", "triggered", len(deploymentIDs), "duplicates", duplicates, "deployments", deploymentIDs)
 	write(w, http.StatusAccepted, map[string]any{"triggered": len(deploymentIDs), "deployments": deploymentIDs, "duplicates": duplicates})
 }
 
