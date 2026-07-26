@@ -27,7 +27,7 @@
       label: 'Infrastructure',
       items: [
         { href: '/servers', icon: 'server', label: 'Servers' },
-        { href: '/proxy', icon: 'globe', label: 'Proxy' },
+        { href: '/domains', icon: 'globe', label: 'Domains' },
         { href: '/registry', icon: 'layers', label: 'Registry' },
         { href: '/integrations', icon: 'git', label: 'Sources' }
       ]

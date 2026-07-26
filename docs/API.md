@@ -357,6 +357,7 @@ App in Settings. Other GitHub or network failures do not erase configuration.
 | `PUT` | `/api/projects/{projectId}` | Update default/legacy project workload |
 | `DELETE` | `/api/projects/{projectId}` | Delete project with confirmation |
 | `PUT` | `/api/projects/{projectId}/domain` | Replace all domain bindings |
+| `GET` | `/api/domains` | Read the global domain-management workspace and Caddy state |
 | `POST` | `/api/projects/{projectId}/deploy` | Deploy default/legacy application |
 | `POST` | `/api/projects/{projectId}/stop` | Stop default/legacy application |
 | `POST` | `/api/projects/{projectId}/restart` | Restart or start default/legacy application |
@@ -434,6 +435,12 @@ DELETE /api/projects/{projectId}
 `confirmation` must match `project.name`. `removeVolumes: true` removes managed database data volumes and is irreversible. Successful response includes `{ "removed": true, "volumesRemoved": false }`.
 
 ### Domain bindings and Caddy routing
+
+`GET /api/domains` returns every project that can own domain bindings, its
+available reverse-proxy service targets, saved bindings, and the current
+generated Caddy configuration. This is the aggregate endpoint used by the
+global **Domains** screen; it avoids inspecting project containers simply to
+build the routing editor.
 
 `PUT /api/projects/{projectId}/domain` atomically replaces all bindings, updates Caddy, and restores the previous routing if Caddy rejects the configuration.
 

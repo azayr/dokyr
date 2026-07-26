@@ -131,6 +131,7 @@ func (a *API) Handler() http.Handler {
 	protected.HandleFunc("PUT /api/settings/platform/update", a.updatePlatformUpdateSettings)
 	protected.HandleFunc("POST /api/settings/platform/update/apply", a.applyPlatformUpdate)
 	protected.HandleFunc("GET /api/dashboard", a.dashboard)
+	protected.HandleFunc("GET /api/domains", a.domainsIndex)
 	protected.HandleFunc("GET /api/projects", a.projects)
 	protected.HandleFunc("POST /api/projects", a.createProject)
 	protected.HandleFunc("GET /api/projects/{id}", a.project)
@@ -205,6 +206,7 @@ func (a *API) Handler() http.Handler {
 	root.Handle("/api/account/", a.auth.Require(protected))
 	root.Handle("/api/settings/", a.auth.Require(protected))
 	root.Handle("/api/dashboard", a.auth.Require(protected))
+	root.Handle("/api/domains", a.auth.Require(protected))
 	root.Handle("/api/projects", a.auth.Require(protected))
 	root.Handle("/api/projects/", a.auth.Require(protected))
 	root.Handle("/api/deployments", a.auth.Require(protected))
@@ -1099,6 +1101,64 @@ func (a *API) projects(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, 200, items)
 }
+
+func (a *API) domainsIndex(w http.ResponseWriter, r *http.Request) {
+	projects, err := a.store.Projects(r.Context())
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	type target struct {
+		ID            string `json:"id"`
+		Name          string `json:"name"`
+		ContainerPort int    `json:"containerPort"`
+		Legacy        bool   `json:"legacy,omitempty"`
+	}
+	type workspace struct {
+		ID       string                       `json:"id"`
+		Name     string                       `json:"name"`
+		Domains  []store.ProjectDomainBinding `json:"domains"`
+		Services []target                     `json:"services"`
+	}
+	workspaces := make([]workspace, 0, len(projects))
+	for _, project := range projects {
+		bindings, bindingErr := a.store.ProjectDomainBindings(r.Context(), project.ID)
+		if bindingErr != nil {
+			problem(w, bindingErr)
+			return
+		}
+		services, serviceErr := a.store.ApplicationServices(r.Context(), project.ID)
+		if serviceErr != nil {
+			problem(w, serviceErr)
+			return
+		}
+		targets := make([]target, 0, len(services)+1)
+		if project.SourceType != "empty" {
+			targets = append(targets, target{ID: "", Name: project.Name, ContainerPort: project.ContainerPort, Legacy: true})
+		}
+		for _, service := range services {
+			targets = append(targets, target{ID: service.ID, Name: service.Name, ContainerPort: service.ContainerPort})
+		}
+		workspaces = append(workspaces, workspace{ID: project.ID, Name: project.Name, Domains: bindings, Services: targets})
+	}
+	routes, err := a.managedRoutes(r.Context())
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	connectionError := ""
+	if err := a.caddy.Ping(r.Context()); err != nil {
+		connectionError = err.Error()
+	}
+	write(w, 200, map[string]any{
+		"connected":       connectionError == "",
+		"connectionError": connectionError,
+		"projects":        workspaces,
+		"routes":          routes,
+		"configuration":   a.caddy.Render(routes),
+	})
+}
+
 func (a *API) createProject(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Name          string `json:"name"`

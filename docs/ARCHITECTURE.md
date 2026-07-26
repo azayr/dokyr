@@ -17,7 +17,7 @@ The current release can:
 - view application container logs by polling the API;
 - assign a domain to an application through Caddy;
 - configure each application's private container port and choose HTTP-only or automatic HTTPS ingress;
-- inspect managed routes and safely validate/apply or reset runtime Caddyfile overrides from the Proxy screen;
+- manage domains and service routes, and safely validate/apply or reset runtime Caddyfile overrides from the Domains screen;
 - save encrypted environment variables and recreate the container without pulling or rebuilding its image;
 - create private-by-default MySQL, MariaDB, and PostgreSQL services with persistent volumes;
 - optionally publish a database on an explicitly selected host port.
@@ -305,7 +305,7 @@ When a project domain, container port, or TLS mode changes, the API validates it
 
 The built-in registry uses the same managed-domain pipeline. Its saved hostname routes the Docker Registry API to `registry:5000`, keeps the token exchange path on the Dokyr API, and becomes the source of truth for generated Docker login and image references. `REGISTRY_HOSTS` remains a compatibility fallback when no registry domain has been attached in PostgreSQL.
 
-The global **Proxy** screen displays Caddy connectivity, managed domains, exact upstreams, TLS state, and the generated Caddyfile. Advanced edits are applied as runtime overrides through the same admin API. Caddy validates them and retains the previous working configuration when a load fails. A **Restore managed** action regenerates configuration from PostgreSQL. Runtime overrides are intentionally not the source of truth and may be replaced by a later project route change.
+The global **Domains** screen is the primary domain-management workspace. It adds, edits, and removes project hostnames, selects the destination application service and private port for each path, controls HTTP-only versus automatic TLS, displays Caddy connectivity, and keeps the generated Caddyfile in a collapsed advanced editor. Advanced edits are applied as runtime overrides through the same admin API. Caddy validates them and retains the previous working configuration when a load fails. A **Restore managed** action regenerates configuration from PostgreSQL. Runtime overrides are intentionally not the source of truth and may be replaced by a later project route change.
 
 ```mermaid
 flowchart TD

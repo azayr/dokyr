@@ -18,7 +18,7 @@
     { group: 'Navigate', icon: 'box', label: 'Projects', hint: '/projects', run: () => goto('/projects') },
     { group: 'Navigate', icon: 'rocket', label: 'Deployments', hint: '/deployments', run: () => goto('/deployments') },
     { group: 'Navigate', icon: 'server', label: 'Servers', hint: '/servers', run: () => goto('/servers') },
-    { group: 'Navigate', icon: 'globe', label: 'Proxy', hint: '/proxy', run: () => goto('/proxy') },
+    { group: 'Navigate', icon: 'globe', label: 'Domains', hint: '/domains', run: () => goto('/domains') },
     { group: 'Navigate', icon: 'layers', label: 'Registry', hint: '/registry', run: () => goto('/registry') },
     { group: 'Navigate', icon: 'git', label: 'Sources', hint: '/integrations', run: () => goto('/integrations') },
     { group: 'Navigate', icon: 'settings', label: 'Settings', hint: '/settings', run: () => goto('/settings') },
