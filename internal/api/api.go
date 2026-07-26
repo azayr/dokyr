@@ -3681,9 +3681,10 @@ func (a *API) internalRegistryEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	var envelope struct {
 		Events []struct {
-			ID     string `json:"id"`
-			Action string `json:"action"`
-			Target struct {
+			ID        string    `json:"id"`
+			Timestamp time.Time `json:"timestamp"`
+			Action    string    `json:"action"`
+			Target    struct {
 				Repository string `json:"repository"`
 				Tag        string `json:"tag"`
 				Digest     string `json:"digest"`
@@ -3712,7 +3713,16 @@ func (a *API) internalRegistryEvents(w http.ResponseWriter, r *http.Request) {
 			sum := sha256.Sum256([]byte(repository + "\x00" + tag + "\x00" + event.Target.Digest))
 			deliveryID = hex.EncodeToString(sum[:])
 		}
-		claimed, claimErr := a.store.ClaimWebhookDelivery(r.Context(), "dokyr-registry", deliveryID)
+		pushedAt := event.Timestamp
+		if pushedAt.IsZero() {
+			pushedAt = time.Now().UTC()
+		}
+		claimed, claimErr := a.store.ClaimRegistryPushEvent(r.Context(), deliveryID, store.RegistryImagePush{
+			Repository: repository,
+			Tag:        tag,
+			Digest:     strings.TrimSpace(event.Target.Digest),
+			PushedAt:   pushedAt,
+		})
 		if claimErr != nil {
 			a.log.Warn("claim internal registry event", "event", deliveryID, "error", claimErr)
 			continue

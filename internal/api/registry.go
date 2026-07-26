@@ -440,7 +440,42 @@ func (a *API) registryRepositories(w http.ResponseWriter, r *http.Request) {
 		write(w, 502, map[string]string{"error": "could not list registry repositories"})
 		return
 	}
+	pushes, err := a.store.RegistryImagePushes(r.Context())
+	if err != nil {
+		a.log.Warn("list registry image push times", "error", err)
+	} else {
+		attachRegistryPushTimes(repositories, pushes)
+	}
 	write(w, 200, map[string]any{"repositories": repositories, "count": len(repositories), "registryHosts": a.effectiveRegistryHosts(r.Context())})
+}
+
+func attachRegistryPushTimes(repositories []registry.Repository, pushes []store.RegistryImagePush) {
+	type pushKey struct {
+		repository string
+		tag        string
+	}
+	index := make(map[pushKey]store.RegistryImagePush, len(pushes))
+	for _, push := range pushes {
+		index[pushKey{repository: push.Repository, tag: push.Tag}] = push
+	}
+	for repositoryIndex := range repositories {
+		repository := &repositories[repositoryIndex]
+		for imageIndex := range repository.Images {
+			image := &repository.Images[imageIndex]
+			var latest time.Time
+			for _, tag := range image.Tags {
+				push, ok := index[pushKey{repository: repository.Name, tag: tag}]
+				if !ok || push.Digest != image.Digest || !push.PushedAt.After(latest) {
+					continue
+				}
+				latest = push.PushedAt
+			}
+			if !latest.IsZero() {
+				pushedAt := latest
+				image.PushedAt = &pushedAt
+			}
+		}
+	}
 }
 
 func (a *API) registryDeleteTag(w http.ResponseWriter, r *http.Request) {

@@ -4,7 +4,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/azayr/selfhost/internal/registry"
 	"github.com/azayr/selfhost/internal/store"
 )
 
@@ -60,5 +62,28 @@ func TestRegistryDomainResponseUsesAttachedDomain(t *testing.T) {
 	hosts, ok := response["registryHosts"].([]string)
 	if !ok || len(hosts) != 1 || hosts[0] != "registry.example.com" {
 		t.Fatalf("unexpected registry hosts: %#v", response["registryHosts"])
+	}
+}
+
+func TestAttachRegistryPushTimesUsesLatestMatchingCurrentDigest(t *testing.T) {
+	older := time.Date(2026, time.July, 26, 10, 0, 0, 0, time.UTC)
+	newer := older.Add(3 * time.Hour)
+	repositories := []registry.Repository{{
+		Name: "demo-app",
+		Images: []registry.Image{{
+			Digest: "sha256:current",
+			Tags:   []string{"latest", "stable"},
+		}},
+	}}
+	pushes := []store.RegistryImagePush{
+		{Repository: "demo-app", Tag: "latest", Digest: "sha256:old", PushedAt: newer.Add(time.Hour)},
+		{Repository: "demo-app", Tag: "latest", Digest: "sha256:current", PushedAt: older},
+		{Repository: "demo-app", Tag: "stable", Digest: "sha256:current", PushedAt: newer},
+	}
+
+	attachRegistryPushTimes(repositories, pushes)
+
+	if repositories[0].Images[0].PushedAt == nil || !repositories[0].Images[0].PushedAt.Equal(newer) {
+		t.Fatalf("pushedAt = %v, want %v", repositories[0].Images[0].PushedAt, newer)
 	}
 }

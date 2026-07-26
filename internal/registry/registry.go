@@ -34,9 +34,10 @@ type Repository struct {
 // Image is one manifest. Multiple tags can point to the same digest, so the UI
 // presents deletion at this level instead of implying that a tag is unlinked.
 type Image struct {
-	Digest string   `json:"digest,omitempty"`
-	Tags   []string `json:"tags"`
-	Size   int64    `json:"size,omitempty"`
+	Digest   string     `json:"digest,omitempty"`
+	Tags     []string   `json:"tags"`
+	Size     int64      `json:"size,omitempty"`
+	PushedAt *time.Time `json:"pushedAt,omitempty"`
 }
 
 type registryManifest struct {

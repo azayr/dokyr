@@ -174,6 +174,12 @@ type RegistryAccessToken struct {
 	LastUsedAt  *time.Time `json:"lastUsedAt"`
 	CreatedAt   time.Time  `json:"createdAt"`
 }
+type RegistryImagePush struct {
+	Repository string    `json:"repository"`
+	Tag        string    `json:"tag"`
+	Digest     string    `json:"digest"`
+	PushedAt   time.Time `json:"pushedAt"`
+}
 type RegistryCredential struct {
 	ID                string    `json:"id"`
 	Name              string    `json:"name"`
@@ -1132,6 +1138,59 @@ func (s *Store) ClaimWebhookDelivery(ctx context.Context, provider, deliveryID s
 		_, _ = s.db.ExecContext(ctx, `DELETE FROM webhook_deliveries WHERE received_at < NOW() - INTERVAL '30 days'`)
 	}
 	return count > 0, nil
+}
+
+func (s *Store) ClaimRegistryPushEvent(ctx context.Context, deliveryID string, push RegistryImagePush) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `INSERT INTO webhook_deliveries(provider,delivery_id) VALUES('dokyr-registry',$1)
+		ON CONFLICT(provider,delivery_id) DO NOTHING`, deliveryID)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+
+	if push.Repository != "" && push.Tag != "" && push.Digest != "" && !push.PushedAt.IsZero() {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO registry_image_pushes(repository,tag,digest,pushed_at)
+			VALUES($1,$2,$3,$4)
+			ON CONFLICT(repository,tag) DO UPDATE SET
+				digest=EXCLUDED.digest,
+				pushed_at=EXCLUDED.pushed_at,
+				updated_at=NOW()
+			WHERE EXCLUDED.pushed_at >= registry_image_pushes.pushed_at`,
+			push.Repository, push.Tag, push.Digest, push.PushedAt); err != nil {
+			return false, err
+		}
+	}
+	if count > 0 {
+		_, _ = tx.ExecContext(ctx, `DELETE FROM webhook_deliveries WHERE received_at < NOW() - INTERVAL '30 days'`)
+	}
+	return count > 0, tx.Commit()
+}
+
+func (s *Store) RegistryImagePushes(ctx context.Context) ([]RegistryImagePush, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT repository,tag,digest,pushed_at
+		FROM registry_image_pushes ORDER BY repository,tag`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	pushes := []RegistryImagePush{}
+	for rows.Next() {
+		var push RegistryImagePush
+		if err := rows.Scan(&push.Repository, &push.Tag, &push.Digest, &push.PushedAt); err != nil {
+			return nil, err
+		}
+		pushes = append(pushes, push)
+	}
+	return pushes, rows.Err()
 }
 
 func (s *Store) ApplicationServiceRouteCount(ctx context.Context, id string) (int, error) {

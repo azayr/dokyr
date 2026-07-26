@@ -53,8 +53,15 @@
   let gcResult = null;
   let deleteTarget = null;
   let deleteError = '';
+  let relativeNow = Date.now();
 
-  onMount(load);
+  onMount(() => {
+    load();
+    const relativeTimeTimer = window.setInterval(() => {
+      relativeNow = Date.now();
+    }, 60_000);
+    return () => window.clearInterval(relativeTimeTimer);
+  });
 
   $: visibleRepositories = repositories.filter((item) => {
     const query = filter.trim().toLowerCase();
@@ -178,6 +185,24 @@
   function formatDate(value) {
     if (!value) return 'Never';
     return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
+  }
+
+  function formatRelativeDate(value) {
+    if (!value) return 'Not recorded';
+    const timestamp = new Date(value).getTime();
+    if (!Number.isFinite(timestamp)) return 'Not recorded';
+    const elapsed = timestamp - relativeNow;
+    const absolute = Math.abs(elapsed);
+    if (absolute < 60_000) return 'just now';
+    const units = [
+      ['year', 365 * 24 * 60 * 60 * 1000],
+      ['month', 30 * 24 * 60 * 60 * 1000],
+      ['day', 24 * 60 * 60 * 1000],
+      ['hour', 60 * 60 * 1000],
+      ['minute', 60 * 1000]
+    ];
+    const [unit, duration] = units.find(([, size]) => absolute >= size) || units[units.length - 1];
+    return new Intl.RelativeTimeFormat(undefined, { numeric: 'always' }).format(Math.round(elapsed / duration), unit);
   }
 
   function imagesFor(repository) {
@@ -575,6 +600,7 @@
                 <div class="image-table-header" role="row">
                   <span role="columnheader">Digest</span>
                   <span role="columnheader">Tags</span>
+                  <span role="columnheader">Pushed</span>
                   <span role="columnheader">Content size</span>
                   <span role="columnheader">Action</span>
                 </div>
@@ -598,6 +624,15 @@
                             <button type="button" aria-label={`Copy ${repository.name}:${tag}`} onclick={() => copyText(repositoryReference(repository.name, tag), 'Image reference')}><Icon name="copy" size={13} /></button>
                           </span>
                         {/each}
+                      </div>
+                      <div
+                        class:unknown={!image.pushedAt}
+                        class="image-pushed"
+                        role="cell"
+                        data-label="Pushed"
+                        title={image.pushedAt ? formatDate(image.pushedAt) : 'Push history starts after this Dokyr update'}
+                      >
+                        <time datetime={image.pushedAt || undefined}>{formatRelativeDate(image.pushedAt)}</time>
                       </div>
                       <span class:unknown={!image.size} class="image-size" role="cell" data-label="Content size">{formatBytes(image.size)}</span>
                       <div class="image-actions" role="cell" data-label="Action">
@@ -818,7 +853,7 @@
   .default-tag button, .digest-cell button, .image-tag button { width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-left: 1px solid var(--color-rule); background: transparent; color: var(--color-muted); cursor: pointer; }
   .default-tag button:hover, .digest-cell button:hover, .image-tag button:hover { color: var(--color-accent); }
   .image-table { margin: 0 var(--space-5) var(--space-5); overflow: hidden; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); }
-  .image-table-header, .image-row { display: grid; grid-template-columns: minmax(250px, 1.3fr) minmax(180px, 1fr) minmax(100px, .45fr) 86px; align-items: center; gap: var(--space-3); }
+  .image-table-header, .image-row { display: grid; grid-template-columns: minmax(225px, 1.25fr) minmax(160px, .9fr) minmax(105px, .48fr) minmax(95px, .42fr) 86px; align-items: center; gap: var(--space-3); }
   .image-table-header { min-height: 34px; padding: 0 var(--space-3); border-bottom: 1px solid var(--color-rule); background: var(--color-surface-subtle); color: var(--color-muted); font-size: var(--text-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
   .image-row { min-height: 62px; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--color-rule); background: var(--color-paper-raised); }
   .image-row:last-child { border-bottom: 0; }
@@ -829,6 +864,8 @@
   .image-tag { min-width: 0; height: 32px; display: grid; grid-template-columns: 25px minmax(0, auto) 30px; align-items: center; overflow: hidden; border: 1px solid var(--color-rule); border-radius: var(--radius-xs); background: var(--color-surface-subtle); }
   .image-tag > :global(svg) { margin-left: 8px; }
   .image-tag code { min-width: 0; padding: 0 var(--space-2); overflow: hidden; color: var(--color-ink); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+  .image-pushed { color: var(--color-ink); font-size: var(--text-xs); white-space: nowrap; }
+  .image-pushed.unknown { color: var(--color-muted); }
   .image-size { color: var(--color-ink); font-family: var(--font-mono); font-size: var(--text-xs); }
   .image-size.unknown { color: var(--color-muted); font-family: inherit; }
   .image-actions { display: flex; justify-content: flex-end; }
@@ -879,6 +916,7 @@
     .image-row { margin-top: var(--space-3); padding: var(--space-3); grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
     .image-row:first-child { margin-top: 0; }
     .digest-cell, .image-tags { grid-column: 1 / -1; }
+    .image-pushed::before { content: 'Pushed · '; color: var(--color-muted); }
     .image-size::before { content: 'Content size · '; color: var(--color-muted); font-family: inherit; }
   }
   @container registry-repositories (max-width: 460px) {
@@ -889,6 +927,7 @@
     .image-table { margin: 0 var(--space-3) var(--space-3); }
     .image-row { grid-template-columns: 1fr; }
     .digest-cell, .image-tags { grid-column: 1; }
+    .image-pushed, .image-size { display: flex; justify-content: space-between; }
     .image-actions { justify-content: stretch; }
     .image-actions button { width: 100%; }
   }
