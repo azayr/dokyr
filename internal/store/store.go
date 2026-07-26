@@ -157,6 +157,13 @@ type RegistrySettings struct {
 	CreatedAt            time.Time `json:"createdAt"`
 	UpdatedAt            time.Time `json:"updatedAt"`
 }
+type RegistryDomainSettings struct {
+	Domain       string    `json:"domain"`
+	HTTPSEnabled bool      `json:"httpsEnabled"`
+	CreatedBy    string    `json:"-"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
 type RegistryAccessToken struct {
 	ID          string     `json:"id"`
 	UserID      string     `json:"-"`
@@ -557,6 +564,27 @@ func (s *Store) CreateRegistrySettingsIfMissing(ctx context.Context, settings Re
 	}
 	rows, err := result.RowsAffected()
 	return rows == 1, err
+}
+
+func (s *Store) RegistryDomainSettings(ctx context.Context) (RegistryDomainSettings, error) {
+	var settings RegistryDomainSettings
+	err := s.db.QueryRowContext(ctx, `SELECT domain,https_enabled,COALESCE(created_by,''),created_at,updated_at
+		FROM registry_domain_settings WHERE singleton=TRUE`).
+		Scan(&settings.Domain, &settings.HTTPSEnabled, &settings.CreatedBy, &settings.CreatedAt, &settings.UpdatedAt)
+	return settings, err
+}
+
+func (s *Store) UpsertRegistryDomainSettings(ctx context.Context, settings RegistryDomainSettings) error {
+	var createdBy any
+	if settings.CreatedBy != "" {
+		createdBy = settings.CreatedBy
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO registry_domain_settings(singleton,domain,https_enabled,created_by)
+		VALUES(TRUE,$1,$2,$3)
+		ON CONFLICT(singleton) DO UPDATE SET domain=EXCLUDED.domain,https_enabled=EXCLUDED.https_enabled,
+		created_by=COALESCE(registry_domain_settings.created_by,EXCLUDED.created_by),updated_at=NOW()`,
+		settings.Domain, settings.HTTPSEnabled, createdBy)
+	return err
 }
 
 func (s *Store) RegistryAccessTokens(ctx context.Context, userID string) ([]RegistryAccessToken, error) {

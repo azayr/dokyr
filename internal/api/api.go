@@ -188,6 +188,8 @@ func (a *API) Handler() http.Handler {
 	protected.HandleFunc("GET /api/registry/status", a.registryStatus)
 	protected.HandleFunc("GET /api/registry/settings", a.registrySettings)
 	protected.HandleFunc("PUT /api/registry/settings", a.updateRegistrySettings)
+	protected.HandleFunc("GET /api/registry/domain", a.registryDomain)
+	protected.HandleFunc("PUT /api/registry/domain", a.updateRegistryDomain)
 	protected.HandleFunc("GET /api/registry/access-tokens", a.registryAccessTokens)
 	protected.HandleFunc("POST /api/registry/access-tokens", a.createRegistryAccessToken)
 	protected.HandleFunc("DELETE /api/registry/access-tokens/{id}", a.deleteRegistryAccessToken)
@@ -1169,6 +1171,13 @@ func (a *API) createProject(w http.ResponseWriter, r *http.Request) {
 		in.Branch = "main"
 	}
 	if domain != "" {
+		if assigned, err := a.registryDomainMatches(r.Context(), domain); err != nil {
+			problem(w, err)
+			return
+		} else if assigned {
+			write(w, 409, map[string]string{"error": "this domain is assigned to the container registry"})
+			return
+		}
 		if _, err := a.store.ProjectByDomain(r.Context(), domain); err == nil {
 			write(w, 409, map[string]string{"error": "this domain is already assigned to another project"})
 			return
@@ -1285,6 +1294,13 @@ func (a *API) updateProjectDomain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		seenDomains[domain] = true
+		if assigned, err := a.registryDomainMatches(r.Context(), domain); err != nil {
+			problem(w, err)
+			return
+		} else if assigned {
+			write(w, 409, map[string]string{"error": "this domain is assigned to the container registry"})
+			return
+		}
 		assigned, lookupErr := a.store.ProjectDomainBindingByDomain(r.Context(), domain)
 		if lookupErr == nil && assigned.ProjectID != project.ID {
 			write(w, 409, map[string]string{"error": "this domain is already assigned to another project"})
@@ -1444,6 +1460,21 @@ func (a *API) managedRoutes(ctx context.Context) ([]caddy.Route, error) {
 			}
 			routes = append(routes, caddy.Route{Domain: binding.Domain, HTTPS: binding.HTTPSEnabled, Paths: paths, RejectUnmatched: true})
 		}
+	}
+	registryDomain, err := a.store.RegistryDomainSettings(ctx)
+	if err != nil && !store.NotFound(err) {
+		return nil, err
+	}
+	if err == nil && registryDomain.Domain != "" {
+		routes = append(routes, caddy.Route{
+			Domain:   registryDomain.Domain,
+			HTTPS:    registryDomain.HTTPSEnabled,
+			Upstream: "registry:5000",
+			Paths: []caddy.PathRoute{{
+				Path:     "/api/registry/token",
+				Upstream: "selfhost:8080",
+			}},
+		})
 	}
 	return routes, nil
 }

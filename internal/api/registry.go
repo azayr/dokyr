@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/azayr/selfhost/internal/auth"
+	"github.com/azayr/selfhost/internal/caddy"
 	"github.com/azayr/selfhost/internal/config"
 	"github.com/azayr/selfhost/internal/registry"
 	"github.com/azayr/selfhost/internal/store"
@@ -170,7 +171,7 @@ func (a *API) registryAccessTokens(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, map[string]any{
 		"tokens":        tokens,
 		"username":      claims.Email,
-		"registryHosts": a.registryHosts,
+		"registryHosts": a.effectiveRegistryHosts(r.Context()),
 	})
 }
 
@@ -220,7 +221,7 @@ func (a *API) createRegistryAccessToken(w http.ResponseWriter, r *http.Request) 
 		"token":         token,
 		"secret":        secret,
 		"username":      claims.Email,
-		"registryHosts": a.registryHosts,
+		"registryHosts": a.effectiveRegistryHosts(r.Context()),
 	})
 }
 
@@ -316,6 +317,106 @@ func (a *API) updateRegistrySettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, 200, map[string]any{"settings": registrySettingsResponse(settings)})
+}
+
+func (a *API) registryDomain(w http.ResponseWriter, r *http.Request) {
+	settings, err := a.store.RegistryDomainSettings(r.Context())
+	if store.NotFound(err) {
+		settings = store.RegistryDomainSettings{HTTPSEnabled: true}
+	} else if err != nil {
+		problem(w, err)
+		return
+	}
+	write(w, http.StatusOK, registryDomainResponse(settings, a.effectiveRegistryHosts(r.Context())))
+}
+
+func (a *API) updateRegistryDomain(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Domain       string `json:"domain"`
+		HTTPSEnabled bool   `json:"httpsEnabled"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	domain, err := caddy.NormalizeDomain(in.Domain)
+	if err != nil {
+		bad(w, err.Error())
+		return
+	}
+	a.domainMu.Lock()
+	defer a.domainMu.Unlock()
+
+	if domain != "" {
+		assigned, lookupErr := a.store.ProjectDomainBindingByDomain(r.Context(), domain)
+		if lookupErr == nil && assigned.Domain != "" {
+			write(w, http.StatusConflict, map[string]string{"error": "this domain is already assigned to a project"})
+			return
+		}
+		if lookupErr != nil && !store.NotFound(lookupErr) {
+			problem(w, lookupErr)
+			return
+		}
+	}
+
+	previous, previousErr := a.store.RegistryDomainSettings(r.Context())
+	if previousErr != nil && !store.NotFound(previousErr) {
+		problem(w, previousErr)
+		return
+	}
+	claims, _ := auth.FromContext(r.Context())
+	settings := store.RegistryDomainSettings{
+		Domain:       domain,
+		HTTPSEnabled: in.HTTPSEnabled,
+		CreatedBy:    claims.Subject,
+	}
+	if err := a.store.UpsertRegistryDomainSettings(r.Context(), settings); err != nil {
+		problem(w, err)
+		return
+	}
+	if err := a.syncDomains(r.Context()); err != nil {
+		if previousErr == nil {
+			_ = a.store.UpsertRegistryDomainSettings(r.Context(), previous)
+		} else {
+			_ = a.store.UpsertRegistryDomainSettings(r.Context(), store.RegistryDomainSettings{HTTPSEnabled: true})
+		}
+		_ = a.syncDomains(r.Context())
+		a.log.Warn("configure registry domain", "domain", domain, "error", err)
+		write(w, http.StatusBadGateway, map[string]string{"error": "Caddy could not activate this registry domain; the previous route was restored"})
+		return
+	}
+	if saved, err := a.store.RegistryDomainSettings(r.Context()); err == nil {
+		settings = saved
+	}
+	write(w, http.StatusOK, registryDomainResponse(settings, a.effectiveRegistryHosts(r.Context())))
+}
+
+func registryDomainResponse(settings store.RegistryDomainSettings, hosts []string) map[string]any {
+	return map[string]any{
+		"domain":        settings.Domain,
+		"httpsEnabled":  settings.HTTPSEnabled,
+		"attached":      settings.Domain != "",
+		"registryHosts": hosts,
+		"updatedAt":     settings.UpdatedAt,
+	}
+}
+
+func (a *API) effectiveRegistryHosts(ctx context.Context) []string {
+	settings, err := a.store.RegistryDomainSettings(ctx)
+	if err == nil && settings.Domain != "" {
+		return []string{settings.Domain}
+	}
+	return append([]string(nil), a.registryHosts...)
+}
+
+func (a *API) registryDomainMatches(ctx context.Context, domain string) (bool, error) {
+	settings, err := a.store.RegistryDomainSettings(ctx)
+	if store.NotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return settings.Domain != "" && strings.EqualFold(settings.Domain, domain), nil
 }
 
 func (a *API) registryRepositories(w http.ResponseWriter, r *http.Request) {

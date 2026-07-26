@@ -303,6 +303,8 @@ The initial `Caddyfile` exposes the control plane only for an IPv4 Host header o
 
 When a project domain, container port, or TLS mode changes, the API validates it, reads all assigned domains, renders a complete Caddyfile, and sends it to `POST /load` through `/run/caddy-admin/admin.sock`. HTTP-only routes proxy directly on the HTTP listener. Automatic-HTTPS routes use a hostname site block so Caddy obtains and renews certificates, while HTTP requests redirect to HTTPS.
 
+The built-in registry uses the same managed-domain pipeline. Its saved hostname routes the Docker Registry API to `registry:5000`, keeps the token exchange path on the Dokyr API, and becomes the source of truth for generated Docker login and image references. `REGISTRY_HOSTS` remains a compatibility fallback when no registry domain has been attached in PostgreSQL.
+
 The global **Proxy** screen displays Caddy connectivity, managed domains, exact upstreams, TLS state, and the generated Caddyfile. Advanced edits are applied as runtime overrides through the same admin API. Caddy validates them and retains the previous working configuration when a load fails. A **Restore managed** action regenerates configuration from PostgreSQL. Runtime overrides are intentionally not the source of truth and may be replaced by a later project route change.
 
 ```mermaid

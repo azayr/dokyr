@@ -4,6 +4,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/azayr/selfhost/internal/store"
 )
 
 func TestRegistrySettingsInputAcceptsResponseMetadata(t *testing.T) {
@@ -43,5 +45,20 @@ func TestRegistrySettingsInputStillRejectsUnknownFields(t *testing.T) {
 	}
 	if recorder.Code != 400 {
 		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+}
+
+func TestRegistryDomainResponseUsesAttachedDomain(t *testing.T) {
+	response := registryDomainResponse(store.RegistryDomainSettings{
+		Domain:       "registry.example.com",
+		HTTPSEnabled: true,
+	}, []string{"registry.example.com"})
+
+	if response["attached"] != true || response["domain"] != "registry.example.com" {
+		t.Fatalf("unexpected registry domain response: %#v", response)
+	}
+	hosts, ok := response["registryHosts"].([]string)
+	if !ok || len(hosts) != 1 || hosts[0] != "registry.example.com" {
+		t.Fatalf("unexpected registry hosts: %#v", response["registryHosts"])
 	}
 }

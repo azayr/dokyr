@@ -83,15 +83,19 @@ HTTP_PORT=80 HTTPS_PORT=443 docker compose up -d --build
 ## Built-in container registry
 
 Dokyr includes the Docker Distribution registry. By default it stores images in
-a Docker volume and is routed by Caddy through the hostnames listed in
-`REGISTRY_HOSTS`:
+a Docker volume. Open **Infrastructure → Registry → Registry domain** to attach
+a hostname and let Dokyr configure the Caddy route and automatic HTTPS:
 
 ```sh
-REGISTRY_HOSTS=registry.example.com docker compose up -d
 docker login registry.example.com
 docker tag myapp:latest registry.example.com/myapp:latest
 docker push registry.example.com/myapp:latest
 ```
+
+Create the hostname's A or AAAA DNS record first and point it to the Dokyr
+server. `REGISTRY_HOSTS` remains available as a first-start or compatibility
+fallback, but a domain saved in Dokyr is the source of truth for generated
+credentials and image references.
 
 Open **Infrastructure → Registry → Access tokens** and generate a personal
 read-only or read-write credential. Use your Dokyr email as the Docker username

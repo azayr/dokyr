@@ -150,6 +150,33 @@ func TestRenderMultipleDomainsWithIndependentPaths(t *testing.T) {
 	}
 }
 
+func TestRenderRegistryDomainWithAutomaticHTTPS(t *testing.T) {
+	client, err := New("http://caddy:2019", []string{"control.example.com"}, []string{"registry.invalid"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := client.Render([]Route{{
+		Domain:   "registry.example.com",
+		HTTPS:    true,
+		Upstream: "registry:5000",
+		Paths: []PathRoute{{
+			Path:     "/api/registry/token",
+			Upstream: "selfhost:8080",
+		}},
+	}})
+	for _, expected := range []string{
+		"registry.example.com {",
+		"path /api/registry/token",
+		"reverse_proxy selfhost:8080",
+		"reverse_proxy registry:5000",
+		"redir https://{host}{uri} permanent",
+	} {
+		if !strings.Contains(configuration, expected) {
+			t.Fatalf("registry domain config does not contain %q:\n%s", expected, configuration)
+		}
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {

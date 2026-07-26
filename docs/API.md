@@ -869,6 +869,8 @@ Select at least one category and use the exact confirmation text. Volumes can co
 | `GET` | `/api/registry/status` | Registry container and authenticated API health |
 | `GET` | `/api/registry/settings` | Read the storage configuration |
 | `PUT` | `/api/registry/settings` | Save storage settings and recreate the registry |
+| `GET` | `/api/registry/domain` | Read the managed registry domain and effective registry hosts |
+| `PUT` | `/api/registry/domain` | Attach, update, or detach the registry domain and refresh Caddy |
 | `GET` | `/api/registry/access-tokens` | List the current user's registry credentials |
 | `POST` | `/api/registry/access-tokens` | Generate a registry credential |
 | `DELETE` | `/api/registry/access-tokens/{tokenId}` | Revoke one credential |

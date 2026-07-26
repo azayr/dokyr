@@ -33,6 +33,11 @@
   let accessTokens = [];
   let registryUsername = '';
   let registryHosts = [];
+  let registryDomain = { domain: '', httpsEnabled: true, attached: false };
+  let domainDraft = '';
+  let domainSaving = false;
+  let domainError = '';
+  let detachDomainOpen = false;
   let createdCredential = null;
   let revokeTarget = null;
   let revoking = false;
@@ -67,22 +72,27 @@
     error = '';
     warning = '';
     try {
-      const [statusResponse, settingsResponse, tokensResponse] = await Promise.all([
+      const [statusResponse, settingsResponse, tokensResponse, domainResponse] = await Promise.all([
         api('/api/registry/status'),
         api('/api/registry/settings'),
-        api('/api/registry/access-tokens')
+        api('/api/registry/access-tokens'),
+        api('/api/registry/domain')
       ]);
       const statusPayload = await statusResponse.json();
       const settingsPayload = await settingsResponse.json();
       const tokensPayload = await tokensResponse.json();
+      const domainPayload = await domainResponse.json();
       if (!statusResponse.ok) throw new Error(statusPayload.error || 'Could not load registry status');
       if (!settingsResponse.ok) throw new Error(settingsPayload.error || 'Could not load registry settings');
       if (!tokensResponse.ok) throw new Error(tokensPayload.error || 'Could not load registry tokens');
+      if (!domainResponse.ok) throw new Error(domainPayload.error || 'Could not load registry domain');
       status = statusPayload;
       settings = { ...emptySettings(), ...settingsPayload, s3SecretKey: '' };
       accessTokens = tokensPayload.tokens || [];
       registryUsername = tokensPayload.username || '';
-      registryHosts = tokensPayload.registryHosts || [];
+      registryDomain = { domain: '', httpsEnabled: true, attached: false, ...domainPayload };
+      domainDraft = registryDomain.domain || '';
+      registryHosts = domainPayload.registryHosts || tokensPayload.registryHosts || [];
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not load registry';
     } finally {
@@ -240,6 +250,47 @@
     }
   }
 
+  async function persistRegistryDomain(domain, httpsEnabled) {
+    domainSaving = true;
+    domainError = '';
+    try {
+      const response = await api('/api/registry/domain', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain, httpsEnabled })
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not configure registry domain');
+      registryDomain = { domain: '', httpsEnabled: true, attached: false, ...payload };
+      domainDraft = registryDomain.domain || '';
+      registryHosts = payload.registryHosts || registryHosts;
+      createdCredential = null;
+      toast.success(domain ? 'Registry domain attached' : 'Registry domain detached');
+    } catch (cause) {
+      domainError = cause instanceof Error ? cause.message : 'Could not configure registry domain';
+      throw cause;
+    } finally {
+      domainSaving = false;
+    }
+  }
+
+  async function saveRegistryDomain() {
+    try {
+      await persistRegistryDomain(domainDraft.trim(), registryDomain.httpsEnabled);
+    } catch {
+      // The inline form presents the API error.
+    }
+  }
+
+  async function detachRegistryDomain() {
+    try {
+      await persistRegistryDomain('', true);
+      detachDomainOpen = false;
+    } catch {
+      // Keep the confirmation open so the error remains visible.
+    }
+  }
+
   async function runGarbageCollection(dryRun) {
     collecting = true;
     error = '';
@@ -359,6 +410,47 @@
     </section>
   </div>
 
+  <section class="panel domain-panel" aria-label="Registry domain">
+    <header class="panel-header">
+      <div><span class="eyebrow">Network endpoint</span><h2>Registry domain</h2></div>
+      <span class:active={registryDomain.attached} class="domain-status"><i></i>{registryDomain.attached ? 'Attached' : 'Not attached'}</span>
+    </header>
+    <div class="domain-layout">
+      <div class="domain-intro">
+        <span class="domain-mark"><Icon name="globe" size={22} /></span>
+        <div>
+          <strong>{registryDomain.attached ? registryDomain.domain : 'Give the registry a public address'}</strong>
+          <span>Dokyr will route this hostname to Docker Distribution and use it in every generated login and image reference.</span>
+        </div>
+        {#if registryDomain.attached}
+          <code>{registryDomain.httpsEnabled ? 'https://' : 'http://'}{registryDomain.domain}</code>
+        {/if}
+      </div>
+      <form class="domain-form" onsubmit={(event) => { event.preventDefault(); saveRegistryDomain(); }}>
+        <label class="domain-name">
+          <span>Domain name</span>
+          <div><Icon name="globe" size={15} /><input bind:value={domainDraft} autocomplete="off" placeholder="registry.example.com" required /></div>
+          <small>Enter only the hostname. Do not include <code>https://</code> or a path.</small>
+        </label>
+        <div class="domain-https">
+          <label class="switch"><input type="checkbox" bind:checked={registryDomain.httpsEnabled} /><span></span><em>{registryDomain.httpsEnabled ? 'TLS' : 'HTTP'}</em></label>
+          <div><strong>Automatic HTTPS</strong><small>Caddy obtains and renews the certificate after DNS points to this server.</small></div>
+        </div>
+        {#if domainError}<div class="domain-error"><Icon name="x-circle" size={14} />{domainError}</div>{/if}
+        <footer>
+          {#if registryDomain.attached}
+            <button type="button" class="detach-button" disabled={domainSaving} onclick={() => { detachDomainOpen = true; domainError = ''; }}>Detach</button>
+          {/if}
+          <button type="submit" class="primary" disabled={domainSaving || !domainDraft.trim()}><Icon name="check" size={14} />{domainSaving ? 'Applying…' : registryDomain.attached ? 'Update domain' : 'Attach domain'}</button>
+        </footer>
+      </form>
+      <aside class="dns-note">
+        <Icon name="info" size={16} />
+        <div><strong>DNS comes first</strong><span>Create an A or AAAA record for this hostname pointing to the Dokyr server, and allow inbound ports 80 and 443.</span></div>
+      </aside>
+    </div>
+  </section>
+
   <section class="panel access-panel" aria-label="Registry access tokens">
     <header class="panel-header">
       <div><span class="eyebrow">Authentication</span><h2>Access tokens</h2></div>
@@ -374,7 +466,7 @@
     </div>
 
     {#if registryHost === 'registry.invalid'}
-      <div class="token-notice"><Icon name="alert" size={15} /><span>Set <code>REGISTRY_HOSTS</code> to a real registry hostname before using these credentials outside Dokyr.</span></div>
+      <div class="token-notice"><Icon name="alert" size={15} /><span>Attach a registry domain above before using these credentials outside Dokyr.</span></div>
     {/if}
 
     {#if tokenFormOpen}
@@ -544,6 +636,19 @@
   />
 {/if}
 
+{#if detachDomainOpen}
+  <ConfirmDialog
+    title="Detach registry domain?"
+    message={`Detach ${registryDomain.domain}. Docker clients using this hostname will lose access until another registry domain is attached.`}
+    confirmLabel="Detach domain"
+    requireText={registryDomain.domain}
+    busy={domainSaving}
+    error={domainError}
+    onConfirm={detachRegistryDomain}
+    onClose={() => { if (!domainSaving) detachDomainOpen = false; }}
+  />
+{/if}
+
 {#if revokeTarget}
   <ConfirmDialog
     title="Revoke registry token?"
@@ -606,7 +711,35 @@
   .gc-output header { min-height: 36px; padding: 0 var(--space-3); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); border-bottom: 1px solid var(--color-log-rule); color: var(--color-log-text); }
   .gc-output header span { color: var(--color-log-muted); font-size: var(--text-xs); }
   .gc-output pre { max-height: 280px; margin: 0; padding: var(--space-3); overflow: auto; color: var(--color-log-text); font-size: var(--text-xs); line-height: 1.5; white-space: pre-wrap; }
-  .access-panel, .repositories-panel { margin-top: var(--space-5); }
+  .domain-panel, .access-panel, .repositories-panel { margin-top: var(--space-5); }
+  .domain-panel { container-name: registry-domain; container-type: inline-size; }
+  .domain-status { min-height: 28px; padding: 0 var(--space-2); display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--color-rule); border-radius: 999px; background: var(--color-surface-subtle); color: var(--color-muted); font-size: var(--text-2xs); font-weight: 700; }
+  .domain-status i { width: 7px; height: 7px; border-radius: 50%; background: var(--color-muted); }
+  .domain-status.active { border-color: color-mix(in srgb, var(--color-success) 30%, var(--color-rule)); color: var(--color-success); }
+  .domain-status.active i { background: var(--color-success); }
+  .domain-layout { display: grid; grid-template-columns: minmax(260px, .8fr) minmax(420px, 1.2fr); }
+  .domain-intro { padding: var(--space-5); display: grid; grid-template-columns: 44px minmax(0, 1fr); align-content: center; gap: var(--space-3); border-right: 1px solid var(--color-rule); background: linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 7%, var(--color-paper-raised)), var(--color-paper-raised) 65%); }
+  .domain-mark { width: 42px; height: 42px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-rule)); border-radius: var(--radius-md); background: var(--color-accent-softer); color: var(--color-accent); }
+  .domain-intro > div { min-width: 0; display: grid; gap: 4px; }
+  .domain-intro strong { overflow-wrap: anywhere; font-size: var(--text-sm); }
+  .domain-intro span { color: var(--color-muted); font-size: var(--text-xs); line-height: 1.5; }
+  .domain-intro > code { grid-column: 2; width: max-content; max-width: 100%; padding: 6px 9px; overflow: auto; border: 1px solid var(--color-rule); border-radius: var(--radius-xs); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-xs); white-space: nowrap; }
+  .domain-form { padding: var(--space-5); display: grid; grid-template-columns: minmax(0, 1fr) minmax(230px, .7fr); align-items: end; gap: var(--space-4); }
+  .domain-name { min-width: 0; display: grid; gap: var(--space-2); color: var(--color-muted); font-size: var(--text-xs); font-weight: 600; }
+  .domain-name > div { height: 40px; padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-2); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-muted); }
+  .domain-name > div:focus-within { border-color: var(--color-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-focus) 16%, transparent); }
+  .domain-name input { width: 100%; min-width: 0; height: 36px; border: 0; outline: 0; background: transparent; color: var(--color-ink); font-size: var(--text-sm); }
+  .domain-name small, .domain-https small, .dns-note span { color: var(--color-muted); font-size: var(--text-2xs); font-weight: 500; line-height: 1.45; }
+  .domain-name small code { color: var(--color-ink); }
+  .domain-https { min-height: 66px; padding: var(--space-3); display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
+  .domain-https > div { display: grid; gap: 3px; }
+  .domain-https strong, .dns-note strong { font-size: var(--text-xs); }
+  .domain-error { grid-column: 1 / -1; display: flex; align-items: center; gap: var(--space-2); color: var(--color-danger); font-size: var(--text-xs); }
+  .domain-form footer { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: var(--space-2); }
+  .detach-button { min-height: 36px; padding: 0 var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-muted); font-size: var(--text-sm); font-weight: 600; cursor: pointer; }
+  .detach-button:hover { border-color: var(--color-danger); color: var(--color-danger); }
+  .dns-note { grid-column: 1 / -1; min-height: 50px; padding: var(--space-3) var(--space-5); display: flex; align-items: center; gap: var(--space-3); border-top: 1px solid var(--color-rule); background: var(--color-surface-subtle); color: var(--color-accent); }
+  .dns-note > div { display: grid; gap: 2px; }
   .access-panel { container-name: registry-access; container-type: inline-size; }
   .repositories-panel { container-name: registry-repositories; container-type: inline-size; }
   .token-create-button { min-height: 34px; }
@@ -618,7 +751,6 @@
   .access-intro > code { padding: 6px 9px; border: 1px solid var(--color-rule); border-radius: var(--radius-xs); background: var(--color-surface-subtle); color: var(--color-ink); font-size: var(--text-xs); }
   .token-notice { margin: var(--space-4) var(--space-5) 0; padding: var(--space-3); display: flex; align-items: center; gap: var(--space-2); border: 1px solid color-mix(in srgb, var(--color-warning) 35%, var(--color-rule)); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-warning) 7%, var(--color-paper-raised)); color: var(--color-muted); font-size: var(--text-xs); }
   .token-notice :global(svg) { color: var(--color-warning); }
-  .token-notice code { color: var(--color-ink); }
   .token-form { margin: var(--space-5); padding: var(--space-4); display: grid; grid-template-columns: minmax(190px, .75fr) minmax(0, 1.25fr) auto; align-items: end; gap: var(--space-4); border: 1px solid var(--color-accent); border-radius: var(--radius-md); background: var(--color-accent-softer); box-shadow: 0 8px 24px color-mix(in srgb, var(--color-accent) 8%, transparent); }
   .token-name { display: grid; gap: var(--space-2); color: var(--color-muted); font-size: var(--text-xs); font-weight: 600; }
   .token-name input { width: 100%; height: 40px; padding: 0 var(--space-3); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); outline: 0; }
@@ -727,6 +859,17 @@
     .token-form { margin: var(--space-3); padding: var(--space-3); }
     .token-form fieldset, .token-list article { grid-template-columns: 1fr; }
     .revoke-button { width: 100%; }
+  }
+  @container registry-domain (max-width: 820px) {
+    .domain-layout, .domain-form { grid-template-columns: 1fr; }
+    .domain-intro { border-right: 0; border-bottom: 1px solid var(--color-rule); }
+    .domain-form footer, .domain-error { grid-column: 1; }
+  }
+  @container registry-domain (max-width: 460px) {
+    .domain-intro, .domain-form { padding: var(--space-4); }
+    .domain-form footer { display: grid; grid-template-columns: 1fr; }
+    .domain-form footer button { width: 100%; }
+    .dns-note { align-items: flex-start; padding: var(--space-3) var(--space-4); }
   }
   @container registry-repositories (max-width: 760px) {
     .repository-summary { grid-template-columns: 30px 38px minmax(0, 1fr); }
