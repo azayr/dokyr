@@ -44,13 +44,19 @@
   let settings = emptySettings();
   let repositories = [];
   let filter = '';
+  let expandedRepositories = [];
   let gcResult = null;
   let deleteTarget = null;
   let deleteError = '';
 
   onMount(load);
 
-  $: visibleRepositories = repositories.filter((item) => item.name.toLowerCase().includes(filter.trim().toLowerCase()) || (item.tags || []).some((tag) => tag.toLowerCase().includes(filter.trim().toLowerCase())));
+  $: visibleRepositories = repositories.filter((item) => {
+    const query = filter.trim().toLowerCase();
+    return item.name.toLowerCase().includes(query)
+      || (item.tags || []).some((tag) => tag.toLowerCase().includes(query))
+      || (item.images || []).some((image) => (image.digest || '').toLowerCase().includes(query));
+  });
   $: tagCount = repositories.reduce((count, item) => count + (item.tags || []).length, 0);
   $: storageLabel = settings.storage === 's3' ? 'S3-compatible object storage' : 'Docker volume filesystem';
   $: registryHost = registryHosts[0] || 'registry.example.com';
@@ -94,6 +100,10 @@
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Could not load repositories');
       repositories = payload.repositories || [];
+      expandedRepositories = [
+        ...expandedRepositories,
+        ...repositories.map((repository) => repository.name).filter((name) => !expandedRepositories.includes(name))
+      ];
     } catch (cause) {
       repositoriesError = cause instanceof Error ? cause.message : 'Could not load repositories';
       repositories = [];
@@ -160,6 +170,44 @@
     return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
   }
 
+  function imagesFor(repository) {
+    if ((repository.images || []).length > 0) return repository.images;
+    return (repository.tags || []).map((tag) => ({ digest: '', tags: [tag], size: 0 }));
+  }
+
+  function preferredTag(repository) {
+    if ((repository.tags || []).includes('latest')) return 'latest';
+    return (repository.tags || [])[0] || '';
+  }
+
+  function formatBytes(value) {
+    if (!value || value < 1) return 'Unknown';
+    const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+    const exponent = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+    const amount = value / (1024 ** exponent);
+    return `${amount >= 100 || exponent === 0 ? amount.toFixed(0) : amount.toFixed(2)} ${units[exponent]}`;
+  }
+
+  function shortDigest(value) {
+    if (!value) return 'Digest unavailable';
+    if (value.length <= 28) return value;
+    return `${value.slice(0, 20)}…${value.slice(-8)}`;
+  }
+
+  function repositoryReference(name, tag) {
+    return `${registryHost}/${name}:${tag}`;
+  }
+
+  function isRepositoryExpanded(name) {
+    return expandedRepositories.includes(name);
+  }
+
+  function toggleRepository(name) {
+    expandedRepositories = isRepositoryExpanded(name)
+      ? expandedRepositories.filter((repositoryName) => repositoryName !== name)
+      : [...expandedRepositories, name];
+  }
+
   async function saveSettings() {
     saving = true;
     error = '';
@@ -222,12 +270,12 @@
       const params = new URLSearchParams({ name: deleteTarget.name, tag: deleteTarget.tag });
       const response = await api('/api/registry/tags?' + params.toString(), { method: 'DELETE' });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || 'Could not delete tag');
+      if (!response.ok) throw new Error(payload.error || 'Could not delete image');
       deleteTarget = null;
-      toast.success('Registry tag deleted');
+      toast.success('Registry image deleted');
       await loadRepositories();
     } catch (cause) {
-      deleteError = cause instanceof Error ? cause.message : 'Could not delete tag';
+      deleteError = cause instanceof Error ? cause.message : 'Could not delete image';
     } finally {
       deleting = false;
     }
@@ -402,17 +450,80 @@
     {:else}
       <div class="repository-list">
         {#each visibleRepositories as repository}
-          <article>
-            <header><Icon name="box" size={17} /><strong>{repository.name}</strong><span>{(repository.tags || []).length} tag{(repository.tags || []).length === 1 ? '' : 's'}</span></header>
-            <div class="tag-list">
-              {#if (repository.tags || []).length === 0}
-                <span class="tag-empty">No tags</span>
-              {:else}
-                {#each repository.tags as tag}
-                  <span class="tag"><code>{tag}</code><button type="button" aria-label={`Delete ${repository.name}:${tag}`} onclick={() => { deleteTarget = { name: repository.name, tag }; deleteError = ''; }}><Icon name="trash" size={13} /></button></span>
-                {/each}
+          {@const images = imagesFor(repository)}
+          {@const defaultTag = preferredTag(repository)}
+          {@const expanded = expandedRepositories.includes(repository.name)}
+          <article class="repository-card">
+            <header class="repository-summary">
+              <button
+                type="button"
+                class="disclosure"
+                aria-label={`${expanded ? 'Collapse' : 'Expand'} ${repository.name}`}
+                aria-expanded={expanded}
+                onclick={() => toggleRepository(repository.name)}
+              >
+                <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={15} />
+              </button>
+              <span class="repository-mark"><Icon name="box" size={18} /></span>
+              <div class="repository-identity">
+                <strong>{repository.name}</strong>
+                <span>{images.length} image{images.length === 1 ? '' : 's'} · {(repository.tags || []).length} tag{(repository.tags || []).length === 1 ? '' : 's'}</span>
+              </div>
+              {#if defaultTag}
+                <div class="default-tag">
+                  <span>Quick pull</span>
+                  <code><Icon name="tag" size={13} />{defaultTag}</code>
+                  <button type="button" aria-label={`Copy ${repository.name}:${defaultTag}`} onclick={() => copyText(repositoryReference(repository.name, defaultTag), 'Image reference')}><Icon name="copy" size={14} /></button>
+                </div>
               {/if}
-            </div>
+            </header>
+
+            {#if expanded}
+              <div class="image-table" role="table" aria-label={`${repository.name} images`}>
+                <div class="image-table-header" role="row">
+                  <span role="columnheader">Digest</span>
+                  <span role="columnheader">Tags</span>
+                  <span role="columnheader">Content size</span>
+                  <span role="columnheader">Action</span>
+                </div>
+                {#if images.length === 0}
+                  <div class="image-empty">This repository does not have any tagged images.</div>
+                {:else}
+                  {#each images as image}
+                    <div class="image-row" role="row">
+                      <div class="digest-cell" role="cell" data-label="Digest">
+                        <span class="image-kind"><Icon name="layers" size={16} /></span>
+                        <code title={image.digest || 'Digest unavailable'}>{shortDigest(image.digest)}</code>
+                        {#if image.digest}
+                          <button type="button" aria-label="Copy manifest digest" onclick={() => copyText(image.digest, 'Manifest digest')}><Icon name="copy" size={14} /></button>
+                        {/if}
+                      </div>
+                      <div class="image-tags" role="cell" data-label="Tags">
+                        {#each image.tags || [] as tag}
+                          <span class="image-tag">
+                            <Icon name="tag" size={13} />
+                            <code>{tag}</code>
+                            <button type="button" aria-label={`Copy ${repository.name}:${tag}`} onclick={() => copyText(repositoryReference(repository.name, tag), 'Image reference')}><Icon name="copy" size={13} /></button>
+                          </span>
+                        {/each}
+                      </div>
+                      <span class:unknown={!image.size} class="image-size" role="cell" data-label="Content size">{formatBytes(image.size)}</span>
+                      <div class="image-actions" role="cell" data-label="Action">
+                        <button
+                          type="button"
+                          aria-label={`Delete image ${repository.name}:${(image.tags || [])[0] || ''}`}
+                          disabled={(image.tags || []).length === 0}
+                          onclick={() => {
+                            deleteTarget = { name: repository.name, tag: image.tags[0], tags: image.tags, digest: image.digest };
+                            deleteError = '';
+                          }}
+                        ><Icon name="trash" size={14} /><span>Delete</span></button>
+                      </div>
+                    </div>
+                  {/each}
+                {/if}
+              </div>
+            {/if}
           </article>
         {/each}
       </div>
@@ -422,9 +533,9 @@
 
 {#if deleteTarget}
   <ConfirmDialog
-    title="Delete registry tag?"
-    message={`Delete ${deleteTarget.name}:${deleteTarget.tag}. Layers remain on disk until garbage collection removes unreferenced data.`}
-    confirmLabel="Delete tag"
+    title="Delete registry image?"
+    message={`Delete the manifest for ${deleteTarget.name}. ${deleteTarget.tags.length === 1 ? `Tag ${deleteTarget.tags[0]} points` : `Tags ${deleteTarget.tags.join(', ')} point`} to this manifest and ${deleteTarget.tags.length === 1 ? 'will' : 'will all'} be removed. Layers remain until garbage collection removes unreferenced data.`}
+    confirmLabel="Delete image"
     requireText={deleteTarget.tag}
     busy={deleting}
     error={deleteError}
@@ -497,6 +608,7 @@
   .gc-output pre { max-height: 280px; margin: 0; padding: var(--space-3); overflow: auto; color: var(--color-log-text); font-size: var(--text-xs); line-height: 1.5; white-space: pre-wrap; }
   .access-panel, .repositories-panel { margin-top: var(--space-5); }
   .access-panel { container-name: registry-access; container-type: inline-size; }
+  .repositories-panel { container-name: registry-repositories; container-type: inline-size; }
   .token-create-button { min-height: 34px; }
   .access-intro { padding: var(--space-4) var(--space-5); display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); border-bottom: 1px solid var(--color-rule); background: linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 5%, var(--color-paper-raised)), var(--color-paper-raised)); }
   .access-mark { width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--color-accent) 25%, var(--color-rule)); border-radius: var(--radius-md); background: var(--color-accent-softer); color: var(--color-accent); }
@@ -558,17 +670,39 @@
   .repo-filter { width: min(320px, 100%); height: 34px; padding: 0 var(--space-2); display: flex; align-items: center; gap: var(--space-2); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-muted); }
   .repo-filter input { height: 30px; padding: 0; border: 0; background: transparent; }
   .repository-list { display: grid; }
-  .repository-list article { padding: var(--space-4) var(--space-5); display: grid; gap: var(--space-3); border-top: 1px solid var(--color-rule); }
-  .repository-list article:first-child { border-top: 0; }
-  .repository-list article > header { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); }
-  .repository-list article strong { min-width: 0; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-sm); }
-  .repository-list article header span { color: var(--color-muted); font-size: var(--text-xs); }
-  .tag-list { display: flex; flex-wrap: wrap; gap: var(--space-2); padding-left: 32px; }
-  .tag { min-height: 30px; display: inline-flex; align-items: center; overflow: hidden; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
-  .tag code { padding: 0 var(--space-2); color: var(--color-ink); font-size: var(--text-xs); }
-  .tag button { width: 30px; height: 28px; display: grid; place-items: center; border: 0; border-left: 1px solid var(--color-rule); background: transparent; color: var(--color-muted); cursor: pointer; }
-  .tag button:hover { color: var(--color-danger); }
-  .tag-empty { color: var(--color-muted); font-size: var(--text-sm); }
+  .repository-card { display: grid; border-top: 1px solid var(--color-rule); }
+  .repository-card:first-child { border-top: 0; }
+  .repository-summary { min-height: 78px; padding: var(--space-3) var(--space-5); display: grid; grid-template-columns: 30px 38px minmax(180px, 1fr) minmax(220px, .75fr); align-items: center; gap: var(--space-3); background: linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 3%, var(--color-paper-raised)), var(--color-paper-raised) 42%); }
+  .disclosure { width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid var(--color-rule); border-radius: var(--radius-xs); background: var(--color-paper-raised); color: var(--color-muted); cursor: pointer; }
+  .disclosure:hover { border-color: var(--color-accent); color: var(--color-accent); }
+  .repository-mark { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--color-accent) 22%, var(--color-rule)); border-radius: var(--radius-sm); background: var(--color-accent-softer); color: var(--color-accent); }
+  .repository-identity { min-width: 0; display: grid; gap: 3px; }
+  .repository-identity strong { overflow: hidden; color: var(--color-ink); font-family: var(--font-mono); font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
+  .repository-identity span { color: var(--color-muted); font-size: var(--text-xs); }
+  .default-tag { min-width: 0; justify-self: end; display: grid; grid-template-columns: auto minmax(0, auto) 30px; align-items: center; overflow: hidden; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
+  .default-tag > span { padding: 0 var(--space-2); color: var(--color-muted); font-size: var(--text-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+  .default-tag code { min-width: 0; height: 30px; padding: 0 var(--space-2); display: inline-flex; align-items: center; gap: 6px; border-left: 1px solid var(--color-rule); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-xs); }
+  .default-tag code :global(svg), .image-tag > :global(svg) { color: var(--color-accent); }
+  .default-tag button, .digest-cell button, .image-tag button { width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-left: 1px solid var(--color-rule); background: transparent; color: var(--color-muted); cursor: pointer; }
+  .default-tag button:hover, .digest-cell button:hover, .image-tag button:hover { color: var(--color-accent); }
+  .image-table { margin: 0 var(--space-5) var(--space-5); overflow: hidden; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); }
+  .image-table-header, .image-row { display: grid; grid-template-columns: minmax(250px, 1.3fr) minmax(180px, 1fr) minmax(100px, .45fr) 86px; align-items: center; gap: var(--space-3); }
+  .image-table-header { min-height: 34px; padding: 0 var(--space-3); border-bottom: 1px solid var(--color-rule); background: var(--color-surface-subtle); color: var(--color-muted); font-size: var(--text-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+  .image-row { min-height: 62px; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--color-rule); background: var(--color-paper-raised); }
+  .image-row:last-child { border-bottom: 0; }
+  .digest-cell { min-width: 0; display: grid; grid-template-columns: 28px minmax(0, 1fr) 30px; align-items: center; overflow: hidden; border: 1px solid var(--color-rule); border-radius: var(--radius-xs); background: var(--color-surface-subtle); }
+  .image-kind { width: 28px; height: 30px; display: grid; place-items: center; color: var(--color-accent); }
+  .digest-cell code { min-width: 0; padding: 0 var(--space-2); overflow: hidden; color: var(--color-ink); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+  .image-tags { min-width: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); }
+  .image-tag { min-width: 0; height: 32px; display: grid; grid-template-columns: 25px minmax(0, auto) 30px; align-items: center; overflow: hidden; border: 1px solid var(--color-rule); border-radius: var(--radius-xs); background: var(--color-surface-subtle); }
+  .image-tag > :global(svg) { margin-left: 8px; }
+  .image-tag code { min-width: 0; padding: 0 var(--space-2); overflow: hidden; color: var(--color-ink); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+  .image-size { color: var(--color-ink); font-family: var(--font-mono); font-size: var(--text-xs); }
+  .image-size.unknown { color: var(--color-muted); font-family: inherit; }
+  .image-actions { display: flex; justify-content: flex-end; }
+  .image-actions button { min-height: 30px; padding: 0 var(--space-2); display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid var(--color-rule); border-radius: var(--radius-xs); background: var(--color-paper-raised); color: var(--color-muted); font-size: var(--text-xs); cursor: pointer; }
+  .image-actions button:hover { border-color: color-mix(in srgb, var(--color-danger) 55%, var(--color-rule)); color: var(--color-danger); }
+  .image-empty { min-height: 70px; padding: var(--space-4); display: grid; place-items: center; color: var(--color-muted); font-size: var(--text-sm); text-align: center; }
   .loading-state, .repository-error { min-height: 170px; padding: var(--space-5); display: grid; place-content: center; justify-items: center; gap: var(--space-3); text-align: center; }
   .repository-error { grid-template-columns: 28px minmax(0, 1fr) auto; justify-items: start; text-align: left; }
   .repository-error span { color: var(--color-muted); font-size: var(--text-sm); }
@@ -594,5 +728,26 @@
     .token-form fieldset, .token-list article { grid-template-columns: 1fr; }
     .revoke-button { width: 100%; }
   }
-  @media (max-width: 860px) { .registry-grid { grid-template-columns: 1fr; } .form-grid, .storage-picker, .gc-actions, .credential-fields { grid-template-columns: 1fr; } .credential-fields .login-command { grid-column: auto; } .settings-form footer, .primary { width: 100%; } .panel-header { align-items: flex-start; flex-direction: column; } .access-intro { grid-template-columns: 38px minmax(0, 1fr); } .access-intro > code { grid-column: 2; width: max-content; max-width: 100%; overflow: auto; } .repo-filter { width: 100%; } .repository-error { grid-template-columns: 1fr; justify-items: center; text-align: center; } .tag-list { padding-left: 0; } }
+  @container registry-repositories (max-width: 760px) {
+    .repository-summary { grid-template-columns: 30px 38px minmax(0, 1fr); }
+    .default-tag { grid-column: 3; justify-self: start; }
+    .image-table-header { display: none; }
+    .image-table { border: 0; border-radius: 0; }
+    .image-row { margin-top: var(--space-3); padding: var(--space-3); grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
+    .image-row:first-child { margin-top: 0; }
+    .digest-cell, .image-tags { grid-column: 1 / -1; }
+    .image-size::before { content: 'Content size · '; color: var(--color-muted); font-family: inherit; }
+  }
+  @container registry-repositories (max-width: 460px) {
+    .repository-summary { padding: var(--space-3); grid-template-columns: 28px 34px minmax(0, 1fr); gap: var(--space-2); }
+    .repository-mark { width: 32px; height: 32px; }
+    .default-tag { grid-column: 1 / -1; width: 100%; justify-self: stretch; grid-template-columns: auto minmax(0, 1fr) 30px; }
+    .default-tag code { justify-content: flex-start; }
+    .image-table { margin: 0 var(--space-3) var(--space-3); }
+    .image-row { grid-template-columns: 1fr; }
+    .digest-cell, .image-tags { grid-column: 1; }
+    .image-actions { justify-content: stretch; }
+    .image-actions button { width: 100%; }
+  }
+  @media (max-width: 860px) { .registry-grid { grid-template-columns: 1fr; } .form-grid, .storage-picker, .gc-actions, .credential-fields { grid-template-columns: 1fr; } .credential-fields .login-command { grid-column: auto; } .settings-form footer, .primary { width: 100%; } .panel-header { align-items: flex-start; flex-direction: column; } .access-intro { grid-template-columns: 38px minmax(0, 1fr); } .access-intro > code { grid-column: 2; width: max-content; max-width: 100%; overflow: auto; } .repo-filter { width: 100%; } .repository-error { grid-template-columns: 1fr; justify-items: center; text-align: center; } }
 </style>

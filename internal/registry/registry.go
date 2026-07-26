@@ -19,15 +19,34 @@ import (
 
 const (
 	serviceName    = "registry"
-	registryConfig = "/etc/docker/registry/config.yml"
+	registryConfig = "/etc/distribution/config.yml"
 	requestTimeout = 20 * time.Second
 )
 
-// Repository is one image repository with the tags currently stored in the
-// registry.
+// Repository is one image repository with the tags and manifests currently
+// stored in the registry.
 type Repository struct {
-	Name string   `json:"name"`
-	Tags []string `json:"tags"`
+	Name   string   `json:"name"`
+	Tags   []string `json:"tags"`
+	Images []Image  `json:"images"`
+}
+
+// Image is one manifest. Multiple tags can point to the same digest, so the UI
+// presents deletion at this level instead of implying that a tag is unlinked.
+type Image struct {
+	Digest string   `json:"digest,omitempty"`
+	Tags   []string `json:"tags"`
+	Size   int64    `json:"size,omitempty"`
+}
+
+type registryManifest struct {
+	Config struct {
+		Size int64 `json:"size"`
+	} `json:"config"`
+	Layers []struct {
+		Size int64 `json:"size"`
+	} `json:"layers"`
+	Manifests []json.RawMessage `json:"manifests"`
 }
 
 // Status summarizes the registry container and HTTP API reachability.
@@ -116,7 +135,34 @@ func (s *Service) Repositories(ctx context.Context) ([]Repository, error) {
 			tags = []string{}
 		}
 		sort.Strings(tags)
-		repositories = append(repositories, Repository{Name: name, Tags: tags})
+		images := make([]Image, 0, len(tags))
+		imageIndex := make(map[string]int, len(tags))
+		for _, tag := range tags {
+			image, err := s.manifestImage(ctx, name, tag)
+			if err != nil {
+				// Keep the catalog useful when an older or non-standard
+				// registry cannot return manifest metadata.
+				image = Image{Tags: []string{tag}}
+			}
+			key := image.Digest
+			if key == "" {
+				key = "tag:" + tag
+			}
+			if index, ok := imageIndex[key]; ok {
+				images[index].Tags = append(images[index].Tags, tag)
+				continue
+			}
+			image.Tags = []string{tag}
+			imageIndex[key] = len(images)
+			images = append(images, image)
+		}
+		sort.Slice(images, func(i, j int) bool {
+			if len(images[i].Tags) == 0 || len(images[j].Tags) == 0 {
+				return images[i].Digest < images[j].Digest
+			}
+			return images[i].Tags[0] < images[j].Tags[0]
+		})
+		repositories = append(repositories, Repository{Name: name, Tags: tags, Images: images})
 	}
 	return repositories, nil
 }
@@ -135,7 +181,7 @@ func (s *Service) DeleteTag(ctx context.Context, name, tag string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.authorize(req, repositoryAccess(name, "push")); err != nil {
+	if err := s.authorize(req, repositoryDeleteAccess(name)); err != nil {
 		return err
 	}
 	res, err := s.http.Do(req)
@@ -195,7 +241,7 @@ func environment(settings store.RegistrySettings, s3SecretKey string) []string {
 		values["REGISTRY_STORAGE_S3_BUCKET"] = settings.S3Bucket
 		values["REGISTRY_STORAGE_S3_ACCESSKEY"] = settings.S3AccessKey
 		values["REGISTRY_STORAGE_S3_SECRETKEY"] = s3SecretKey
-		values["REGISTRY_STORAGE_S3_ENDPOINT"] = settings.S3Endpoint
+		values["REGISTRY_STORAGE_S3_REGIONENDPOINT"] = settings.S3Endpoint
 		values["REGISTRY_STORAGE_S3_FORCEPATHSTYLE"] = strconv.FormatBool(settings.S3ForcePathStyle)
 		values["REGISTRY_STORAGE_S3_SECURE"] = strconv.FormatBool(settings.S3Secure)
 		values["REGISTRY_STORAGE_S3_ENCRYPT"] = "false"
@@ -248,6 +294,52 @@ func (s *Service) manifestDigest(ctx context.Context, name, tag string) (string,
 	return digest, nil
 }
 
+func (s *Service) manifestImage(ctx context.Context, name, tag string) (Image, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.address(ctx)+"/v2/"+repositoryPath(name)+"/manifests/"+url.PathEscape(tag), nil)
+	if err != nil {
+		return Image{}, err
+	}
+	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json")
+	if err := s.authorize(req, repositoryAccess(name, "pull")); err != nil {
+		return Image{}, err
+	}
+	res, err := s.http.Do(req)
+	if err != nil {
+		return Image{}, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotFound {
+		return Image{}, ErrNotFound
+	}
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		return Image{}, fmt.Errorf("resolve manifest metadata failed: %s", strings.TrimSpace(string(body)))
+	}
+	digest := res.Header.Get("Docker-Content-Digest")
+	if digest == "" {
+		return Image{}, errors.New("registry did not return a manifest digest")
+	}
+	var manifest registryManifest
+	if err := json.NewDecoder(io.LimitReader(res.Body, 4<<20)).Decode(&manifest); err != nil {
+		return Image{}, err
+	}
+	return Image{Digest: digest, Size: manifestContentSize(manifest)}, nil
+}
+
+func manifestContentSize(manifest registryManifest) int64 {
+	// A single-platform image contains config and layer descriptors. An index
+	// only contains child-manifest descriptors, which are not the image bytes,
+	// so leave its size unknown rather than showing a misleading total.
+	if len(manifest.Manifests) > 0 {
+		return 0
+	}
+	size := manifest.Config.Size
+	for _, layer := range manifest.Layers {
+		size += layer.Size
+	}
+	return size
+}
+
 func repositoryPath(name string) string {
 	segments := strings.Split(strings.Trim(name, "/"), "/")
 	for i, segment := range segments {
@@ -297,6 +389,10 @@ func (s *Service) authorize(req *http.Request, access []AccessEntry) error {
 
 func repositoryAccess(name string, actions ...string) []AccessEntry {
 	return []AccessEntry{{Type: "repository", Name: name, Actions: actions}}
+}
+
+func repositoryDeleteAccess(name string) []AccessEntry {
+	return repositoryAccess(name, "delete")
 }
 
 // address resolves the registry HTTP endpoint through its container name, which

@@ -133,9 +133,11 @@ func (d *Docker) RecreateControlPlaneService(ctx context.Context, service string
 			Entrypoint   []string            `json:"Entrypoint"`
 			Cmd          []string            `json:"Cmd"`
 			ExposedPorts map[string]struct{} `json:"ExposedPorts"`
+			Labels       map[string]string   `json:"Labels"`
 		} `json:"Config"`
 		HostConfig struct {
 			Binds         []string `json:"Binds"`
+			ExtraHosts    []string `json:"ExtraHosts"`
 			RestartPolicy struct {
 				Name string `json:"Name"`
 			} `json:"RestartPolicy"`
@@ -175,10 +177,12 @@ func (d *Docker) RecreateControlPlaneService(ctx context.Context, service string
 	}
 
 	createBody := map[string]any{
-		"Image": inspected.Config.Image,
-		"Env":   mergeEnv(inspected.Config.Env, env),
+		"Image":  inspected.Config.Image,
+		"Env":    mergeEnv(inspected.Config.Env, env),
+		"Labels": inspected.Config.Labels,
 		"HostConfig": map[string]any{
 			"Binds":        inspected.HostConfig.Binds,
+			"ExtraHosts":   inspected.HostConfig.ExtraHosts,
 			"PortBindings": inspected.HostConfig.PortBindings,
 			"RestartPolicy": map[string]any{
 				"Name": inspected.HostConfig.RestartPolicy.Name,
@@ -257,5 +261,38 @@ func mergeEnv(existing, overrides []string) []string {
 	for _, key := range order {
 		merged = append(merged, values[key])
 	}
-	return merged
+	return storageDriverEnv(merged)
+}
+
+// storageDriverEnv removes configuration for the inactive registry storage
+// driver. Docker Distribution treats the presence of both driver namespaces
+// as an error, even when the inactive driver's values are empty.
+func storageDriverEnv(env []string) []string {
+	storage := ""
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok && key == "REGISTRY_STORAGE" {
+			storage = strings.ToLower(strings.TrimSpace(value))
+			break
+		}
+	}
+	if storage != "s3" && storage != "filesystem" {
+		return env
+	}
+
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if key == "REGISTRY_STORAGE_S3_ENDPOINT" {
+			continue
+		}
+		if storage == "s3" && strings.HasPrefix(key, "REGISTRY_STORAGE_FILESYSTEM_") {
+			continue
+		}
+		if storage == "filesystem" && strings.HasPrefix(key, "REGISTRY_STORAGE_S3_") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }

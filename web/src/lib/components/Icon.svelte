@@ -29,6 +29,7 @@
 {:else if name==='lock'}<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>
 {:else if name==='link'}<path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.1-1.1"/>
 {:else if name==='copy'}<rect x="8" y="8" width="11" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/>
+{:else if name==='tag'}<path d="M20 13 13 20 4 11V4h7l9 9z"/><circle cx="8.5" cy="8.5" r="1.25"/>
 {:else if name==='check'}<path d="m5 12 4 4L19 6"/>
 {:else if name==='check-circle'}<circle cx="12" cy="12" r="9"/><path d="m8.5 12.5 2.5 2.5 5-6"/>
 {:else if name==='x'}<path d="M6 6l12 12M18 6 6 18"/>

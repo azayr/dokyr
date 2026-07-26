@@ -36,6 +36,7 @@ type TokenIssuer struct {
 	config TokenAuthConfig
 	key    *rsa.PrivateKey
 	keyID  string
+	x5c    []string
 }
 
 type TokenRequest struct {
@@ -65,7 +66,16 @@ func NewTokenIssuer(config TokenAuthConfig) (*TokenIssuer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &TokenIssuer{config: config, key: key, keyID: keyID}, nil
+	certificate, err := readCertificate(config.CertificatePath)
+	if err != nil {
+		return nil, err
+	}
+	return &TokenIssuer{
+		config: config,
+		key:    key,
+		keyID:  keyID,
+		x5c:    []string{base64.StdEncoding.EncodeToString(certificate.Raw)},
+	}, nil
 }
 
 func (i *TokenIssuer) Issue(user store.User, request TokenRequest) (string, int, time.Time, error) {
@@ -101,6 +111,9 @@ func (i *TokenIssuer) issue(subject, service string, access []AccessEntry) (stri
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	token.Header["kid"] = i.keyID
+	if len(i.x5c) != 0 {
+		token.Header["x5c"] = i.x5c
+	}
 	signed, err := token.SignedString(i.key)
 	if err != nil {
 		return "", 0, time.Time{}, err
@@ -200,6 +213,18 @@ func readPrivateKey(path string) (*rsa.PrivateKey, error) {
 		return nil, errors.New("registry token private key is not PEM")
 	}
 	return x509.ParsePKCS1PrivateKey(block.Bytes)
+}
+
+func readCertificate(path string) (*x509.Certificate, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(body)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, errors.New("registry token certificate is not PEM")
+	}
+	return x509.ParseCertificate(block.Bytes)
 }
 
 func randomTokenID() string {

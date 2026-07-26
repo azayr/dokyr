@@ -28,7 +28,7 @@ services:
       SMTP_NOTIFY_DEPLOYMENT_SUCCESSES: ${SMTP_NOTIFY_DEPLOYMENT_SUCCESSES:-false}
       CADDY_ADMIN_URL: unix:///run/caddy-admin/admin.sock
       SELFHOST_CONTROL_HOSTS: ${CONTROL_HOSTS:-localhost}
-      REGISTRY_HOSTS: ${REGISTRY_HOSTS:-registry.invalid}
+      REGISTRY_HOSTS: ${REGISTRY_HOSTS:-registry.localhost:8888}
       REGISTRY_STORAGE: ${REGISTRY_STORAGE:-filesystem}
       REGISTRY_S3_REGION: ${REGISTRY_S3_REGION:-}
       REGISTRY_S3_BUCKET: ${REGISTRY_S3_BUCKET:-}
@@ -77,7 +77,7 @@ services:
       retries: 20
 
   registry:
-    image: registry:2
+    image: registry:3
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-ec"]
     command:
@@ -85,14 +85,14 @@ services:
         if [ "$${REGISTRY_STORAGE:-filesystem}" = "s3" ]; then
           unset REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY
         else
-          unset REGISTRY_STORAGE_S3_REGION REGISTRY_STORAGE_S3_BUCKET REGISTRY_STORAGE_S3_ACCESSKEY REGISTRY_STORAGE_S3_SECRETKEY REGISTRY_STORAGE_S3_ENDPOINT REGISTRY_STORAGE_S3_FORCEPATHSTYLE REGISTRY_STORAGE_S3_SECURE REGISTRY_STORAGE_S3_ENCRYPT
+          unset REGISTRY_STORAGE_S3_REGION REGISTRY_STORAGE_S3_BUCKET REGISTRY_STORAGE_S3_ACCESSKEY REGISTRY_STORAGE_S3_SECRETKEY REGISTRY_STORAGE_S3_REGIONENDPOINT REGISTRY_STORAGE_S3_FORCEPATHSTYLE REGISTRY_STORAGE_S3_SECURE REGISTRY_STORAGE_S3_ENCRYPT
         fi
         for i in $$(seq 1 120); do
           [ -s /auth/registry-token.crt ] && break
           sleep 1
         done
         [ -s /auth/registry-token.crt ] || { echo "registry token certificate was not generated"; exit 1; }
-        exec /entrypoint.sh /etc/docker/registry/config.yml
+        exec /entrypoint.sh /etc/distribution/config.yml
     environment:
       REGISTRY_AUTH: token
       REGISTRY_AUTH_TOKEN_REALM: ${PUBLIC_URL:-http://localhost:8888}/api/registry/token
@@ -106,14 +106,17 @@ services:
       REGISTRY_STORAGE_S3_BUCKET: ${REGISTRY_S3_BUCKET:-}
       REGISTRY_STORAGE_S3_ACCESSKEY: ${REGISTRY_S3_ACCESSKEY:-}
       REGISTRY_STORAGE_S3_SECRETKEY: ${REGISTRY_S3_SECRETKEY:-}
-      REGISTRY_STORAGE_S3_ENDPOINT: ${REGISTRY_S3_ENDPOINT:-}
+      REGISTRY_STORAGE_S3_REGIONENDPOINT: ${REGISTRY_S3_ENDPOINT:-}
       REGISTRY_STORAGE_S3_FORCEPATHSTYLE: ${REGISTRY_S3_FORCEPATHSTYLE:-false}
       REGISTRY_STORAGE_S3_ENCRYPT: ${REGISTRY_S3_ENCRYPT:-false}
       REGISTRY_STORAGE_S3_SECURE: ${REGISTRY_S3_SECURE:-true}
+      OTEL_TRACES_EXPORTER: none
     volumes:
       - registry_data:/var/lib/registry
       - registry_auth:/auth:ro
-    networks: [control]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [control, proxy]
 
   caddy:
     image: caddy:2-alpine
