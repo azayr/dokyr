@@ -28,6 +28,19 @@ services:
       SMTP_NOTIFY_DEPLOYMENT_SUCCESSES: ${SMTP_NOTIFY_DEPLOYMENT_SUCCESSES:-false}
       CADDY_ADMIN_URL: unix:///run/caddy-admin/admin.sock
       SELFHOST_CONTROL_HOSTS: ${CONTROL_HOSTS:-localhost}
+      REGISTRY_HOSTS: ${REGISTRY_HOSTS:-registry.localhost:8888}
+      REGISTRY_STORAGE: ${REGISTRY_STORAGE:-filesystem}
+      REGISTRY_S3_REGION: ${REGISTRY_S3_REGION:-}
+      REGISTRY_S3_BUCKET: ${REGISTRY_S3_BUCKET:-}
+      REGISTRY_S3_ACCESSKEY: ${REGISTRY_S3_ACCESSKEY:-}
+      REGISTRY_S3_SECRETKEY: ${REGISTRY_S3_SECRETKEY:-}
+      REGISTRY_S3_ENDPOINT: ${REGISTRY_S3_ENDPOINT:-}
+      REGISTRY_S3_FORCEPATHSTYLE: ${REGISTRY_S3_FORCEPATHSTYLE:-false}
+      REGISTRY_S3_SECURE: ${REGISTRY_S3_SECURE:-true}
+      REGISTRY_TOKEN_ISSUER: ${REGISTRY_TOKEN_ISSUER:-dokyr-registry}
+      REGISTRY_TOKEN_SERVICE: ${REGISTRY_TOKEN_SERVICE:-dokyr-registry}
+      REGISTRY_TOKEN_PRIVATE_KEY_PATH: /run/registry-auth/registry-token.key
+      REGISTRY_TOKEN_CERTIFICATE_PATH: /run/registry-auth/registry-token.crt
       SELFHOST_PLATFORM_IMAGE: ${DOKYR_REGISTRY_IMAGE:-ghcr.io/azayr/dokyr}
       SELFHOST_UPDATE_CHANNEL: ${DOKYR_UPDATE_CHANNEL:-latest}
     volumes:
@@ -36,6 +49,7 @@ services:
       - /sys:/host/sys:ro
       - ${HOST_DISK_PATH:-.}:/host/disk:ro
       - caddy_admin:/run/caddy-admin
+      - registry_auth:/run/registry-auth
     networks: [control, proxy]
     depends_on:
       caddy:
@@ -62,11 +76,54 @@ services:
       timeout: 3s
       retries: 20
 
+  registry:
+    image: registry:3
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ "$${REGISTRY_STORAGE:-filesystem}" = "s3" ]; then
+          unset REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY
+        else
+          unset REGISTRY_STORAGE_S3_REGION REGISTRY_STORAGE_S3_BUCKET REGISTRY_STORAGE_S3_ACCESSKEY REGISTRY_STORAGE_S3_SECRETKEY REGISTRY_STORAGE_S3_REGIONENDPOINT REGISTRY_STORAGE_S3_FORCEPATHSTYLE REGISTRY_STORAGE_S3_SECURE REGISTRY_STORAGE_S3_ENCRYPT
+        fi
+        for i in $$(seq 1 120); do
+          [ -s /auth/registry-token.crt ] && break
+          sleep 1
+        done
+        [ -s /auth/registry-token.crt ] || { echo "registry token certificate was not generated"; exit 1; }
+        exec /entrypoint.sh /etc/distribution/config.yml
+    environment:
+      REGISTRY_AUTH: token
+      REGISTRY_AUTH_TOKEN_REALM: ${PUBLIC_URL:-http://localhost:8888}/api/registry/token
+      REGISTRY_AUTH_TOKEN_SERVICE: ${REGISTRY_TOKEN_SERVICE:-dokyr-registry}
+      REGISTRY_AUTH_TOKEN_ISSUER: ${REGISTRY_TOKEN_ISSUER:-dokyr-registry}
+      REGISTRY_AUTH_TOKEN_ROOTCERTBUNDLE: /auth/registry-token.crt
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      REGISTRY_STORAGE: ${REGISTRY_STORAGE:-filesystem}
+      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
+      REGISTRY_STORAGE_S3_REGION: ${REGISTRY_S3_REGION:-}
+      REGISTRY_STORAGE_S3_BUCKET: ${REGISTRY_S3_BUCKET:-}
+      REGISTRY_STORAGE_S3_ACCESSKEY: ${REGISTRY_S3_ACCESSKEY:-}
+      REGISTRY_STORAGE_S3_SECRETKEY: ${REGISTRY_S3_SECRETKEY:-}
+      REGISTRY_STORAGE_S3_REGIONENDPOINT: ${REGISTRY_S3_ENDPOINT:-}
+      REGISTRY_STORAGE_S3_FORCEPATHSTYLE: ${REGISTRY_S3_FORCEPATHSTYLE:-false}
+      REGISTRY_STORAGE_S3_ENCRYPT: ${REGISTRY_S3_ENCRYPT:-false}
+      REGISTRY_STORAGE_S3_SECURE: ${REGISTRY_S3_SECURE:-true}
+      OTEL_TRACES_EXPORTER: none
+    volumes:
+      - registry_data:/var/lib/registry
+      - registry_auth:/auth:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [control, proxy]
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
     environment:
       SELFHOST_CONTROL_HOSTS: ${CONTROL_HOSTS:-localhost}
+      REGISTRY_HOSTS: ${REGISTRY_HOSTS:-registry.invalid}
     ports:
       - "${HTTP_PORT:-8888}:80"
       - "${HTTPS_PORT:-8443}:443"
@@ -86,6 +143,8 @@ networks:
 
 volumes:
   postgres_data:
+  registry_data:
   caddy_data:
   caddy_config:
   caddy_admin:
+  registry_auth:

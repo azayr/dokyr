@@ -28,6 +28,7 @@
       items: [
         { href: '/servers', icon: 'server', label: 'Servers' },
         { href: '/proxy', icon: 'globe', label: 'Proxy' },
+        { href: '/registry', icon: 'layers', label: 'Registry' },
         { href: '/integrations', icon: 'git', label: 'Sources' }
       ]
     },

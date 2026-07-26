@@ -30,6 +30,7 @@ import (
 	"github.com/azayr/selfhost/internal/integration"
 	"github.com/azayr/selfhost/internal/mailer"
 	"github.com/azayr/selfhost/internal/platformupdate"
+	"github.com/azayr/selfhost/internal/registry"
 	"github.com/azayr/selfhost/internal/runtime"
 	"github.com/azayr/selfhost/internal/secretbox"
 	"github.com/azayr/selfhost/internal/store"
@@ -41,10 +42,13 @@ type API struct {
 	docker            *runtime.Docker
 	auth              *auth.Manager
 	integrations      *integration.Service
+	registry          *registry.Service
+	registryTokens    *registry.TokenIssuer
 	box               *secretbox.Box
 	log               *slog.Logger
 	caddy             *caddy.Client
 	publicURL         string
+	registryHosts     []string
 	domainMu          sync.Mutex
 	databaseMu        sync.Mutex
 	applicationMu     sync.Mutex
@@ -70,16 +74,19 @@ type domainBindingInput struct {
 	Rules        []domainRuleInput `json:"rules"`
 }
 
-func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integration.Service, box *secretbox.Box, caddyClient *caddy.Client, updates *platformupdate.Client, publicURL string, log *slog.Logger) *API {
+func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integration.Service, registryTokens *registry.TokenIssuer, box *secretbox.Box, caddyClient *caddy.Client, updates *platformupdate.Client, publicURL string, registryHosts []string, log *slog.Logger) *API {
 	return &API{
 		store:             s,
 		docker:            d,
 		auth:              a,
 		integrations:      integrations,
+		registry:          registry.New(d, registryTokens),
+		registryTokens:    registryTokens,
 		box:               box,
 		caddy:             caddyClient,
 		updates:           updates,
 		publicURL:         strings.TrimRight(publicURL, "/"),
+		registryHosts:     append([]string(nil), registryHosts...),
 		log:               log,
 		deploymentCancels: make(map[string]context.CancelFunc),
 	}
@@ -104,6 +111,7 @@ func (a *API) Handler() http.Handler {
 	public.HandleFunc("GET /api/integrations/oauth/{provider}/callback", a.oauthCallback)
 	public.HandleFunc("POST /api/webhooks/github", a.githubWebhook)
 	public.HandleFunc("POST /api/webhooks/registry/{id}/{token}", a.registryWebhook)
+	public.HandleFunc("GET /api/registry/token", a.registryToken)
 	protected.HandleFunc("GET /api/auth/me", a.me)
 	protected.HandleFunc("GET /api/account/security", a.accountSecurity)
 	protected.HandleFunc("PUT /api/account/password", a.updatePassword)
@@ -177,6 +185,16 @@ func (a *API) Handler() http.Handler {
 	protected.HandleFunc("POST /api/infrastructure/cleanup", a.dockerCleanup)
 	protected.HandleFunc("GET /api/infrastructure/cleanup/schedule", a.cleanupSchedule)
 	protected.HandleFunc("PUT /api/infrastructure/cleanup/schedule", a.updateCleanupSchedule)
+	protected.HandleFunc("GET /api/registry/status", a.registryStatus)
+	protected.HandleFunc("GET /api/registry/settings", a.registrySettings)
+	protected.HandleFunc("PUT /api/registry/settings", a.updateRegistrySettings)
+	protected.HandleFunc("GET /api/registry/access-tokens", a.registryAccessTokens)
+	protected.HandleFunc("POST /api/registry/access-tokens", a.createRegistryAccessToken)
+	protected.HandleFunc("DELETE /api/registry/access-tokens/{id}", a.deleteRegistryAccessToken)
+	protected.HandleFunc("GET /api/registry/repositories", a.registryRepositories)
+	protected.HandleFunc("DELETE /api/registry/repositories/{name}/tags/{tag}", a.registryDeleteTag)
+	protected.HandleFunc("DELETE /api/registry/tags", a.registryDeleteTag)
+	protected.HandleFunc("POST /api/registry/garbage-collection", a.registryGarbageCollect)
 	root := http.NewServeMux()
 	root.Handle("/api/auth/me", a.auth.Require(protected))
 	root.Handle("/api/account/", a.auth.Require(protected))
@@ -190,10 +208,12 @@ func (a *API) Handler() http.Handler {
 	root.Handle("/api/services/", a.auth.Require(protected))
 	root.Handle("GET /api/integrations/oauth/{provider}/callback", public)
 	root.Handle("GET /api/integrations/github/install/callback", public)
+	root.Handle("GET /api/registry/token", public)
 	root.Handle("/api/integrations", a.auth.Require(protected))
 	root.Handle("/api/integrations/", a.auth.Require(protected))
 	root.Handle("/api/caddy/", a.auth.Require(protected))
 	root.Handle("/api/infrastructure/", a.auth.Require(protected))
+	root.Handle("/api/registry/", a.auth.Require(protected))
 	root.Handle("/", public)
 	return withJSON(root)
 }

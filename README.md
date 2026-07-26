@@ -80,6 +80,42 @@ The published ports are configurable. For a production server where ports 80 and
 HTTP_PORT=80 HTTPS_PORT=443 docker compose up -d --build
 ```
 
+## Built-in container registry
+
+Dokyr includes the Docker Distribution registry. By default it stores images in
+a Docker volume and is routed by Caddy through the hostnames listed in
+`REGISTRY_HOSTS`:
+
+```sh
+REGISTRY_HOSTS=registry.example.com docker compose up -d
+docker login registry.example.com
+docker tag myapp:latest registry.example.com/myapp:latest
+docker push registry.example.com/myapp:latest
+```
+
+Open **Infrastructure → Registry → Access tokens** and generate a personal
+read-only or read-write credential. Use your Dokyr email as the Docker username
+and the one-time token as the password. Dokyr account passwords are never
+accepted by the registry.
+
+The stored credential is an irreversible hash. During login, Dokyr exchanges it
+for a short-lived bearer token scoped to the repository/actions requested by
+Docker. Read-only credentials can pull but cannot push. Read-write credentials
+can push for `developer`, `admin`, and `owner` users; `viewer` users remain
+pull-only. Revoke a credential from the Registry page to invalidate it
+immediately.
+
+For S3-compatible storage, set `REGISTRY_STORAGE=s3` and fill the
+`REGISTRY_S3_*` variables in `.env`. For MinIO, set
+`REGISTRY_S3_ENDPOINT=https://minio.example.com` and
+`REGISTRY_S3_FORCEPATHSTYLE=true`. Use `REGISTRY_S3_SECURE=false` only when the
+endpoint is plain HTTP.
+
+The registry is not exported with a direct host port. Caddy routes matching
+registry hosts to the internal `registry:5000` service on the control network,
+and Docker Distribution validates Dokyr-issued bearer tokens before accepting
+push or pull requests.
+
 For frontend development, run the API and web app separately:
 
 ```sh
