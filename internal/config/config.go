@@ -45,6 +45,7 @@ type Config struct {
 	GitLabClientSecret           string
 	GitLabBaseURL                string
 	CaddyAdminURL                string
+	ControlUpstream              string
 	ControlHosts                 []string
 	RegistryHosts                []string
 	RegistryTokenIssuer          string
@@ -75,6 +76,7 @@ func Load() Config {
 		GitLabClientSecret:           os.Getenv("GITLAB_CLIENT_SECRET"),
 		GitLabBaseURL:                env("GITLAB_BASE_URL", "https://gitlab.com"),
 		CaddyAdminURL:                env("CADDY_ADMIN_URL", "unix:///run/caddy-admin/admin.sock"),
+		ControlUpstream:              env("DOKYR_CONTROL_UPSTREAM", "selfhost:8080"),
 		ControlHosts:                 splitHosts(env("SELFHOST_CONTROL_HOSTS", "localhost")),
 		RegistryHosts:                splitHosts(env("REGISTRY_HOSTS", "registry.invalid")),
 		RegistryTokenIssuer:          env("REGISTRY_TOKEN_ISSUER", "dokyr-registry"),

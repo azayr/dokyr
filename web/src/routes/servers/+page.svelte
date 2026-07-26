@@ -6,7 +6,7 @@
 
   const infrastructureViews = ['monitoring', 'cleanup'];
   const controlServices = [
-    { key: 'selfhost', name: 'Dokyr', role: 'Control plane', icon: 'box' },
+    { key: 'dokyr', name: 'Dokyr', role: 'Control plane', icon: 'box' },
     { key: 'postgres', name: 'PostgreSQL', role: 'State database', icon: 'database' },
     { key: 'caddy', name: 'Caddy', role: 'Ingress proxy', icon: 'globe' }
   ];
@@ -54,7 +54,7 @@
   let controlPlaneRefreshing = false;
   let controlPlaneLoaded = false;
   let controlPlaneError = '';
-  let selectedControlService = 'selfhost';
+  let selectedControlService = 'dokyr';
   let controlLogs = [];
   let controlLogsLoading = false;
   let controlLogsLoaded = false;

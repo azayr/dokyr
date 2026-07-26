@@ -11,16 +11,16 @@ func TestEndpointConfigurationPreservesStableAliases(t *testing.T) {
 	container.NetworkSettings.Networks = map[string]struct {
 		Aliases []string `json:"Aliases"`
 	}{
-		"dokyr_control":  {Aliases: []string{"1234567890ab", "dokyr-selfhost-1", "selfhost"}},
-		"selfhost-proxy": {Aliases: []string{"selfhost"}},
+		"dokyr_control":  {Aliases: []string{"1234567890ab", "dokyr-dokyr-1", "dokyr"}},
+		"selfhost-proxy": {Aliases: []string{"dokyr"}},
 	}
 	got := endpointConfiguration(container)
 	control := got["dokyr_control"].(map[string]any)["Aliases"]
-	if !reflect.DeepEqual(control, []string{"dokyr-selfhost-1", "selfhost"}) {
+	if !reflect.DeepEqual(control, []string{"dokyr-dokyr-1", "dokyr"}) {
 		t.Fatalf("control aliases = %#v", control)
 	}
 	proxy := got["selfhost-proxy"].(map[string]any)["Aliases"]
-	if !reflect.DeepEqual(proxy, []string{"selfhost"}) {
+	if !reflect.DeepEqual(proxy, []string{"dokyr"}) {
 		t.Fatalf("proxy aliases = %#v", proxy)
 	}
 }

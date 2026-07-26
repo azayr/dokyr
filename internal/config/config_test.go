@@ -34,3 +34,14 @@ func TestSMTPBootstrapReadsEnvironment(t *testing.T) {
 		t.Fatalf("unexpected SMTP notification settings: %+v", loaded.SMTP)
 	}
 }
+
+func TestControlUpstreamDefaultsToLegacyServiceAndAcceptsDokyr(t *testing.T) {
+	t.Setenv("DOKYR_CONTROL_UPSTREAM", "")
+	if loaded := Load(); loaded.ControlUpstream != "selfhost:8080" {
+		t.Fatalf("default control upstream = %q", loaded.ControlUpstream)
+	}
+	t.Setenv("DOKYR_CONTROL_UPSTREAM", "dokyr:8080")
+	if loaded := Load(); loaded.ControlUpstream != "dokyr:8080" {
+		t.Fatalf("configured control upstream = %q", loaded.ControlUpstream)
+	}
+}

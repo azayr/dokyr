@@ -136,6 +136,10 @@ for file in compose.yaml Caddyfile .env.example; do
   mv "${file}.tmp" "$file"
 done
 
+if ! grep -q '^  dokyr:$' compose.yaml 2>/dev/null; then
+  error "Downloaded compose.yaml does not contain the Dokyr service"
+fi
+
 # The repository compose.yaml includes `build: .` for local development. The
 # published image is used for a VPS install, so remove the build directive so the
 # installer does not need a local Dockerfile.
@@ -205,7 +209,7 @@ log "Pulling images..."
 $COMPOSE_CMD pull
 
 log "Starting Dokyr..."
-$COMPOSE_CMD up -d
+$COMPOSE_CMD up -d --remove-orphans
 
 printf '\n'
 log "Dokyr is starting up."

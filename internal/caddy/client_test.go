@@ -65,12 +65,12 @@ func TestApplyLoadsHostRoutes(t *testing.T) {
 }
 
 func TestRenderRegistryHostsBeforeCatchAll(t *testing.T) {
-	client, err := New("http://caddy:2019", []string{"panel.example.com"}, []string{"registry.example.com", "Registry2.Example.com"})
+	client, err := New("http://caddy:2019", []string{"panel.example.com"}, []string{"registry.example.com", "Registry2.Example.com"}, "dokyr:8080")
 	if err != nil {
 		t.Fatal(err)
 	}
 	configuration := client.Render(nil)
-	for _, expected := range []string{"@control host panel.example.com", "@registry host registry.example.com registry2.example.com", "handle /api/registry/token", "reverse_proxy registry:5000"} {
+	for _, expected := range []string{"@control host panel.example.com", "reverse_proxy dokyr:8080", "@registry host registry.example.com registry2.example.com", "handle /api/registry/token", "reverse_proxy registry:5000"} {
 		if !strings.Contains(configuration, expected) {
 			t.Fatalf("rendered registry config does not contain %q:\n%s", expected, configuration)
 		}
@@ -80,6 +80,21 @@ func TestRenderRegistryHostsBeforeCatchAll(t *testing.T) {
 	}
 	if strings.Index(configuration, "@registry host") > strings.LastIndex(configuration, "respond \"Not Found\" 404") {
 		t.Fatal("registry route should be rendered before the 404 catch-all")
+	}
+}
+
+func TestControlUpstreamValidation(t *testing.T) {
+	client, err := New("http://caddy:2019", []string{"localhost"}, nil, "dokyr:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.ControlUpstream() != "dokyr:8080" {
+		t.Fatalf("control upstream = %q", client.ControlUpstream())
+	}
+	for _, invalid := range []string{"dokyr", "http://dokyr:8080", "dokyr:0", "bad_name:8080"} {
+		if _, err := New("http://caddy:2019", []string{"localhost"}, nil, invalid); err == nil {
+			t.Fatalf("control upstream %q should fail", invalid)
+		}
 	}
 }
 
@@ -151,7 +166,7 @@ func TestRenderMultipleDomainsWithIndependentPaths(t *testing.T) {
 }
 
 func TestRenderRegistryDomainWithAutomaticHTTPS(t *testing.T) {
-	client, err := New("http://caddy:2019", []string{"control.example.com"}, []string{"registry.invalid"})
+	client, err := New("http://caddy:2019", []string{"control.example.com"}, []string{"registry.invalid"}, "dokyr:8080")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,13 +176,13 @@ func TestRenderRegistryDomainWithAutomaticHTTPS(t *testing.T) {
 		Upstream: "registry:5000",
 		Paths: []PathRoute{{
 			Path:     "/api/registry/token",
-			Upstream: "selfhost:8080",
+			Upstream: "dokyr:8080",
 		}},
 	}})
 	for _, expected := range []string{
 		"registry.example.com {",
 		"path /api/registry/token",
-		"reverse_proxy selfhost:8080",
+		"reverse_proxy dokyr:8080",
 		"reverse_proxy registry:5000",
 		"redir https://{host}{uri} permanent",
 	} {

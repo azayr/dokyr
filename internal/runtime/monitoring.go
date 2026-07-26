@@ -471,7 +471,11 @@ func controlPlaneService(labels map[string]string, project string) string {
 		return ""
 	}
 	switch service := labels["com.docker.compose.service"]; service {
-	case "selfhost", "postgres", "caddy":
+	case "dokyr":
+		return service
+	case "selfhost":
+		return "dokyr"
+	case "postgres", "caddy":
 		return service
 	default:
 		return ""
@@ -480,7 +484,7 @@ func controlPlaneService(labels map[string]string, project string) string {
 
 func controlPlaneOrder(service string) int {
 	switch service {
-	case "selfhost":
+	case "dokyr":
 		return 0
 	case "postgres":
 		return 1

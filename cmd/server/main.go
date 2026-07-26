@@ -98,7 +98,7 @@ func main() {
 	if err := docker.StartMetricsCollector(metricsContext); err != nil {
 		log.Warn("initial Docker metrics sample failed; collector will retry", "error", err)
 	}
-	caddyClient, err := caddy.New(cfg.CaddyAdminURL, cfg.ControlHosts, cfg.RegistryHosts)
+	caddyClient, err := caddy.New(cfg.CaddyAdminURL, cfg.ControlHosts, cfg.RegistryHosts, cfg.ControlUpstream)
 	if err != nil {
 		log.Error("configure Caddy client", "error", err)
 		os.Exit(1)

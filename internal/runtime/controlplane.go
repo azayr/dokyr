@@ -19,6 +19,9 @@ import (
 // project name the operator chose.
 func (d *Docker) ControlPlaneContainerName(ctx context.Context, service string) (string, error) {
 	service = strings.ToLower(strings.TrimSpace(service))
+	if service == "selfhost" {
+		service = "dokyr"
+	}
 	if service == "" {
 		return "", errors.New("control-plane service is required")
 	}
@@ -40,9 +43,15 @@ func (d *Docker) ControlPlaneContainerName(ctx context.Context, service string) 
 	if project == "" {
 		return "", errors.New("control-plane project is not discoverable")
 	}
-	for _, container := range containers {
-		if container.Labels["com.docker.compose.project"] == project && container.Labels["com.docker.compose.service"] == service {
-			return strings.TrimPrefix(firstString(container.Names), "/"), nil
+	candidates := []string{service}
+	if service == "dokyr" {
+		candidates = append(candidates, "selfhost")
+	}
+	for _, candidate := range candidates {
+		for _, container := range containers {
+			if container.Labels["com.docker.compose.project"] == project && container.Labels["com.docker.compose.service"] == candidate {
+				return strings.TrimPrefix(firstString(container.Names), "/"), nil
+			}
 		}
 	}
 	return "", ErrNotFound

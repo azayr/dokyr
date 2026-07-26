@@ -10,6 +10,37 @@ import (
 	"testing"
 )
 
+func TestControlPlaneContainerNameSupportsDokyrAndLegacyServiceNames(t *testing.T) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		service string
+		name    string
+	}{
+		{service: "dokyr", name: "dokyr-dokyr-1"},
+		{service: "selfhost", name: "dokyr-selfhost-1"},
+	} {
+		t.Run(test.service, func(t *testing.T) {
+			docker := &Docker{client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if request.Method != http.MethodGet || request.URL.Path != "/containers/json" {
+					t.Fatalf("unexpected Docker request: %s %s", request.Method, request.URL.Path)
+				}
+				body := `[{"Id":"` + hostname + `-control","Names":["/` + test.name + `"],"Labels":{"com.docker.compose.project":"dokyr","com.docker.compose.service":"` + test.service + `"}}]`
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+			})}}
+			name, err := docker.ControlPlaneContainerName(context.Background(), "dokyr")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name != test.name {
+				t.Fatalf("container name = %q, want %q", name, test.name)
+			}
+		})
+	}
+}
+
 func TestRecreateControlPlaneServicePreservesComposeLabelsAndOneStorageDriver(t *testing.T) {
 	hostname, err := os.Hostname()
 	if err != nil {

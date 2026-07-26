@@ -840,12 +840,12 @@ Returns `201` with `{ "registry": RegistryCredential }`. `registryUrl` must be a
 | --- | --- | --- |
 | `GET` | `/api/infrastructure/metrics` | Global Docker/host metrics |
 | `GET` | `/api/infrastructure/control-plane/metrics` | Metrics for Dokyr, PostgreSQL, and Caddy |
-| `GET` | `/api/infrastructure/control-plane/logs?service=selfhost&lines=300` | Logs for one Dokyr control-plane service |
+| `GET` | `/api/infrastructure/control-plane/logs?service=dokyr&lines=300` | Logs for one Dokyr control-plane service |
 | `GET` | `/api/infrastructure/cleanup` | Cleanup preview |
 | `POST` | `/api/infrastructure/cleanup` | Run selected Docker cleanup |
 
 Metrics are global to the Docker host. Per-project metrics belong at `/api/projects/{projectId}/metrics`.
-Control-plane metrics are restricted to the current Dokyr Compose project and the `selfhost`, `postgres`, and `caddy` services. Control-plane logs accept only those service names and between 1 and 1000 lines.
+Control-plane metrics are restricted to the current Dokyr Compose project and the `dokyr`, `postgres`, and `caddy` services. Control-plane logs accept only those service names and between 1 and 1000 lines. The legacy `selfhost` query value remains accepted for upgraded installations.
 
 Cleanup preview returns Docker’s reclaimable-resource information. To perform cleanup:
 

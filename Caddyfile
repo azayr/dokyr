@@ -6,16 +6,16 @@
   encode zstd gzip
   @controlIP header_regexp Host "^(?:[0-9]{1,3}[.]){3}[0-9]{1,3}(?::[0-9]+)?$"
   handle @controlIP {
-    reverse_proxy selfhost:8080
+    reverse_proxy {$DOKYR_CONTROL_UPSTREAM:dokyr:8080}
   }
   @control host {$SELFHOST_CONTROL_HOSTS:localhost 127.0.0.1}
   handle @control {
-    reverse_proxy selfhost:8080
+    reverse_proxy {$DOKYR_CONTROL_UPSTREAM:dokyr:8080}
   }
   @registry host {$REGISTRY_HOSTS:registry.invalid}
   handle @registry {
     handle /api/registry/token {
-      reverse_proxy selfhost:8080
+      reverse_proxy {$DOKYR_CONTROL_UPSTREAM:dokyr:8080}
     }
     reverse_proxy registry:5000
   }

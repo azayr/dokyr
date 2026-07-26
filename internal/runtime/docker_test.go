@@ -367,7 +367,7 @@ func TestControlPlaneMetricsFiltersAndOrdersDependencies(t *testing.T) {
 		Containers: []ContainerMetrics{
 			{ID: "project", ProjectID: "project-one", State: "running", CPUPercent: 20},
 			{ID: "proxy", ControlPlaneService: "caddy", State: "running", CPUPercent: 2, MemoryUsage: 50},
-			{ID: "api", ControlPlaneService: "selfhost", State: "running", CPUPercent: 5, MemoryUsage: 100},
+			{ID: "api", ControlPlaneService: "dokyr", State: "running", CPUPercent: 5, MemoryUsage: 100},
 			{ID: "database", ControlPlaneService: "postgres", State: "running", CPUPercent: 3, MemoryUsage: 200},
 		},
 	}}}
@@ -385,7 +385,7 @@ func TestControlPlaneMetricsFiltersAndOrdersDependencies(t *testing.T) {
 	for _, container := range snapshot.Containers {
 		got = append(got, container.ControlPlaneService)
 	}
-	if strings.Join(got, ",") != "selfhost,postgres,caddy" {
+	if strings.Join(got, ",") != "dokyr,postgres,caddy" {
 		t.Fatalf("control-plane order = %v", got)
 	}
 }
@@ -400,6 +400,14 @@ func TestControlPlaneServiceUsesCurrentComposeProject(t *testing.T) {
 	}
 	if got := controlPlaneService(labels, "another-project"); got != "" {
 		t.Fatalf("controlPlaneService accepted a different Compose project: %q", got)
+	}
+	labels["com.docker.compose.service"] = "dokyr"
+	if got := controlPlaneService(labels, "dokyr"); got != "dokyr" {
+		t.Fatalf("controlPlaneService = %q, want dokyr", got)
+	}
+	labels["com.docker.compose.service"] = "selfhost"
+	if got := controlPlaneService(labels, "dokyr"); got != "dokyr" {
+		t.Fatalf("legacy controlPlaneService = %q, want dokyr", got)
 	}
 }
 

@@ -72,7 +72,7 @@ flowchart TB
 
     subgraph Compose["Dokyr Compose application"]
         Caddy["caddy<br/>host 8888→80<br/>host 8443→443"]
-        Control["selfhost<br/>listens on 8080 internally"]
+        Control["dokyr<br/>listens on 8080 internally"]
         MetaDB["postgres:17-alpine<br/>not published"]
         AdminSock[("caddy_admin volume<br/>admin.sock")]
         MetaVol[("postgres_data")]
@@ -312,7 +312,7 @@ flowchart TD
     Request["HTTP request reaches Caddy"] --> Assigned{"Host assigned to project?"}
     Assigned -->|Yes| Workload["Proxy to selfhost-prj_*:80"]
     Assigned -->|No| ControlIP{"Host is an IPv4 address?"}
-    ControlIP -->|Yes| Panel["Proxy to selfhost:8080"]
+    ControlIP -->|Yes| Panel["Proxy to dokyr:8080"]
     ControlIP -->|No| ControlHost{"Host is in CONTROL_HOSTS?"}
     ControlHost -->|Yes| Panel
     ControlHost -->|No| NotFound["404 Not Found"]
@@ -426,6 +426,7 @@ Applied filenames are recorded in `schema_migrations`. Each migration runs in it
 | `GITLAB_CLIENT_ID`, `GITLAB_CLIENT_SECRET` | empty | GitLab OAuth application |
 | `GITLAB_BASE_URL` | `https://gitlab.com` | GitLab SaaS or self-managed base URL |
 | `CADDY_ADMIN_URL` | `unix:///run/caddy-admin/admin.sock` | Caddy admin API transport |
+| `DOKYR_CONTROL_UPSTREAM` | `selfhost:8080` | Internal Caddy upstream; new Compose installations set `dokyr:8080`, while the default preserves older stacks |
 | `SELFHOST_CONTROL_HOSTS` | `localhost` | Space/comma/semicolon-separated panel host allowlist |
 | `HTTP_PORT` | `8888` | Compose-only Caddy HTTP host port |
 | `HTTPS_PORT` | `8443` | Compose-only Caddy HTTPS TCP/UDP host port |
@@ -473,8 +474,8 @@ Use the published control-plane image in a Compose override:
 
 ```yaml
 services:
-  selfhost:
-    image: brahoul/selfhost:latest
+  dokyr:
+    image: ghcr.io/azayr/dokyr:latest
     build: null
 ```
 
@@ -484,7 +485,7 @@ Useful runtime checks:
 
 ```sh
 docker compose ps
-docker compose logs -f selfhost
+docker compose logs -f dokyr
 docker compose logs -f caddy
 docker inspect selfhost-<project-id>
 docker network inspect selfhost-proxy

@@ -246,8 +246,11 @@ func (a *API) controlPlaneMetrics(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) controlPlaneLogs(w http.ResponseWriter, r *http.Request) {
 	service := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("service")))
-	if service != "selfhost" && service != "postgres" && service != "caddy" {
-		bad(w, "service must be selfhost, postgres, or caddy")
+	if service == "selfhost" {
+		service = "dokyr"
+	}
+	if service != "dokyr" && service != "postgres" && service != "caddy" {
+		bad(w, "service must be dokyr, postgres, or caddy")
 		return
 	}
 	tail := 300
@@ -1472,7 +1475,7 @@ func (a *API) managedRoutes(ctx context.Context) ([]caddy.Route, error) {
 			Upstream: "registry:5000",
 			Paths: []caddy.PathRoute{{
 				Path:     "/api/registry/token",
-				Upstream: "selfhost:8080",
+				Upstream: a.caddy.ControlUpstream(),
 			}},
 		})
 	}
