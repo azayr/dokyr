@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"strconv"
 	"strings"
@@ -52,6 +54,7 @@ type Config struct {
 	RegistryTokenService         string
 	RegistryTokenPrivateKeyPath  string
 	RegistryTokenCertificatePath string
+	RegistryInternalSecret       string
 	PlatformImage                string
 	UpdateChannel                string
 	SMTP                         SMTPBootstrap
@@ -63,6 +66,9 @@ func Load() Config {
 	smtpFromEmail := strings.TrimSpace(os.Getenv("SMTP_FROM_EMAIL"))
 	registryStorage := strings.ToLower(strings.TrimSpace(env("REGISTRY_STORAGE", "filesystem")))
 	s3Bucket := strings.TrimSpace(os.Getenv("REGISTRY_S3_BUCKET"))
+	encryptionKey := env("SELFHOST_ENCRYPTION_KEY", "development-encryption-key-change-now")
+	registryInternalSeed := env("REGISTRY_INTERNAL_SECRET", encryptionKey)
+	registryInternalHash := sha256.Sum256([]byte(registryInternalSeed))
 	return Config{
 		Address:                      env("SELFHOST_ADDRESS", ":8080"),
 		Frontend:                     env("SELFHOST_FRONTEND_DIR", "./web/build"),
@@ -71,7 +77,7 @@ func Load() Config {
 		JWTIssuer:                    env("SELFHOST_JWT_ISSUER", "selfhost"),
 		CookieSecure:                 env("SELFHOST_COOKIE_SECURE", "false") == "true",
 		PublicURL:                    env("SELFHOST_PUBLIC_URL", "http://localhost:8080"),
-		EncryptionKey:                env("SELFHOST_ENCRYPTION_KEY", "development-encryption-key-change-now"),
+		EncryptionKey:                encryptionKey,
 		GitLabClientID:               os.Getenv("GITLAB_CLIENT_ID"),
 		GitLabClientSecret:           os.Getenv("GITLAB_CLIENT_SECRET"),
 		GitLabBaseURL:                env("GITLAB_BASE_URL", "https://gitlab.com"),
@@ -83,6 +89,7 @@ func Load() Config {
 		RegistryTokenService:         env("REGISTRY_TOKEN_SERVICE", "dokyr-registry"),
 		RegistryTokenPrivateKeyPath:  env("REGISTRY_TOKEN_PRIVATE_KEY_PATH", "/run/registry-auth/registry-token.key"),
 		RegistryTokenCertificatePath: env("REGISTRY_TOKEN_CERTIFICATE_PATH", "/run/registry-auth/registry-token.crt"),
+		RegistryInternalSecret:       hex.EncodeToString(registryInternalHash[:]),
 		PlatformImage:                env("SELFHOST_PLATFORM_IMAGE", "ghcr.io/azayr/dokyr"),
 		UpdateChannel:                env("SELFHOST_UPDATE_CHANNEL", "latest"),
 		SMTP: SMTPBootstrap{

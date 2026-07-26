@@ -191,6 +191,7 @@ type ApplicationService struct {
 	SourceType            string    `json:"sourceType"`
 	ImageURL              string    `json:"imageUrl"`
 	RegistryID            string    `json:"registryId,omitempty"`
+	InternalRegistry      bool      `json:"internalRegistry"`
 	ConnectionID          string    `json:"connectionId,omitempty"`
 	Repository            string    `json:"repository,omitempty"`
 	Branch                string    `json:"branch,omitempty"`
@@ -934,7 +935,7 @@ func splitEnvironment(value string) []string {
 }
 
 func (s *Store) ApplicationServices(ctx context.Context, projectID string) ([]ApplicationService, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,project_id,name,source_type,image_url,COALESCE(registry_id,''),COALESCE(connection_id,''),repository,branch,dockerfile_path,build_context,build_strategy,auto_deploy,registry_webhook_secret_encrypted,registry_webhook_tag,container_port,command,health_check_type,health_check_path,health_check_command,health_check_timeout_seconds,environment,environment_secret_keys,status,last_error,created_at,updated_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id,project_id,name,source_type,image_url,COALESCE(registry_id,''),internal_registry,COALESCE(connection_id,''),repository,branch,dockerfile_path,build_context,build_strategy,auto_deploy,registry_webhook_secret_encrypted,registry_webhook_tag,container_port,command,health_check_type,health_check_path,health_check_command,health_check_timeout_seconds,environment,environment_secret_keys,status,last_error,created_at,updated_at
 		FROM application_services WHERE project_id=$1 ORDER BY created_at,id`, projectID)
 	if err != nil {
 		return nil, err
@@ -944,7 +945,7 @@ func (s *Store) ApplicationServices(ctx context.Context, projectID string) ([]Ap
 	for rows.Next() {
 		var item ApplicationService
 		var secretKeys string
-		if err := rows.Scan(&item.ID, &item.ProjectID, &item.Name, &item.SourceType, &item.ImageURL, &item.RegistryID, &item.ConnectionID, &item.Repository, &item.Branch, &item.DockerfilePath, &item.BuildContext, &item.BuildStrategy, &item.AutoDeploy, &item.RegistryWebhookSecret, &item.RegistryWebhookTag, &item.ContainerPort, &item.Command, &item.HealthCheckType, &item.HealthCheckPath, &item.HealthCheckCommand, &item.HealthCheckTimeout, &item.EnvironmentEncrypted, &secretKeys, &item.Status, &item.LastError, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.ProjectID, &item.Name, &item.SourceType, &item.ImageURL, &item.RegistryID, &item.InternalRegistry, &item.ConnectionID, &item.Repository, &item.Branch, &item.DockerfilePath, &item.BuildContext, &item.BuildStrategy, &item.AutoDeploy, &item.RegistryWebhookSecret, &item.RegistryWebhookTag, &item.ContainerPort, &item.Command, &item.HealthCheckType, &item.HealthCheckPath, &item.HealthCheckCommand, &item.HealthCheckTimeout, &item.EnvironmentEncrypted, &secretKeys, &item.Status, &item.LastError, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		item.EnvironmentSecretKeys = splitEnvironment(secretKeys)
@@ -956,8 +957,8 @@ func (s *Store) ApplicationServices(ctx context.Context, projectID string) ([]Ap
 func (s *Store) ApplicationService(ctx context.Context, id string) (ApplicationService, error) {
 	var item ApplicationService
 	var secretKeys string
-	err := s.db.QueryRowContext(ctx, `SELECT id,project_id,name,source_type,image_url,COALESCE(registry_id,''),COALESCE(connection_id,''),repository,branch,dockerfile_path,build_context,build_strategy,auto_deploy,registry_webhook_secret_encrypted,registry_webhook_tag,container_port,command,health_check_type,health_check_path,health_check_command,health_check_timeout_seconds,environment,environment_secret_keys,status,last_error,created_at,updated_at
-		FROM application_services WHERE id=$1`, id).Scan(&item.ID, &item.ProjectID, &item.Name, &item.SourceType, &item.ImageURL, &item.RegistryID, &item.ConnectionID, &item.Repository, &item.Branch, &item.DockerfilePath, &item.BuildContext, &item.BuildStrategy, &item.AutoDeploy, &item.RegistryWebhookSecret, &item.RegistryWebhookTag, &item.ContainerPort, &item.Command, &item.HealthCheckType, &item.HealthCheckPath, &item.HealthCheckCommand, &item.HealthCheckTimeout, &item.EnvironmentEncrypted, &secretKeys, &item.Status, &item.LastError, &item.CreatedAt, &item.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id,project_id,name,source_type,image_url,COALESCE(registry_id,''),internal_registry,COALESCE(connection_id,''),repository,branch,dockerfile_path,build_context,build_strategy,auto_deploy,registry_webhook_secret_encrypted,registry_webhook_tag,container_port,command,health_check_type,health_check_path,health_check_command,health_check_timeout_seconds,environment,environment_secret_keys,status,last_error,created_at,updated_at
+		FROM application_services WHERE id=$1`, id).Scan(&item.ID, &item.ProjectID, &item.Name, &item.SourceType, &item.ImageURL, &item.RegistryID, &item.InternalRegistry, &item.ConnectionID, &item.Repository, &item.Branch, &item.DockerfilePath, &item.BuildContext, &item.BuildStrategy, &item.AutoDeploy, &item.RegistryWebhookSecret, &item.RegistryWebhookTag, &item.ContainerPort, &item.Command, &item.HealthCheckType, &item.HealthCheckPath, &item.HealthCheckCommand, &item.HealthCheckTimeout, &item.EnvironmentEncrypted, &secretKeys, &item.Status, &item.LastError, &item.CreatedAt, &item.UpdatedAt)
 	item.EnvironmentSecretKeys = splitEnvironment(secretKeys)
 	return item, err
 }
@@ -971,8 +972,8 @@ func (s *Store) CreateApplicationService(ctx context.Context, service Applicatio
 	if service.ConnectionID != "" {
 		connectionID = service.ConnectionID
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO application_services(id,project_id,name,source_type,image_url,registry_id,connection_id,repository,branch,dockerfile_path,build_context,build_strategy,auto_deploy,registry_webhook_secret_encrypted,registry_webhook_tag,container_port,command,health_check_type,health_check_path,health_check_command,health_check_timeout_seconds,environment,environment_secret_keys,status)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`, service.ID, service.ProjectID, service.Name, service.SourceType, service.ImageURL, registryID, connectionID, service.Repository, service.Branch, service.DockerfilePath, service.BuildContext, service.BuildStrategy, service.AutoDeploy, service.RegistryWebhookSecret, service.RegistryWebhookTag, service.ContainerPort, service.Command, service.HealthCheckType, service.HealthCheckPath, service.HealthCheckCommand, service.HealthCheckTimeout, service.EnvironmentEncrypted, strings.Join(service.EnvironmentSecretKeys, "\n"), service.Status)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO application_services(id,project_id,name,source_type,image_url,registry_id,internal_registry,connection_id,repository,branch,dockerfile_path,build_context,build_strategy,auto_deploy,registry_webhook_secret_encrypted,registry_webhook_tag,container_port,command,health_check_type,health_check_path,health_check_command,health_check_timeout_seconds,environment,environment_secret_keys,status)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`, service.ID, service.ProjectID, service.Name, service.SourceType, service.ImageURL, registryID, service.InternalRegistry, connectionID, service.Repository, service.Branch, service.DockerfilePath, service.BuildContext, service.BuildStrategy, service.AutoDeploy, service.RegistryWebhookSecret, service.RegistryWebhookTag, service.ContainerPort, service.Command, service.HealthCheckType, service.HealthCheckPath, service.HealthCheckCommand, service.HealthCheckTimeout, service.EnvironmentEncrypted, strings.Join(service.EnvironmentSecretKeys, "\n"), service.Status)
 	return err
 }
 
@@ -991,8 +992,8 @@ func (s *Store) CreateImportedServices(ctx context.Context, applications []Appli
 		if service.ConnectionID != "" {
 			connectionID = service.ConnectionID
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO application_services(id,project_id,name,source_type,image_url,registry_id,connection_id,repository,branch,dockerfile_path,build_context,build_strategy,auto_deploy,registry_webhook_secret_encrypted,registry_webhook_tag,container_port,command,health_check_type,health_check_path,health_check_command,health_check_timeout_seconds,environment,environment_secret_keys,status)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`, service.ID, service.ProjectID, service.Name, service.SourceType, service.ImageURL, registryID, connectionID, service.Repository, service.Branch, service.DockerfilePath, service.BuildContext, service.BuildStrategy, service.AutoDeploy, service.RegistryWebhookSecret, service.RegistryWebhookTag, service.ContainerPort, service.Command, service.HealthCheckType, service.HealthCheckPath, service.HealthCheckCommand, service.HealthCheckTimeout, service.EnvironmentEncrypted, strings.Join(service.EnvironmentSecretKeys, "\n"), service.Status); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO application_services(id,project_id,name,source_type,image_url,registry_id,internal_registry,connection_id,repository,branch,dockerfile_path,build_context,build_strategy,auto_deploy,registry_webhook_secret_encrypted,registry_webhook_tag,container_port,command,health_check_type,health_check_path,health_check_command,health_check_timeout_seconds,environment,environment_secret_keys,status)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`, service.ID, service.ProjectID, service.Name, service.SourceType, service.ImageURL, registryID, service.InternalRegistry, connectionID, service.Repository, service.Branch, service.DockerfilePath, service.BuildContext, service.BuildStrategy, service.AutoDeploy, service.RegistryWebhookSecret, service.RegistryWebhookTag, service.ContainerPort, service.Command, service.HealthCheckType, service.HealthCheckPath, service.HealthCheckCommand, service.HealthCheckTimeout, service.EnvironmentEncrypted, strings.Join(service.EnvironmentSecretKeys, "\n"), service.Status); err != nil {
 			return err
 		}
 	}
@@ -1019,8 +1020,8 @@ func (s *Store) UpdateApplicationService(ctx context.Context, service Applicatio
 		connectionID = service.ConnectionID
 	}
 	result, err := s.db.ExecContext(ctx, `UPDATE application_services
-		SET name=$2,source_type=$3,image_url=$4,registry_id=$5,connection_id=$6,repository=$7,branch=$8,dockerfile_path=$9,build_context=$10,build_strategy=$11,container_port=$12,command=$13,health_check_type=$14,health_check_path=$15,health_check_command=$16,health_check_timeout_seconds=$17,updated_at=NOW()
-		WHERE id=$1`, service.ID, service.Name, service.SourceType, service.ImageURL, registryID, connectionID, service.Repository, service.Branch, service.DockerfilePath, service.BuildContext, service.BuildStrategy, service.ContainerPort, service.Command, service.HealthCheckType, service.HealthCheckPath, service.HealthCheckCommand, service.HealthCheckTimeout)
+		SET name=$2,source_type=$3,image_url=$4,registry_id=$5,internal_registry=$6,connection_id=$7,repository=$8,branch=$9,dockerfile_path=$10,build_context=$11,build_strategy=$12,container_port=$13,command=$14,health_check_type=$15,health_check_path=$16,health_check_command=$17,health_check_timeout_seconds=$18,updated_at=NOW()
+		WHERE id=$1`, service.ID, service.Name, service.SourceType, service.ImageURL, registryID, service.InternalRegistry, connectionID, service.Repository, service.Branch, service.DockerfilePath, service.BuildContext, service.BuildStrategy, service.ContainerPort, service.Command, service.HealthCheckType, service.HealthCheckPath, service.HealthCheckCommand, service.HealthCheckTimeout)
 	if err != nil {
 		return err
 	}
@@ -1075,6 +1076,29 @@ func (s *Store) AutoDeployRepositoryServices(ctx context.Context, repository, br
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM application_services
 		WHERE source_type='repository' AND auto_deploy=TRUE AND LOWER(repository)=LOWER($1) AND branch=$2
 		ORDER BY created_at,id`, repository, branch)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ApplicationService{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		item, err := s.ApplicationService(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) AutoDeployInternalRegistryServices(ctx context.Context, image string) ([]ApplicationService, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM application_services
+		WHERE source_type='image' AND internal_registry=TRUE AND auto_deploy=TRUE AND image_url=$1
+		ORDER BY created_at,id`, image)
 	if err != nil {
 		return nil, err
 	}

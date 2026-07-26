@@ -119,10 +119,12 @@ CONTROL_HOSTS="${CONTROL_HOSTS:-$(read_input "Control panel hostnames (space-sep
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(read_input "PostgreSQL password (leave blank to generate)" "")}"
 JWT_SECRET="${JWT_SECRET:-$(read_input "JWT secret (leave blank to generate)" "")}"
 ENCRYPTION_KEY="${ENCRYPTION_KEY:-$(read_input "Encryption key (leave blank to generate)" "")}"
+REGISTRY_INTERNAL_SECRET="${REGISTRY_INTERNAL_SECRET:-}"
 
 if [ -z "$POSTGRES_PASSWORD" ]; then POSTGRES_PASSWORD="$(random_secret)"; fi
 if [ -z "$JWT_SECRET" ]; then JWT_SECRET="$(random_secret)"; fi
 if [ -z "$ENCRYPTION_KEY" ]; then ENCRYPTION_KEY="$(random_secret)"; fi
+if [ -z "$REGISTRY_INTERNAL_SECRET" ]; then REGISTRY_INTERNAL_SECRET="$(random_secret)"; fi
 
 printf '\n'
 log "Downloading Compose files into ${INSTALL_DIR}..."
@@ -169,6 +171,7 @@ DOKYR_UPDATE_CHANNEL=${DOKYR_UPDATE_CHANNEL}
 REGISTRY_HOSTS=${REGISTRY_HOSTS}
 REGISTRY_TOKEN_ISSUER=dokyr-registry
 REGISTRY_TOKEN_SERVICE=dokyr-registry
+REGISTRY_INTERNAL_SECRET=${REGISTRY_INTERNAL_SECRET}
 REGISTRY_STORAGE=filesystem
 
 # Optional S3-compatible storage for the registry.

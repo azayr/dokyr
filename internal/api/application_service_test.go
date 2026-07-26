@@ -29,6 +29,30 @@ func TestCleanApplicationServiceInputKeepsValidBuildStrategyForImage(t *testing.
 	}
 }
 
+func TestCleanApplicationServiceInputAcceptsManagedRegistryImage(t *testing.T) {
+	clean, err := cleanApplicationServiceInput(applicationServiceInput{
+		Name: "api", SourceType: "image", ImageURL: "team/api:latest", RegistryID: "reg_external",
+		InternalRegistry: true, AutoDeploy: true, ContainerPort: 8080,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !clean.InternalRegistry || !clean.AutoDeploy || clean.RegistryID != "" || clean.ImageURL != "team/api:latest" {
+		t.Fatalf("unexpected managed registry input: %#v", clean)
+	}
+}
+
+func TestCleanApplicationServiceInputRejectsUnselectedManagedRegistryImage(t *testing.T) {
+	for _, image := range []string{"", "team/api", "registry:5000/team/api:latest", "team/api@sha256:abc"} {
+		_, err := cleanApplicationServiceInput(applicationServiceInput{
+			Name: "api", SourceType: "image", ImageURL: image, InternalRegistry: true, ContainerPort: 8080,
+		})
+		if err == nil {
+			t.Fatalf("expected managed registry image %q to be rejected", image)
+		}
+	}
+}
+
 func TestCleanApplicationServiceInputNormalizesHTTPHealthCheck(t *testing.T) {
 	clean, err := cleanApplicationServiceInput(applicationServiceInput{
 		Name: "api", SourceType: "image", ImageURL: "example/api:latest", ContainerPort: 8080,

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -129,21 +130,30 @@ func (a *API) registryToken(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusUnauthorized, map[string]string{"error": "registry login required"})
 		return
 	}
-	passwordHash := sha256.Sum256([]byte(password))
-	user, accessToken, err := a.store.UserByRegistryAccessToken(
-		r.Context(),
-		strings.TrimSpace(username),
-		hex.EncodeToString(passwordHash[:]),
-	)
-	if err != nil {
-		w.Header().Set("WWW-Authenticate", `Basic realm="Dokyr Registry"`)
-		write(w, http.StatusUnauthorized, map[string]string{"error": "invalid registry credentials"})
-		return
+	var user store.User
+	permission := ""
+	if strings.TrimSpace(username) == "dokyr-internal" && a.registryInternalSecret != "" && hmac.Equal([]byte(password), []byte(a.registryInternalSecret)) {
+		user = store.User{Email: "dokyr-internal", Role: "owner"}
+		permission = "read_only"
+	} else {
+		passwordHash := sha256.Sum256([]byte(password))
+		accessUser, accessToken, err := a.store.UserByRegistryAccessToken(
+			r.Context(),
+			strings.TrimSpace(username),
+			hex.EncodeToString(passwordHash[:]),
+		)
+		if err != nil {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Dokyr Registry"`)
+			write(w, http.StatusUnauthorized, map[string]string{"error": "invalid registry credentials"})
+			return
+		}
+		user = accessUser
+		permission = accessToken.Permission
 	}
 	token, expiresIn, issuedAt, err := a.registryTokens.Issue(user, registry.TokenRequest{
 		Service:    r.URL.Query().Get("service"),
 		Scopes:     r.URL.Query()["scope"],
-		Permission: accessToken.Permission,
+		Permission: permission,
 	})
 	if err != nil {
 		if errors.Is(err, registry.ErrInvalidService) {
@@ -430,7 +440,7 @@ func (a *API) registryRepositories(w http.ResponseWriter, r *http.Request) {
 		write(w, 502, map[string]string{"error": "could not list registry repositories"})
 		return
 	}
-	write(w, 200, map[string]any{"repositories": repositories, "count": len(repositories)})
+	write(w, 200, map[string]any{"repositories": repositories, "count": len(repositories), "registryHosts": a.effectiveRegistryHosts(r.Context())})
 }
 
 func (a *API) registryDeleteTag(w http.ResponseWriter, r *http.Request) {

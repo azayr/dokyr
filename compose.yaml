@@ -42,6 +42,7 @@ services:
       REGISTRY_TOKEN_SERVICE: ${REGISTRY_TOKEN_SERVICE:-dokyr-registry}
       REGISTRY_TOKEN_PRIVATE_KEY_PATH: /run/registry-auth/registry-token.key
       REGISTRY_TOKEN_CERTIFICATE_PATH: /run/registry-auth/registry-token.crt
+      REGISTRY_INTERNAL_SECRET: ${REGISTRY_INTERNAL_SECRET:-${ENCRYPTION_KEY:-development-encryption-key-change-now}}
       SELFHOST_PLATFORM_IMAGE: ${DOKYR_REGISTRY_IMAGE:-ghcr.io/azayr/dokyr}
       SELFHOST_UPDATE_CHANNEL: ${DOKYR_UPDATE_CHANNEL:-latest}
     volumes:
@@ -93,7 +94,24 @@ services:
           sleep 1
         done
         [ -s /auth/registry-token.crt ] || { echo "registry token certificate was not generated"; exit 1; }
-        exec /entrypoint.sh /etc/distribution/config.yml
+        [ -n "$${REGISTRY_INTERNAL_SECRET:-}" ] || { echo "REGISTRY_INTERNAL_SECRET is required"; exit 1; }
+        internal_registry_secret="$$(printf %s "$${REGISTRY_INTERNAL_SECRET}" | sha256sum | awk '{print $$1}')"
+        cp /etc/distribution/config.yml /tmp/registry-config.yml
+        {
+          printf '\nnotifications:\n'
+          printf '  endpoints:\n'
+          printf '    - name: dokyr\n'
+          printf '      url: http://dokyr:8080/api/registry/events\n'
+          printf '      headers:\n'
+          printf '        Authorization: ["Bearer %s"]\n' "$${internal_registry_secret}"
+          printf '      timeout: 2s\n'
+          printf '      threshold: 5\n'
+          printf '      backoff: 2s\n'
+          printf '      ignore:\n'
+          printf '        actions: [pull, delete, mount]\n'
+        } >> /tmp/registry-config.yml
+        unset REGISTRY_INTERNAL_SECRET
+        exec /entrypoint.sh /tmp/registry-config.yml
     environment:
       REGISTRY_AUTH: token
       REGISTRY_AUTH_TOKEN_REALM: ${PUBLIC_URL:-http://localhost:8888}/api/registry/token
@@ -111,6 +129,7 @@ services:
       REGISTRY_STORAGE_S3_FORCEPATHSTYLE: ${REGISTRY_S3_FORCEPATHSTYLE:-false}
       REGISTRY_STORAGE_S3_ENCRYPT: ${REGISTRY_S3_ENCRYPT:-false}
       REGISTRY_STORAGE_S3_SECURE: ${REGISTRY_S3_SECURE:-true}
+      REGISTRY_INTERNAL_SECRET: ${REGISTRY_INTERNAL_SECRET:-${ENCRYPTION_KEY:-development-encryption-key-change-now}}
       OTEL_TRACES_EXPORTER: none
     volumes:
       - registry_data:/var/lib/registry

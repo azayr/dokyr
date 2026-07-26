@@ -108,7 +108,7 @@ func main() {
 		log.Error("configure platform updates", "error", err)
 		os.Exit(1)
 	}
-	apiHandler := api.New(db, docker, authManager, integrations, registryTokens, box, caddyClient, updateClient, cfg.PublicURL, cfg.RegistryHosts, log)
+	apiHandler := api.New(db, docker, authManager, integrations, registryTokens, box, caddyClient, updateClient, cfg.PublicURL, cfg.RegistryHosts, cfg.RegistryInternalSecret, log)
 	smtpImported, err := apiHandler.BootstrapSMTPSettings(context.Background(), cfg.SMTP)
 	if err != nil {
 		log.Error("bootstrap SMTP settings", "error", err)

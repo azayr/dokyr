@@ -38,28 +38,29 @@ import (
 )
 
 type API struct {
-	store             *store.Store
-	docker            *runtime.Docker
-	auth              *auth.Manager
-	integrations      *integration.Service
-	registry          *registry.Service
-	registryTokens    *registry.TokenIssuer
-	box               *secretbox.Box
-	log               *slog.Logger
-	caddy             *caddy.Client
-	publicURL         string
-	registryHosts     []string
-	domainMu          sync.Mutex
-	databaseMu        sync.Mutex
-	applicationMu     sync.Mutex
-	projectMu         sync.Mutex
-	cleanupMu         sync.Mutex
-	deploymentMu      sync.Mutex
-	updateMu          sync.Mutex
-	updateExecutionMu sync.Mutex
-	updates           *platformupdate.Client
-	latestRelease     *platformupdate.Release
-	deploymentCancels map[string]context.CancelFunc
+	store                  *store.Store
+	docker                 *runtime.Docker
+	auth                   *auth.Manager
+	integrations           *integration.Service
+	registry               *registry.Service
+	registryTokens         *registry.TokenIssuer
+	box                    *secretbox.Box
+	log                    *slog.Logger
+	caddy                  *caddy.Client
+	publicURL              string
+	registryHosts          []string
+	registryInternalSecret string
+	domainMu               sync.Mutex
+	databaseMu             sync.Mutex
+	applicationMu          sync.Mutex
+	projectMu              sync.Mutex
+	cleanupMu              sync.Mutex
+	deploymentMu           sync.Mutex
+	updateMu               sync.Mutex
+	updateExecutionMu      sync.Mutex
+	updates                *platformupdate.Client
+	latestRelease          *platformupdate.Release
+	deploymentCancels      map[string]context.CancelFunc
 }
 
 type domainRuleInput struct {
@@ -74,21 +75,22 @@ type domainBindingInput struct {
 	Rules        []domainRuleInput `json:"rules"`
 }
 
-func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integration.Service, registryTokens *registry.TokenIssuer, box *secretbox.Box, caddyClient *caddy.Client, updates *platformupdate.Client, publicURL string, registryHosts []string, log *slog.Logger) *API {
+func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integration.Service, registryTokens *registry.TokenIssuer, box *secretbox.Box, caddyClient *caddy.Client, updates *platformupdate.Client, publicURL string, registryHosts []string, registryInternalSecret string, log *slog.Logger) *API {
 	return &API{
-		store:             s,
-		docker:            d,
-		auth:              a,
-		integrations:      integrations,
-		registry:          registry.New(d, registryTokens),
-		registryTokens:    registryTokens,
-		box:               box,
-		caddy:             caddyClient,
-		updates:           updates,
-		publicURL:         strings.TrimRight(publicURL, "/"),
-		registryHosts:     append([]string(nil), registryHosts...),
-		log:               log,
-		deploymentCancels: make(map[string]context.CancelFunc),
+		store:                  s,
+		docker:                 d,
+		auth:                   a,
+		integrations:           integrations,
+		registry:               registry.New(d, registryTokens),
+		registryTokens:         registryTokens,
+		box:                    box,
+		caddy:                  caddyClient,
+		updates:                updates,
+		publicURL:              strings.TrimRight(publicURL, "/"),
+		registryHosts:          append([]string(nil), registryHosts...),
+		registryInternalSecret: registryInternalSecret,
+		log:                    log,
+		deploymentCancels:      make(map[string]context.CancelFunc),
 	}
 }
 func (a *API) Handler() http.Handler {
@@ -111,6 +113,7 @@ func (a *API) Handler() http.Handler {
 	public.HandleFunc("GET /api/integrations/oauth/{provider}/callback", a.oauthCallback)
 	public.HandleFunc("POST /api/webhooks/github", a.githubWebhook)
 	public.HandleFunc("POST /api/webhooks/registry/{id}/{token}", a.registryWebhook)
+	public.HandleFunc("POST /api/registry/events", a.internalRegistryEvents)
 	public.HandleFunc("GET /api/registry/token", a.registryToken)
 	protected.HandleFunc("GET /api/auth/me", a.me)
 	protected.HandleFunc("GET /api/account/security", a.accountSecurity)
@@ -211,6 +214,7 @@ func (a *API) Handler() http.Handler {
 	root.Handle("GET /api/integrations/oauth/{provider}/callback", public)
 	root.Handle("GET /api/integrations/github/install/callback", public)
 	root.Handle("GET /api/registry/token", public)
+	root.Handle("POST /api/registry/events", public)
 	root.Handle("/api/integrations", a.auth.Require(protected))
 	root.Handle("/api/integrations/", a.auth.Require(protected))
 	root.Handle("/api/caddy/", a.auth.Require(protected))
@@ -1739,7 +1743,7 @@ func (a *API) createRegistry(w http.ResponseWriter, r *http.Request) {
 func (a *API) checkRegistry(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.FromContext(r.Context())
 	registryID := strings.TrimSpace(r.PathValue("id"))
-	registryAuth, err := a.registryAuthForService(r.Context(), registryID, claims.Subject)
+	registryAuth, err := a.registryAuthForService(r.Context(), store.ApplicationService{RegistryID: registryID}, claims.Subject)
 	if store.NotFound(err) {
 		write(w, http.StatusNotFound, map[string]string{"error": "registry not found"})
 		return
@@ -2780,6 +2784,8 @@ type applicationServiceInput struct {
 	SourceType                string `json:"sourceType"`
 	ImageURL                  string `json:"imageUrl"`
 	RegistryID                string `json:"registryId"`
+	InternalRegistry          bool   `json:"internalRegistry"`
+	AutoDeploy                bool   `json:"autoDeploy"`
 	ConnectionID              string `json:"connectionId"`
 	Repository                string `json:"repository"`
 	Branch                    string `json:"branch"`
@@ -2823,6 +2829,14 @@ func cleanApplicationServiceInput(in applicationServiceInput) (applicationServic
 		if in.ImageURL == "" || strings.ContainsAny(in.ImageURL, " \t\r\n") {
 			return in, errors.New("enter a valid container image")
 		}
+		if in.InternalRegistry {
+			if _, _, ok := internalRegistryImageParts(in.ImageURL); !ok {
+				return in, errors.New("choose an image and tag from Dokyr Registry")
+			}
+			in.RegistryID = ""
+		} else {
+			in.AutoDeploy = false
+		}
 		// build_strategy is irrelevant for a prebuilt image, but the database
 		// deliberately keeps it constrained to the supported strategy values.
 		// Preserve the schema default instead of writing an empty string, which
@@ -2865,6 +2879,7 @@ func cleanApplicationServiceInput(in applicationServiceInput) (applicationServic
 			in.DockerfilePath, in.BuildContext = "", "."
 		}
 		in.ImageURL, in.RegistryID = "", ""
+		in.InternalRegistry, in.AutoDeploy = false, false
 	}
 	if in.ContainerPort == 0 {
 		in.ContainerPort = 80
@@ -2973,7 +2988,7 @@ func (a *API) createApplicationService(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	service := store.ApplicationService{ID: newID("svc"), ProjectID: projectID, Name: in.Name, SourceType: in.SourceType, ImageURL: in.ImageURL, RegistryID: in.RegistryID, ConnectionID: in.ConnectionID, Repository: in.Repository, Branch: in.Branch, DockerfilePath: in.DockerfilePath, BuildContext: in.BuildContext, BuildStrategy: in.BuildStrategy, ContainerPort: in.ContainerPort, Command: in.Command, HealthCheckType: in.HealthCheckType, HealthCheckPath: in.HealthCheckPath, HealthCheckCommand: in.HealthCheckCommand, HealthCheckTimeout: in.HealthCheckTimeoutSeconds, EnvironmentEncrypted: environmentEncrypted, Status: "created"}
+	service := store.ApplicationService{ID: newID("svc"), ProjectID: projectID, Name: in.Name, SourceType: in.SourceType, ImageURL: in.ImageURL, RegistryID: in.RegistryID, InternalRegistry: in.InternalRegistry, ConnectionID: in.ConnectionID, Repository: in.Repository, Branch: in.Branch, DockerfilePath: in.DockerfilePath, BuildContext: in.BuildContext, BuildStrategy: in.BuildStrategy, AutoDeploy: in.AutoDeploy, RegistryWebhookTag: imageTag(in.ImageURL), ContainerPort: in.ContainerPort, Command: in.Command, HealthCheckType: in.HealthCheckType, HealthCheckPath: in.HealthCheckPath, HealthCheckCommand: in.HealthCheckCommand, HealthCheckTimeout: in.HealthCheckTimeoutSeconds, EnvironmentEncrypted: environmentEncrypted, Status: "created"}
 	if err := a.store.CreateApplicationService(r.Context(), service); err != nil {
 		problem(w, err)
 		return
@@ -3040,6 +3055,7 @@ func (a *API) updateApplicationService(w http.ResponseWriter, r *http.Request) {
 	service.SourceType = clean.SourceType
 	service.ImageURL = clean.ImageURL
 	service.RegistryID = clean.RegistryID
+	service.InternalRegistry = clean.InternalRegistry
 	service.ConnectionID = clean.ConnectionID
 	service.Repository = clean.Repository
 	service.Branch = clean.Branch
@@ -3086,6 +3102,59 @@ func validRegistryTag(value string) bool {
 	return true
 }
 
+func internalRegistryImageParts(value string) (string, string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.Contains(value, "@") {
+		return "", "", false
+	}
+	slash := strings.LastIndex(value, "/")
+	colon := strings.LastIndex(value, ":")
+	if colon <= slash || colon == len(value)-1 {
+		return "", "", false
+	}
+	repository, tag := value[:colon], value[colon+1:]
+	if repository == "" || strings.HasPrefix(repository, "/") || strings.HasSuffix(repository, "/") || !validRegistryTag(tag) {
+		return "", "", false
+	}
+	for _, part := range strings.Split(repository, "/") {
+		if part == "" || strings.ContainsAny(part, " \t\r\n:") {
+			return "", "", false
+		}
+	}
+	return repository, tag, true
+}
+
+func imageTag(value string) string {
+	_, tag, ok := internalRegistryImageParts(value)
+	if ok {
+		return tag
+	}
+	clean := strings.SplitN(strings.TrimSpace(value), "@", 2)[0]
+	slash := strings.LastIndex(clean, "/")
+	colon := strings.LastIndex(clean, ":")
+	if colon > slash && colon < len(clean)-1 {
+		return clean[colon+1:]
+	}
+	return "latest"
+}
+
+func (a *API) internalRegistryHost(ctx context.Context) (string, error) {
+	hosts := a.effectiveRegistryHosts(ctx)
+	if len(hosts) == 0 {
+		return "", errors.New("attach a domain to Dokyr Registry before deploying its images")
+	}
+	host := strings.TrimSpace(hosts[0])
+	host = strings.TrimPrefix(strings.TrimPrefix(host, "https://"), "http://")
+	host = strings.TrimRight(host, "/")
+	if host == "" || strings.HasSuffix(strings.ToLower(host), ".invalid") {
+		return "", errors.New("attach a domain to Dokyr Registry before deploying its images")
+	}
+	if a.registryInternalSecret == "" {
+		return "", errors.New("Dokyr Registry internal authentication is not configured")
+	}
+	return host, nil
+}
+
 func (a *API) deploymentTriggerResponse(ctx context.Context, service store.ApplicationService) (map[string]any, error) {
 	response := map[string]any{
 		"serviceId":              service.ID,
@@ -3096,6 +3165,7 @@ func (a *API) deploymentTriggerResponse(ctx context.Context, service store.Appli
 		"registryWebhookTag":     service.RegistryWebhookTag,
 		"webhookUrl":             "",
 		"webhookConfigured":      false,
+		"internalRegistry":       service.InternalRegistry,
 	}
 	if service.SourceType == "repository" {
 		config, err := a.store.ProviderAppConfig(ctx, "github")
@@ -3112,6 +3182,11 @@ func (a *API) deploymentTriggerResponse(ctx context.Context, service store.Appli
 				response["webhookConfigured"] = true
 			}
 		}
+		return response, nil
+	}
+	if service.InternalRegistry {
+		response["registryWebhookEnabled"] = service.AutoDeploy
+		response["webhookConfigured"] = true
 		return response, nil
 	}
 	if service.RegistryWebhookSecret == "" {
@@ -3178,6 +3253,12 @@ func (a *API) updateApplicationServiceDeploymentTriggers(w http.ResponseWriter, 
 				return
 			}
 		}
+	} else if service.InternalRegistry {
+		autoDeploy = in.AutoDeploy
+		registrySecret = ""
+		if autoDeploy && registryTag == "" {
+			registryTag = imageTag(service.ImageURL)
+		}
 	} else {
 		autoDeploy = in.RegistryWebhookEnabled
 		if in.RegistryWebhookEnabled && registrySecret == "" {
@@ -3209,11 +3290,18 @@ func (a *API) updateApplicationServiceDeploymentTriggers(w http.ResponseWriter, 
 	write(w, 200, response)
 }
 
-func (a *API) registryAuthForService(ctx context.Context, registryID, userID string) (*runtime.RegistryAuth, error) {
-	if registryID == "" {
+func (a *API) registryAuthForService(ctx context.Context, service store.ApplicationService, userID string) (*runtime.RegistryAuth, error) {
+	if service.InternalRegistry {
+		host, err := a.internalRegistryHost(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &runtime.RegistryAuth{Username: "dokyr-internal", Password: a.registryInternalSecret, ServerAddress: host}, nil
+	}
+	if service.RegistryID == "" {
 		return nil, nil
 	}
-	credential, err := a.store.Registry(ctx, registryID, userID)
+	credential, err := a.store.Registry(ctx, service.RegistryID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -3263,13 +3351,23 @@ func (a *API) startApplicationServiceDeployment(ctx context.Context, serviceID, 
 	if environmentValue != "" {
 		service.Environment = strings.Split(environmentValue, "\n")
 	}
-	registryAuth, err := a.registryAuthForService(ctx, service.RegistryID, userID)
+	registryAuth, err := a.registryAuthForService(ctx, service, userID)
 	if err != nil {
+		if service.InternalRegistry {
+			return service, store.Deployment{}, fmt.Errorf("Dokyr Registry is unavailable: %w", err)
+		}
 		return service, store.Deployment{}, errors.New("registry credential is unavailable")
 	}
 	var sourceConnection *store.SourceConnection
 	var repository *integration.Repository
 	commit := service.ImageURL
+	if service.InternalRegistry {
+		host, hostErr := a.internalRegistryHost(ctx)
+		if hostErr != nil {
+			return service, store.Deployment{}, hostErr
+		}
+		service.ImageURL = host + "/" + service.ImageURL
+	}
 	if service.SourceType == "repository" {
 		connection, err := a.store.SourceConnection(ctx, service.ConnectionID, userID)
 		if err != nil {
@@ -3497,6 +3595,78 @@ func (a *API) registryWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, http.StatusAccepted, map[string]any{"triggered": true, "deployment": deployment.ID})
+}
+
+func (a *API) internalRegistryEvents(w http.ResponseWriter, r *http.Request) {
+	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+	expected := "Bearer " + a.registryInternalSecret
+	if a.registryInternalSecret == "" || !hmac.Equal([]byte(authorization), []byte(expected)) {
+		write(w, http.StatusUnauthorized, map[string]string{"error": "invalid registry event credentials"})
+		return
+	}
+	body, err := webhookBody(w, r)
+	if err != nil {
+		bad(w, "registry event body is too large")
+		return
+	}
+	var envelope struct {
+		Events []struct {
+			ID     string `json:"id"`
+			Action string `json:"action"`
+			Target struct {
+				Repository string `json:"repository"`
+				Tag        string `json:"tag"`
+				Digest     string `json:"digest"`
+			} `json:"target"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		bad(w, "invalid registry event payload")
+		return
+	}
+	owner, err := a.store.OwnerUser(r.Context())
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	deploymentIDs := []string{}
+	duplicates := 0
+	for _, event := range envelope.Events {
+		repository := strings.Trim(strings.TrimSpace(event.Target.Repository), "/")
+		tag := strings.TrimSpace(event.Target.Tag)
+		if event.Action != "push" || repository == "" || !validRegistryTag(tag) {
+			continue
+		}
+		deliveryID := strings.TrimSpace(event.ID)
+		if deliveryID == "" {
+			sum := sha256.Sum256([]byte(repository + "\x00" + tag + "\x00" + event.Target.Digest))
+			deliveryID = hex.EncodeToString(sum[:])
+		}
+		claimed, claimErr := a.store.ClaimWebhookDelivery(r.Context(), "dokyr-registry", deliveryID)
+		if claimErr != nil {
+			a.log.Warn("claim internal registry event", "event", deliveryID, "error", claimErr)
+			continue
+		}
+		if !claimed {
+			duplicates++
+			continue
+		}
+		image := repository + ":" + tag
+		services, listErr := a.store.AutoDeployInternalRegistryServices(r.Context(), image)
+		if listErr != nil {
+			a.log.Warn("list internal registry auto-deploy services", "image", image, "error", listErr)
+			continue
+		}
+		for _, service := range services {
+			_, deployment, startErr := a.startApplicationServiceDeployment(r.Context(), service.ID, owner.ID, "Auto-deploy "+service.Name+" from Dokyr Registry", event.Target.Digest)
+			if startErr != nil {
+				a.log.Warn("start internal registry auto-deploy", "service", service.ID, "image", image, "error", startErr)
+				continue
+			}
+			deploymentIDs = append(deploymentIDs, deployment.ID)
+		}
+	}
+	write(w, http.StatusAccepted, map[string]any{"triggered": len(deploymentIDs), "deployments": deploymentIDs, "duplicates": duplicates})
 }
 
 func (a *API) runApplicationServiceDeployment(deploymentCtx context.Context, deployment store.Deployment, service store.ApplicationService, registryAuth *runtime.RegistryAuth, sourceConnection *store.SourceConnection, repository *integration.Repository, started time.Time) {

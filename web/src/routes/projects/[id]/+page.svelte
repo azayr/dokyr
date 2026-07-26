@@ -28,7 +28,7 @@
   let serviceModal = false;
   let serviceSaving = false;
   let serviceError = '';
-  let serviceForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '', healthCheckType: 'none', healthCheckPath: '/', healthCheckCommand: '', healthCheckTimeoutSeconds: 60, environment: '' };
+  let serviceForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', internalRegistry: false, autoDeploy: false, connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '', healthCheckType: 'none', healthCheckPath: '/', healthCheckCommand: '', healthCheckTimeoutSeconds: 60, environment: '' };
   let composeModal = false;
   let composeText = '';
   let composeFileName = '';
@@ -41,12 +41,18 @@
   let serviceRepositoriesError = '';
   let serviceRepositoryQuery = '';
   let serviceRepositoryPickerOpen = false;
+  let internalRegistryRepositories = [];
+  let internalRegistryLoading = false;
+  let internalRegistryError = '';
+  let internalRegistryHosts = [];
+  let internalRegistryRepository = '';
+  let internalRegistryTag = '';
   let serviceSettingsService = null;
-  let serviceSettingsForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '', healthCheckType: 'none', healthCheckPath: '/', healthCheckCommand: '', healthCheckTimeoutSeconds: 60 };
+  let serviceSettingsForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', internalRegistry: false, connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '', healthCheckType: 'none', healthCheckPath: '/', healthCheckCommand: '', healthCheckTimeoutSeconds: 60 };
   let serviceSettingsSaving = false;
   let serviceSettingsError = '';
   let runtimeSettingsServiceId = '';
-  let runtimeSettingsForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '', healthCheckType: 'none', healthCheckPath: '/', healthCheckCommand: '', healthCheckTimeoutSeconds: 60 };
+  let runtimeSettingsForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', internalRegistry: false, connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '', healthCheckType: 'none', healthCheckPath: '/', healthCheckCommand: '', healthCheckTimeoutSeconds: 60 };
   let runtimeSettingsBusy = '';
   let runtimeSettingsError = '';
   let runtimeSettingsNotice = '';
@@ -834,7 +840,10 @@
     serviceRepositoriesError = '';
     serviceRepositoryQuery = '';
     serviceRepositoryPickerOpen = false;
-    serviceForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '', healthCheckType: 'none', healthCheckPath: '/', healthCheckCommand: '', healthCheckTimeoutSeconds: 60, environment: '' };
+    serviceForm = { name: '', sourceType: 'image', imageUrl: '', containerPort: 80, registryId: '', internalRegistry: false, autoDeploy: false, connectionId: '', repository: '', branch: 'main', dockerfilePath: 'Dockerfile', buildContext: '.', buildStrategy: 'dockerfile', command: '', healthCheckType: 'none', healthCheckPath: '/', healthCheckCommand: '', healthCheckTimeoutSeconds: 60, environment: '' };
+    internalRegistryRepository = '';
+    internalRegistryTag = '';
+    internalRegistryError = '';
     serviceModal = true;
   }
 
@@ -913,12 +922,47 @@
   }
 
   async function chooseServiceSource(sourceType) {
-    serviceForm = { ...serviceForm, sourceType, imageUrl: sourceType === 'image' ? serviceForm.imageUrl : '', registryId: sourceType === 'image' ? serviceForm.registryId : '', connectionId: sourceType === 'repository' ? serviceForm.connectionId : '', repository: sourceType === 'repository' ? serviceForm.repository : '' };
+    serviceForm = { ...serviceForm, sourceType, imageUrl: sourceType === 'image' ? serviceForm.imageUrl : '', registryId: sourceType === 'image' ? serviceForm.registryId : '', internalRegistry: sourceType === 'image' ? serviceForm.internalRegistry : false, autoDeploy: sourceType === 'image' ? serviceForm.autoDeploy : false, connectionId: sourceType === 'repository' ? serviceForm.connectionId : '', repository: sourceType === 'repository' ? serviceForm.repository : '' };
     serviceRepositoriesError = '';
     if (sourceType === 'repository' && !serviceForm.connectionId && (integrations.connections || []).length === 1) {
       serviceForm.connectionId = integrations.connections[0].id;
     }
     if (sourceType === 'repository' && serviceForm.connectionId) await loadServiceRepositories(serviceForm.connectionId);
+  }
+
+  async function loadInternalRegistryRepositories() {
+    internalRegistryLoading = true;
+    internalRegistryError = '';
+    try {
+      const response = await api('/api/registry/repositories');
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not load Dokyr Registry images');
+      internalRegistryRepositories = payload.repositories || [];
+      internalRegistryHosts = payload.registryHosts || [];
+      if (!internalRegistryRepositories.some((item) => item.name === internalRegistryRepository)) {
+        internalRegistryRepository = internalRegistryRepositories[0]?.name || '';
+      }
+      const repository = internalRegistryRepositories.find((item) => item.name === internalRegistryRepository);
+      if (!repository?.tags?.includes(internalRegistryTag)) internalRegistryTag = repository?.tags?.[0] || '';
+      syncInternalRegistryImage();
+    } catch (cause) {
+      internalRegistryError = cause instanceof Error ? cause.message : 'Could not load Dokyr Registry images';
+    } finally {
+      internalRegistryLoading = false;
+    }
+  }
+
+  async function changeServiceRegistry(event) {
+    const value = event.currentTarget.value;
+    const internal = value === '__dokyr__';
+    serviceForm = { ...serviceForm, registryId: internal ? '' : value, internalRegistry: internal, autoDeploy: internal ? serviceForm.autoDeploy : false, imageUrl: internal ? '' : serviceForm.imageUrl };
+    if (internal) await loadInternalRegistryRepositories();
+  }
+
+  function syncInternalRegistryImage() {
+    const repository = internalRegistryRepositories.find((item) => item.name === internalRegistryRepository);
+    if (!repository?.tags?.includes(internalRegistryTag)) internalRegistryTag = repository?.tags?.[0] || '';
+    serviceForm.imageUrl = internalRegistryRepository && internalRegistryTag ? `${internalRegistryRepository}:${internalRegistryTag}` : '';
   }
 
   async function loadServiceRepositories(connectionId) {
@@ -970,7 +1014,7 @@
   function openServiceSettings(item) {
     serviceSettingsService = item;
     serviceSettingsError = '';
-    serviceSettingsForm = { name: item.name, sourceType: item.sourceType || 'image', imageUrl: item.imageUrl || '', containerPort: item.containerPort || 80, registryId: item.registryId || '', connectionId: item.connectionId || '', repository: item.repository || '', branch: item.branch || 'main', dockerfilePath: item.dockerfilePath || 'Dockerfile', buildContext: item.buildContext || '.', buildStrategy: item.buildStrategy || 'dockerfile', command: item.command || '', healthCheckType: item.healthCheckType || 'none', healthCheckPath: item.healthCheckPath || '/', healthCheckCommand: item.healthCheckCommand || '', healthCheckTimeoutSeconds: item.healthCheckTimeoutSeconds || 60 };
+    serviceSettingsForm = { name: item.name, sourceType: item.sourceType || 'image', imageUrl: item.imageUrl || '', containerPort: item.containerPort || 80, registryId: item.registryId || '', internalRegistry: item.internalRegistry || false, connectionId: item.connectionId || '', repository: item.repository || '', branch: item.branch || 'main', dockerfilePath: item.dockerfilePath || 'Dockerfile', buildContext: item.buildContext || '.', buildStrategy: item.buildStrategy || 'dockerfile', command: item.command || '', healthCheckType: item.healthCheckType || 'none', healthCheckPath: item.healthCheckPath || '/', healthCheckCommand: item.healthCheckCommand || '', healthCheckTimeoutSeconds: item.healthCheckTimeoutSeconds || 60 };
   }
 
   async function saveServiceSettings() {
@@ -1000,6 +1044,7 @@
       imageUrl: item.imageUrl || '',
       containerPort: item.containerPort || 80,
       registryId: item.registryId || '',
+      internalRegistry: item.internalRegistry || false,
       connectionId: item.connectionId || '',
       repository: item.repository || '',
       branch: item.branch || 'main',
@@ -1069,7 +1114,7 @@
         webhookUrl: payload.webhookUrl || '',
         webhookConfigured: payload.webhookConfigured || false
       };
-      runtimeTriggersNotice = runtimeSettingsForm.sourceType === 'repository' ? 'Git push auto-deploy settings saved.' : 'Registry webhook settings saved.';
+      runtimeTriggersNotice = runtimeSettingsForm.sourceType === 'repository' ? 'Git push auto-deploy settings saved.' : (runtimeSettingsForm.internalRegistry ? 'Dokyr Registry auto-deploy settings saved.' : 'Registry webhook settings saved.');
       await loadProject();
     } catch (cause) {
       runtimeTriggersError = cause instanceof Error ? cause.message : 'Could not save deployment triggers';
@@ -1103,6 +1148,7 @@
         imageUrl: payload.service.imageUrl,
         containerPort: payload.service.containerPort || 80,
         registryId: payload.service.registryId || '',
+        internalRegistry: payload.service.internalRegistry || false,
         connectionId: payload.service.connectionId || '',
         repository: payload.service.repository || '',
         branch: payload.service.branch || 'main',
@@ -1749,7 +1795,11 @@
                     <div class="settings-field build-pack-help"><strong>{runtimeSettingsForm.buildStrategy === 'railpack' ? 'Railpack' : 'Nixpacks'} will detect the language and build plan.</strong><small>No Dockerfile is required. Commit <code>railpack.json</code> or <code>nixpacks.toml</code> to customize the build.</small></div>
                   {/if}
                 {:else}
-                  <label class="settings-field"><span>Registry credential <em>optional</em></span><select bind:value={runtimeSettingsForm.registryId}><option value="">Docker Hub / public registry</option>{#each integrations.registries || [] as registry}<option value={registry.id}>{registry.name} · {registry.registryUrl}</option>{/each}</select></label>
+                  {#if runtimeSettingsForm.internalRegistry}
+                    <label class="settings-field"><span>Image source</span><select disabled><option>Dokyr Registry · managed</option></select></label>
+                  {:else}
+                    <label class="settings-field"><span>Registry credential <em>optional</em></span><select bind:value={runtimeSettingsForm.registryId}><option value="">Docker Hub / public registry</option>{#each integrations.registries || [] as registry}<option value={registry.id}>{registry.name} · {registry.registryUrl}</option>{/each}</select></label>
+                  {/if}
                   <label class="settings-field"><span>Container image</span><input bind:value={runtimeSettingsForm.imageUrl} required spellcheck="false" placeholder="quay.io/keycloak/keycloak:26.7.0" /></label>
                 {/if}
                 <label class="settings-field wide runtime-command-field"><span>Container command <em>optional</em></span><input bind:value={runtimeSettingsForm.command} maxlength="4096" placeholder="start-dev" spellcheck="false" /><small>Arguments passed to the image ENTRYPOINT. For Keycloak use <code>start-dev</code>. Quoted arguments are supported.</small></label>
@@ -1765,7 +1815,7 @@
               </div>
               <div class="runtime-apply-note"><Icon name="settings" size={16}/><div><strong>Saving does not interrupt the running container.</strong><span>Choose Save & deploy to recreate this service immediately with the updated command. Docker reuses cached image layers when available.</span></div></div>
               <section class="deployment-triggers" aria-labelledby="deployment-triggers-title">
-                <header><div><span>Automation</span><h4 id="deployment-triggers-title">Deployment triggers</h4></div><b>{runtimeSettingsForm.sourceType === 'repository' ? 'Git push' : 'Registry webhook'}</b></header>
+                <header><div><span>Automation</span><h4 id="deployment-triggers-title">Deployment triggers</h4></div><b>{runtimeSettingsForm.sourceType === 'repository' ? 'Git push' : (runtimeSettingsForm.internalRegistry ? 'Internal push' : 'Registry webhook')}</b></header>
                 {#if runtimeTriggersError}<div class="domain-feedback error"><strong>Triggers unavailable</strong><span>{runtimeTriggersError}</span></div>{/if}
                 {#if runtimeTriggersNotice}<div class="domain-feedback success"><strong>Automation updated</strong><span>{runtimeTriggersNotice}</span></div>{/if}
                 {#if runtimeTriggersLoading}
@@ -1777,6 +1827,12 @@
                     <label class="switch"><input type="checkbox" bind:checked={runtimeTriggers.autoDeploy}/><span></span><em>{runtimeTriggers.autoDeploy ? 'On' : 'Off'}</em></label>
                   </div>
                   <div class:webhook-warning={!runtimeTriggers.webhookConfigured} class="webhook-endpoint"><div><small>GitHub App webhook</small><code>{runtimeTriggers.webhookUrl || 'Reconnect the GitHub App in Sources to register its signed push webhook'}</code></div>{#if runtimeTriggers.webhookUrl}<button type="button" onclick={copyWebhookUrl}>{copiedField === 'webhook-url' ? 'Copied' : 'Copy URL'}</button>{:else}<a href="/integrations">Open Sources</a>{/if}</div>
+                {:else if runtimeSettingsForm.internalRegistry}
+                  <div class="trigger-row">
+                    <span class="trigger-icon"><Icon name="box" size={17}/></span>
+                    <div><strong>Deploy pushes to <code>{runtimeSettingsForm.imageUrl}</code></strong><small>Dokyr receives the push event directly from its registry and starts a deployment. No webhook configuration is required.</small></div>
+                    <label class="switch"><input type="checkbox" bind:checked={runtimeTriggers.autoDeploy}/><span></span><em>{runtimeTriggers.autoDeploy ? 'On' : 'Off'}</em></label>
+                  </div>
                 {:else}
                   <div class="trigger-row">
                     <span class="trigger-icon"><Icon name="box" size={17}/></span>
@@ -1790,7 +1846,7 @@
                     </div>
                   {/if}
                 {/if}
-                <footer><span>{runtimeSettingsForm.sourceType === 'repository' ? (runtimeTriggers.webhookConfigured ? 'Signed with the GitHub App webhook secret' : 'One-time GitHub App reconnect required') : 'The URL contains a private service token'}</span><button type="button" onclick={saveDeploymentTriggers} disabled={runtimeTriggersSaving || runtimeTriggersLoading || (runtimeSettingsForm.sourceType === 'repository' && runtimeTriggers.autoDeploy && !runtimeTriggers.webhookConfigured)}>{runtimeTriggersSaving ? 'Saving triggers…' : 'Save triggers'}</button></footer>
+                <footer><span>{runtimeSettingsForm.sourceType === 'repository' ? (runtimeTriggers.webhookConfigured ? 'Signed with the GitHub App webhook secret' : 'One-time GitHub App reconnect required') : (runtimeSettingsForm.internalRegistry ? 'Managed automatically by Dokyr Registry' : 'The URL contains a private service token')}</span><button type="button" onclick={saveDeploymentTriggers} disabled={runtimeTriggersSaving || runtimeTriggersLoading || (runtimeSettingsForm.sourceType === 'repository' && runtimeTriggers.autoDeploy && !runtimeTriggers.webhookConfigured)}>{runtimeTriggersSaving ? 'Saving triggers…' : 'Save triggers'}</button></footer>
               </section>
               <footer><span>Environment variables remain managed in the Environment tab.</span><div><button type="submit" class="secondary-runtime" disabled={runtimeSettingsBusy !== ''}>{runtimeSettingsBusy === 'save' ? 'Saving…' : 'Save definition'}</button><button type="button" class="save-settings" onclick={() => saveRuntimeSettings(true)} disabled={runtimeSettingsBusy !== ''}><Icon name="play" size={13}/>{runtimeSettingsBusy === 'deploy' ? 'Starting deployment…' : 'Save & deploy'}</button></div></footer>
             </form>
@@ -1946,7 +2002,11 @@
               <div class="wide build-pack-help"><strong>{serviceSettingsForm.buildStrategy === 'railpack' ? 'Railpack' : 'Nixpacks'} automatically detects and builds the repository.</strong><small>No Dockerfile is required. Add <code>railpack.json</code> or <code>nixpacks.toml</code> to control the build.</small></div>
             {/if}
           {:else}
-            <label><span>Private registry <em>optional</em></span><select bind:value={serviceSettingsForm.registryId}><option value="">Docker Hub / public registry</option>{#each integrations.registries || [] as registry}<option value={registry.id}>{registry.name} · {registry.registryUrl}</option>{/each}</select></label>
+            {#if serviceSettingsForm.internalRegistry}
+              <label><span>Image source</span><select disabled><option>Dokyr Registry · managed</option></select></label>
+            {:else}
+              <label><span>Private registry <em>optional</em></span><select bind:value={serviceSettingsForm.registryId}><option value="">Docker Hub / public registry</option>{#each integrations.registries || [] as registry}<option value={registry.id}>{registry.name} · {registry.registryUrl}</option>{/each}</select></label>
+            {/if}
             <label><span>Container image</span><input bind:value={serviceSettingsForm.imageUrl} required spellcheck="false" /></label>
           {/if}
           <label class="wide command-field"><span>Container command <em>optional</em></span><input bind:value={serviceSettingsForm.command} maxlength="4096" placeholder="start-dev" spellcheck="false" /><small>Arguments passed to the image ENTRYPOINT. Quotes are supported, for example <code>serve --message "hello world"</code>.</small></label>
@@ -2039,8 +2099,22 @@
           <label><span>Service name</span><input bind:value={serviceForm.name} required maxlength="63" placeholder="api, front, adminer…" /></label>
           <label><span>Container port</span><input bind:value={serviceForm.containerPort} type="number" min="1" max="65535" required /></label>
           {#if serviceForm.sourceType === 'image'}
-            <label><span>Container image</span><input bind:value={serviceForm.imageUrl} required placeholder="adminer:latest" spellcheck="false" /></label>
-            <label><span>Private registry <em>optional</em></span><select bind:value={serviceForm.registryId}><option value="">Docker Hub / public registry</option>{#each integrations.registries || [] as registry}<option value={registry.id}>{registry.name} · {registry.registryUrl}</option>{/each}</select></label>
+            <label><span>Image source</span><select value={serviceForm.internalRegistry ? '__dokyr__' : serviceForm.registryId} onchange={changeServiceRegistry}><option value="">Docker Hub / public registry</option><option value="__dokyr__">Dokyr Registry · managed</option>{#each integrations.registries || [] as registry}<option value={registry.id}>{registry.name} · {registry.registryUrl}</option>{/each}</select></label>
+            {#if serviceForm.internalRegistry}
+              <label><span>Repository</span><select bind:value={internalRegistryRepository} onchange={syncInternalRegistryImage} required disabled={internalRegistryLoading || internalRegistryRepositories.length === 0}><option value="">{internalRegistryLoading ? 'Loading images…' : 'Select repository'}</option>{#each internalRegistryRepositories as repository}<option value={repository.name}>{repository.name}</option>{/each}</select></label>
+              <label><span>Image tag</span><select bind:value={internalRegistryTag} onchange={syncInternalRegistryImage} required disabled={!internalRegistryRepository}><option value="">Select tag</option>{#each internalRegistryRepositories.find((item) => item.name === internalRegistryRepository)?.tags || [] as tag}<option value={tag}>{tag}</option>{/each}</select></label>
+              <div class="internal-registry-summary">
+                <span class="source-icon"><Icon name="box" size={17}/></span>
+                <div><strong>{serviceForm.imageUrl || 'Choose a repository and tag'}</strong><small>Dokyr supplies pull credentials automatically.</small></div>
+                <button type="button" onclick={loadInternalRegistryRepositories} disabled={internalRegistryLoading}>{internalRegistryLoading ? 'Loading…' : 'Refresh'}</button>
+              </div>
+              {#if internalRegistryError}<div class="wide domain-feedback error"><strong>Registry images unavailable</strong><span>{internalRegistryError}</span></div>{/if}
+              {#if !internalRegistryLoading && !internalRegistryError && internalRegistryRepositories.length === 0}<div class="wide source-empty-note"><Icon name="box" size={16}/><span><strong>No images in Dokyr Registry</strong><small>Push an image first, then refresh this list.</small></span><a href="/registry">Open Registry</a></div>{/if}
+              {#if internalRegistryHosts[0]?.endsWith('.invalid')}<div class="wide source-empty-note permission-note"><Icon name="alert" size={16}/><span><strong>Registry domain required</strong><small>Attach a reachable domain before deploying this image.</small></span><a href="/registry">Attach domain</a></div>{/if}
+              <label class="wide internal-auto-deploy"><input type="checkbox" bind:checked={serviceForm.autoDeploy}/><span><strong>Auto-deploy this tag</strong><small>A successful push to <code>{serviceForm.imageUrl || 'the selected image'}</code> starts a new deployment automatically. No webhook setup is needed.</small></span></label>
+            {:else}
+              <label><span>Container image</span><input bind:value={serviceForm.imageUrl} required placeholder="adminer:latest" spellcheck="false" /></label>
+            {/if}
           {:else}
             <label><span>Git account</span><select bind:value={serviceForm.connectionId} onchange={changeServiceConnection} required><option value="">Select GitHub or GitLab</option>{#each integrations.connections || [] as connection}<option value={connection.id}>{connection.provider === 'github' ? 'GitHub' : 'GitLab'} · {connection.accountName}</option>{/each}</select></label>
             <label class="repository-search"><span>Repository</span>
@@ -2762,6 +2836,18 @@
   .source-empty-note a { color: var(--color-accent); font-size: var(--text-xs); font-weight: 600; }
   .source-empty-note.permission-note { border-color: color-mix(in srgb, var(--color-warning) 45%, var(--color-rule)); background: color-mix(in srgb, var(--color-warning) 7%, var(--color-paper-raised)); color: var(--color-warning); }
   .source-empty-note.permission-note a { color: var(--color-warning); }
+  .internal-registry-summary { min-height: 58px; padding: var(--space-3); display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); border: 1px solid color-mix(in srgb, var(--color-accent) 30%, var(--color-rule)); border-radius: var(--radius-sm); background: var(--color-accent-soft); }
+  .internal-registry-summary .source-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-accent); }
+  .internal-registry-summary > div { min-width: 0; display: grid; gap: 2px; }
+  .internal-registry-summary strong { overflow: hidden; font: 600 var(--text-xs) var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+  .internal-registry-summary small { color: var(--color-muted); font-size: var(--text-2xs); }
+  .internal-registry-summary button { min-height: 30px; padding: 0 var(--space-3); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-xs); font-weight: 600; cursor: pointer; }
+  .form-grid label.internal-auto-deploy { padding: var(--space-4); display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start; gap: var(--space-3); border: 1px solid color-mix(in srgb, var(--color-accent) 30%, var(--color-rule)); border-radius: var(--radius-md); background: var(--color-accent-soft); cursor: pointer; }
+  .internal-auto-deploy input { width: 16px; height: 16px; margin-top: 2px; accent-color: var(--color-accent); }
+  .internal-auto-deploy > span { display: grid; gap: var(--space-1); }
+  .internal-auto-deploy strong { font-size: var(--text-sm); }
+  .internal-auto-deploy small { color: var(--color-muted); font-size: var(--text-xs); line-height: 1.45; }
+  .internal-auto-deploy code { color: var(--color-accent); font-family: var(--font-mono); }
   .field-help { color: var(--color-muted); font-size: var(--text-xs); }
   .service-template-note { margin-bottom: var(--space-4); padding: var(--space-4); display: grid; gap: var(--space-1); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
   .service-template-note strong { font-size: var(--text-sm); }
@@ -2818,7 +2904,7 @@
   @media (max-width: 41.99rem) { .service-source-picker { grid-template-columns: 1fr; } .compose-intro { grid-template-columns: 40px minmax(0, 1fr); } .compose-upload { grid-column: 1 / -1; max-width: none; } .compose-modal > footer { align-items: stretch; flex-direction: column; } .compose-modal > footer > span { margin-right: 0; } }
   @media (min-width: 50rem) { .project-hero { flex-direction: row; align-items: center; } .overview-grid { grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr); } .domain-layout { grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr); } .route-guide { border-top: 0; border-left: 1px solid var(--color-rule); } }
   @media (max-width: 48rem) { .recent > a, .deployment-row { grid-template-columns: 104px minmax(0, 1fr) 20px; } .recent code, .deployment-row code, .recent time, .deployment-row time { display: none; } .services article { grid-template-columns: 40px minmax(0, 1fr) auto; } }
-  @media (max-width: 32rem) { .hero-actions { width: 100%; } .hero-actions button { flex: 1; padding-inline: var(--space-3); } .services article { grid-template-columns: 40px minmax(0, 1fr); } .services article :global(.status) { grid-column: 2; } .database-state, .database-actions { grid-column: 2; justify-items: start; } .feedback { grid-template-columns: 1fr auto; } .feedback span { grid-row: 2; grid-column: 1 / -1; } .engine-picker { grid-template-columns: 1fr; } .credential-list > div { grid-template-columns: 1fr 54px; padding: var(--space-2) 0; } .credential-list span { grid-column: 1 / -1; } .settings-grid { grid-template-columns: 1fr; } .settings-grid .wide { grid-column: auto; } .danger-zone, .project-editor form > footer, .runtime-settings-form > footer, .deployment-triggers > footer { align-items: flex-start; flex-direction: column; } .runtime-settings-panel > header { align-items: flex-start; flex-direction: column; } .runtime-settings-panel > header > p { margin-left: 0; text-align: left; } .runtime-settings-form > footer > div, .runtime-settings-form > footer button, .deployment-triggers > footer button { width: 100%; } .runtime-settings-empty { grid-template-columns: 42px minmax(0, 1fr); } .runtime-settings-empty button { grid-column: 1 / -1; width: 100%; } .trigger-row { grid-template-columns: 36px minmax(0, 1fr); } .trigger-row .switch { grid-column: 2; } .webhook-endpoint { grid-template-columns: 1fr; } .webhook-endpoint button { width: 100%; } }
+  @media (max-width: 32rem) { .hero-actions { width: 100%; } .hero-actions button { flex: 1; padding-inline: var(--space-3); } .services article { grid-template-columns: 40px minmax(0, 1fr); } .services article :global(.status) { grid-column: 2; } .database-state, .database-actions { grid-column: 2; justify-items: start; } .feedback { grid-template-columns: 1fr auto; } .feedback span { grid-row: 2; grid-column: 1 / -1; } .engine-picker, .service-source-picker { grid-template-columns: 1fr; } .credential-list > div { grid-template-columns: 1fr 54px; padding: var(--space-2) 0; } .credential-list span { grid-column: 1 / -1; } .settings-grid { grid-template-columns: 1fr; } .settings-grid .wide { grid-column: auto; } .danger-zone, .project-editor form > footer, .runtime-settings-form > footer, .deployment-triggers > footer, .application-service-modal form > footer { align-items: stretch; flex-direction: column; } .application-service-modal form > footer > span { margin-right: 0; } .application-service-modal form > footer button { width: 100%; } .internal-registry-summary { grid-template-columns: 34px minmax(0, 1fr); } .internal-registry-summary button { grid-column: 1 / -1; width: 100%; } .runtime-settings-panel > header { align-items: flex-start; flex-direction: column; } .runtime-settings-panel > header > p { margin-left: 0; text-align: left; } .runtime-settings-form > footer > div, .runtime-settings-form > footer button, .deployment-triggers > footer button { width: 100%; } .runtime-settings-empty { grid-template-columns: 42px minmax(0, 1fr); } .runtime-settings-empty button { grid-column: 1 / -1; width: 100%; } .trigger-row { grid-template-columns: 36px minmax(0, 1fr); } .trigger-row .switch { grid-column: 2; } .webhook-endpoint { grid-template-columns: 1fr; } .webhook-endpoint button { width: 100%; } }
   @media (max-width: 48rem) { .project-identity-layout { grid-template-columns: 1fr; } }
   @media (max-width: 44rem) { .log-panel > header { align-items: flex-start; flex-direction: column; } .log-actions { width: 100%; justify-content: flex-start; } .log-actions small { width: 100%; } .log-toolbar { align-items: stretch; flex-direction: column; } .log-filter-group { align-items: stretch; flex-direction: column; } .log-toolbar label { width: 100%; } .log-line { grid-template-columns: 34px 62px minmax(0, 1fr); } .log-line time { display: none; } .terminal-modal-backdrop { padding: var(--space-2); } .service-terminal-modal { height: calc(100vh - 16px); } .terminal-modal-toolbar { grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; } .terminal-modal-toolbar > div, .terminal-modal-toolbar > small { grid-column: 1 / -1; } .terminal-modal-toolbar > small { white-space: normal; } .terminal-prompt { grid-template-columns: auto minmax(0, 1fr); } .terminal-prompt time { display: none; } .terminal-command-form { grid-template-columns: 18px minmax(0, 1fr); } .terminal-command-form button { grid-column: 1 / -1; justify-content: center; } .environment-panel > header { align-items: flex-start; flex-direction: column; gap: var(--space-3); } .environment-columns { display: none; } .variable-row { grid-template-columns: 1fr 64px 34px; padding: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-md); } .variable-row > label:first-child, .value-field { grid-column: 1 / -1; } .environment-editor > footer { align-items: stretch; flex-direction: column; } .environment-editor > footer button { width: 100%; } .domain-editor-head { align-items: stretch; flex-direction: column; } .add-domain { width: 100%; } .binding-domain { grid-column: 1 / -1; } .binding-preview { grid-template-columns: minmax(0, 1fr) auto; } .binding-preview code { grid-row: 2; grid-column: 1 / -1; } .route-rules-footer { align-items: stretch; flex-direction: column; } }
   @media (max-width: 78rem) { .project-metric-grid { grid-template-columns: repeat(3, 1fr); } .project-metric-grid article:nth-child(3) { border-right: 0; } .project-metric-grid article:nth-child(-n+3) { border-bottom: 1px solid var(--color-rule); } .workload-columns, .workload-row { grid-template-columns: minmax(210px, 1.35fr) minmax(74px, 0.5fr) minmax(105px, 0.7fr) minmax(100px, 0.65fr); } .workload-columns span:nth-child(n+5), .workload-row > :nth-child(n+5) { display: none; } }
