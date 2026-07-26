@@ -369,23 +369,24 @@ func TestControlPlaneMetricsFiltersAndOrdersDependencies(t *testing.T) {
 			{ID: "proxy", ControlPlaneService: "caddy", State: "running", CPUPercent: 2, MemoryUsage: 50},
 			{ID: "api", ControlPlaneService: "dokyr", State: "running", CPUPercent: 5, MemoryUsage: 100},
 			{ID: "database", ControlPlaneService: "postgres", State: "running", CPUPercent: 3, MemoryUsage: 200},
+			{ID: "registry", ControlPlaneService: "registry", State: "running", CPUPercent: 1, MemoryUsage: 75},
 		},
 	}}}
 	snapshot, err := docker.ControlPlaneMetrics(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Global.Containers != 3 || snapshot.Global.Running != 3 {
-		t.Fatalf("control-plane counts = %d/%d, want 3/3", snapshot.Global.Running, snapshot.Global.Containers)
+	if snapshot.Global.Containers != 4 || snapshot.Global.Running != 4 {
+		t.Fatalf("control-plane counts = %d/%d, want 4/4", snapshot.Global.Running, snapshot.Global.Containers)
 	}
-	if snapshot.Global.CPUPercent != 10 || snapshot.Global.MemoryUsage != 350 {
+	if snapshot.Global.CPUPercent != 11 || snapshot.Global.MemoryUsage != 425 {
 		t.Fatalf("control-plane aggregate = cpu %.2f memory %d", snapshot.Global.CPUPercent, snapshot.Global.MemoryUsage)
 	}
 	got := []string{}
 	for _, container := range snapshot.Containers {
 		got = append(got, container.ControlPlaneService)
 	}
-	if strings.Join(got, ",") != "dokyr,postgres,caddy" {
+	if strings.Join(got, ",") != "dokyr,postgres,caddy,registry" {
 		t.Fatalf("control-plane order = %v", got)
 	}
 }
@@ -408,6 +409,10 @@ func TestControlPlaneServiceUsesCurrentComposeProject(t *testing.T) {
 	labels["com.docker.compose.service"] = "selfhost"
 	if got := controlPlaneService(labels, "dokyr"); got != "dokyr" {
 		t.Fatalf("legacy controlPlaneService = %q, want dokyr", got)
+	}
+	labels["com.docker.compose.service"] = "registry"
+	if got := controlPlaneService(labels, "dokyr"); got != "registry" {
+		t.Fatalf("controlPlaneService = %q, want registry", got)
 	}
 }
 

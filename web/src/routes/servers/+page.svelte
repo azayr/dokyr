@@ -8,7 +8,8 @@
   const controlServices = [
     { key: 'dokyr', name: 'Dokyr', role: 'Control plane', icon: 'box' },
     { key: 'postgres', name: 'PostgreSQL', role: 'State database', icon: 'database' },
-    { key: 'caddy', name: 'Caddy', role: 'Ingress proxy', icon: 'globe' }
+    { key: 'caddy', name: 'Caddy', role: 'Ingress proxy', icon: 'globe' },
+    { key: 'registry', name: 'Registry', role: 'Container image storage', icon: 'layers' }
   ];
   const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const defaultCleanupSchedule = {
@@ -913,7 +914,7 @@
   .control-service-grid {
     padding: var(--space-4) var(--space-5);
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-3);
   }
   .control-service-grid > button {
