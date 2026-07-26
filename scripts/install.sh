@@ -114,6 +114,7 @@ DOKYR_IMAGE="${DOKYR_IMAGE:-ghcr.io/azayr/dokyr:latest}"
 DOKYR_REGISTRY_IMAGE="${DOKYR_REGISTRY_IMAGE:-ghcr.io/azayr/dokyr}"
 DOKYR_UPDATE_CHANNEL="${DOKYR_UPDATE_CHANNEL:-latest}"
 REGISTRY_HOSTS="${REGISTRY_HOSTS:-registry.invalid}"
+REGISTRY_HTTP_RELATIVEURLS="${REGISTRY_HTTP_RELATIVEURLS:-true}"
 PUBLIC_URL="${PUBLIC_URL:-$(read_input "Public URL (e.g. http://panel.example.com)" "http://localhost:${HTTP_PORT}")}"
 CONTROL_HOSTS="${CONTROL_HOSTS:-$(read_input "Control panel hostnames (space-separated, e.g. panel.example.com)" "localhost")}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(read_input "PostgreSQL password (leave blank to generate)" "")}"
@@ -173,6 +174,7 @@ REGISTRY_TOKEN_ISSUER=dokyr-registry
 REGISTRY_TOKEN_SERVICE=dokyr-registry
 REGISTRY_INTERNAL_SECRET=${REGISTRY_INTERNAL_SECRET}
 REGISTRY_STORAGE=filesystem
+REGISTRY_HTTP_RELATIVEURLS=${REGISTRY_HTTP_RELATIVEURLS}
 
 # Optional S3-compatible storage for the registry.
 REGISTRY_S3_REGION=
