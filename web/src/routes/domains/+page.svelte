@@ -17,6 +17,9 @@
   let connected = false;
   let connectionError = '';
   let projects = [];
+  let registryDomain = { domain: '', httpsEnabled: true, attached: false, registryHosts: [] };
+  let controlHosts = [];
+  let publicURL = '';
   let routes = [];
   let configuration = '';
   let managedConfiguration = '';
@@ -27,16 +30,44 @@
   let editingDomainIndex = -1;
   let draft = null;
 
-  $: domains = projects.flatMap((project) =>
-    project.domains.map((domain, index) => ({ ...domain, index, projectId: project.id, projectName: project.name, services: project.services }))
+  $: projectDomains = projects.flatMap((project) =>
+    project.domains.map((domain, index) => ({ ...domain, kind: 'project', index, projectId: project.id, projectName: project.name, services: project.services }))
   );
+  $: registryDomains = (registryDomain.registryHosts || []).map((host) => ({
+    kind: 'registry',
+    domain: host,
+    editableDomain: registryDomain.attached ? registryDomain.domain : hostnameOnly(host),
+    projectId: 'registry',
+    projectName: registryDomain.attached ? 'Container registry' : 'Container registry · environment fallback',
+    httpsEnabled: registryDomain.attached ? registryDomain.httpsEnabled : false,
+    attached: registryDomain.attached,
+    services: [
+      { id: 'registry-auth', name: 'Dokyr token service', containerPort: 8080 },
+      { id: 'registry', name: 'Docker Registry', containerPort: 5000 }
+    ],
+    rules: [
+      { path: '/api/registry/token', serviceId: 'registry-auth', port: 8080 },
+      { path: '/*', serviceId: 'registry', port: 5000 }
+    ]
+  }));
+  $: controlDomains = controlHosts.map((host) => ({
+    kind: 'control',
+    domain: controlDisplayHost(host),
+    projectId: 'control',
+    projectName: 'Dokyr control plane · system route',
+    httpsEnabled: false,
+    services: [{ id: 'control', name: 'Dokyr control plane', containerPort: 8080 }],
+    rules: [{ path: '/*', serviceId: 'control', port: 8080 }],
+    url: controlURL(host)
+  }));
+  $: domains = [...projectDomains, ...registryDomains, ...controlDomains];
   $: filteredDomains = domains.filter((domain) =>
     `${domain.domain} ${domain.projectName} ${domain.rules.map((rule) => `${rule.path} ${serviceName(domain.services, rule.serviceId)}`).join(' ')}`
       .toLowerCase()
       .includes(query.trim().toLowerCase())
   );
   $: secureCount = domains.filter((domain) => domain.httpsEnabled).length;
-  $: exposedProjects = new Set(domains.map((domain) => domain.projectId)).size;
+  $: edgeTargets = new Set(domains.map((domain) => `${domain.kind}:${domain.projectId}`)).size;
   $: eligibleProjects = projects.filter((project) => project.services.length > 0);
   $: activeProject = projects.find((project) => project.id === draft?.projectId);
   $: activeServices = activeProject?.services || [];
@@ -57,6 +88,9 @@
         domains: (project.domains || []).map(normalizeBinding),
         services: project.services || []
       }));
+      registryDomain = normalizeRegistry(payload.registry);
+      controlHosts = payload.controlHosts || [];
+      publicURL = payload.publicURL || '';
       routes = payload.routes || [];
       configuration = payload.configuration || '';
       managedConfiguration = configuration;
@@ -80,12 +114,45 @@
     };
   }
 
+  function normalizeRegistry(value = {}) {
+    return {
+      domain: value.domain || '',
+      httpsEnabled: Boolean(value.httpsEnabled),
+      attached: Boolean(value.attached),
+      registryHosts: value.registryHosts || []
+    };
+  }
+
+  function hostnameOnly(value) {
+    if (value.startsWith('[')) return value.slice(1, value.indexOf(']'));
+    return value.replace(/:\d+$/, '');
+  }
+
+  function controlDisplayHost(host) {
+    try {
+      const parsed = new URL(publicURL);
+      return parsed.hostname === host ? parsed.host : host;
+    } catch {
+      return host;
+    }
+  }
+
+  function controlURL(host) {
+    try {
+      const parsed = new URL(publicURL);
+      if (parsed.hostname === host) return parsed.toString();
+    } catch {
+      // Fall through to the Caddy HTTP listener.
+    }
+    return `http://${host}`;
+  }
+
   function serviceName(services, serviceId) {
     return services.find((service) => service.id === (serviceId || ''))?.name || 'Unknown service';
   }
 
   function endpoint(domain) {
-    return `${domain.httpsEnabled ? 'https' : 'http'}://${domain.domain}`;
+    return domain.url || `${domain.httpsEnabled ? 'https' : 'http'}://${domain.domain}`;
   }
 
   function openCreate() {
@@ -95,6 +162,7 @@
     editingProjectId = '';
     editingDomainIndex = -1;
     draft = {
+      kind: 'project',
       projectId: project.id,
       domain: '',
       httpsEnabled: true,
@@ -105,9 +173,23 @@
   }
 
   function openEdit(domain) {
+    if (domain.kind === 'registry') {
+      editingProjectId = 'registry';
+      editingDomainIndex = -1;
+      draft = {
+        kind: 'registry',
+        domain: domain.editableDomain,
+        httpsEnabled: domain.httpsEnabled,
+        attached: domain.attached
+      };
+      error = '';
+      modalOpen = true;
+      return;
+    }
     editingProjectId = domain.projectId;
     editingDomainIndex = domain.index;
     draft = {
+      kind: 'project',
       projectId: domain.projectId,
       domain: domain.domain,
       httpsEnabled: domain.httpsEnabled,
@@ -185,12 +267,35 @@
     await refreshRuntime();
   }
 
+  async function persistRegistryDomain(domain, httpsEnabled) {
+    const response = await api('/api/registry/domain', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain, httpsEnabled })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Could not update the registry domain');
+    registryDomain = normalizeRegistry(payload);
+    await refreshRuntime();
+  }
+
   async function saveDomain() {
     if (!draft) return;
     saving = true;
     error = '';
     notice = '';
     try {
+      if (draft.kind === 'registry') {
+        const hostname = draft.domain.trim();
+        await persistRegistryDomain(hostname, draft.httpsEnabled);
+        notice = `${hostname} is now the container registry domain.`;
+        toast.success('Registry domain updated');
+        modalOpen = false;
+        draft = null;
+        editingProjectId = '';
+        editingDomainIndex = -1;
+        return;
+      }
       const project = projects.find((item) => item.id === draft.projectId);
       if (!project) throw new Error('Choose a project for this domain');
       const nextBinding = normalizeBinding(draft);
@@ -212,11 +317,23 @@
   }
 
   async function deleteDomain() {
-    if (!draft || editingDomainIndex === -1) return;
+    if (!draft || (draft.kind !== 'registry' && editingDomainIndex === -1)) return;
     deleting = true;
     error = '';
     notice = '';
     try {
+      if (draft.kind === 'registry') {
+        const removedDomain = draft.domain;
+        await persistRegistryDomain('', true);
+        const fallback = registryDomain.registryHosts.join(', ');
+        notice = `${removedDomain} was detached. ${fallback || 'The environment fallback'} is active again.`;
+        toast.success('Registry domain detached');
+        modalOpen = false;
+        draft = null;
+        editingProjectId = '';
+        editingDomainIndex = -1;
+        return;
+      }
       const project = projects.find((item) => item.id === editingProjectId);
       if (!project) throw new Error('Project not found');
       const removedDomain = project.domains[editingDomainIndex]?.domain || draft.domain;
@@ -335,7 +452,7 @@
     </article>
     <article>
       <span class="metric-icon projects"><Icon name="box" size={16} /></span>
-      <div><strong>{loading ? '—' : exposedProjects}</strong><span>Projects exposed</span></div>
+      <div><strong>{loading ? '—' : edgeTargets}</strong><span>Edge targets</span></div>
     </article>
     <div class="flow-note">
       <span>Request flow</span>
@@ -363,17 +480,13 @@
           <div><span class="skeleton" style="width:38px;height:38px"></span><span class="skeleton grow" style="height:14px"></span><span class="skeleton" style="width:100px;height:24px"></span></div>
         {/each}
       </div>
-    {:else if projects.length === 0}
-      <EmptyState icon="box" title="Create a project first" description="Domains reverse-proxy traffic to application services inside a project.">
-        <a class="btn btn-primary btn-sm" href="/projects?new=1"><Icon name="plus" size={13} /> Create project</a>
-      </EmptyState>
-    {:else if eligibleProjects.length === 0}
-      <EmptyState icon="network" title="No services to expose" description="Add an application service to a project, then return here to give it a domain.">
-        <a class="btn btn-primary btn-sm" href="/projects"><Icon name="box" size={13} /> Open projects</a>
-      </EmptyState>
     {:else if domains.length === 0}
-      <EmptyState icon="globe" title="No domains configured" description="Add a hostname, choose its destination service, then decide between HTTP and automatic SSL.">
-        <button class="btn btn-primary btn-sm" onclick={openCreate}><Icon name="plus" size={13} /> Add first domain</button>
+      <EmptyState icon="globe" title="No Caddy hostnames configured" description="Add a project service or configure a registry hostname to create the first edge route.">
+        {#if eligibleProjects.length > 0}
+          <button class="btn btn-primary btn-sm" onclick={openCreate}><Icon name="plus" size={13} /> Add first domain</button>
+        {:else}
+          <a class="btn btn-primary btn-sm" href="/projects"><Icon name="box" size={13} /> Open projects</a>
+        {/if}
       </EmptyState>
     {:else if filteredDomains.length === 0}
       <EmptyState icon="search" title="No matching domains" description="Try a hostname, project, service, or path.">
@@ -384,11 +497,11 @@
         {#each filteredDomains as domain}
           <article class="domain-row">
             <span class="domain-status" class:secure={domain.httpsEnabled}>
-              <Icon name={domain.httpsEnabled ? 'lock' : 'globe'} size={15} />
+              <Icon name={domain.kind === 'registry' ? 'layers' : domain.httpsEnabled ? 'lock' : 'globe'} size={15} />
             </span>
             <div class="domain-identity">
               <a href={endpoint(domain)} target="_blank" rel="noreferrer">{domain.domain}<Icon name="external" size={12} /></a>
-              <span><Icon name="box" size={12} /> {domain.projectName}</span>
+              <span><Icon name={domain.kind === 'registry' ? 'layers' : domain.kind === 'control' ? 'shield' : 'box'} size={12} /> {domain.projectName}</span>
             </div>
             <div class="route-stack">
               {#each domain.rules as rule}
@@ -396,7 +509,11 @@
               {/each}
             </div>
             <span class="tls-badge" class:http={!domain.httpsEnabled}>{domain.httpsEnabled ? 'Automatic SSL' : 'HTTP only'}</span>
-            <button class="edit-button" type="button" onclick={() => openEdit(domain)}><Icon name="settings" size={13} /> Edit</button>
+            {#if domain.kind === 'control'}
+              <span class="system-badge"><Icon name="lock" size={11} /> System</span>
+            {:else}
+              <button class="edit-button" type="button" onclick={() => openEdit(domain)}><Icon name="settings" size={13} /> {domain.kind === 'registry' && !domain.attached ? 'Configure' : 'Edit'}</button>
+            {/if}
           </article>
         {/each}
       </div>
@@ -430,7 +547,7 @@
       </header>
       <div class="editor-state">
         <span><i class:changed={configDirty}></i>{configDirty ? 'Unsaved runtime override' : 'Matches saved domains'}</span>
-        <code>{routes.length} route{routes.length === 1 ? '' : 's'} · text/caddyfile</code>
+        <code>{domains.length} domain{domains.length === 1 ? '' : 's'} · text/caddyfile</code>
       </div>
       <textarea value={configuration} oninput={changeConfiguration} spellcheck="false" aria-label="Caddy configuration"></textarea>
     </div>
@@ -441,7 +558,10 @@
   <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) closeModal(); }}>
     <div class="domain-modal" role="dialog" aria-modal="true" aria-labelledby="domain-modal-title">
       <header>
-        <div><span>{editingDomainIndex === -1 ? 'New edge route' : 'Edit edge route'}</span><h2 id="domain-modal-title">{editingDomainIndex === -1 ? 'Add a domain' : draft.domain}</h2></div>
+        <div>
+          <span>{draft.kind === 'registry' ? 'Container registry endpoint' : editingDomainIndex === -1 ? 'New edge route' : 'Edit edge route'}</span>
+          <h2 id="domain-modal-title">{draft.kind === 'registry' ? 'Configure registry domain' : editingDomainIndex === -1 ? 'Add a domain' : draft.domain}</h2>
+        </div>
         <button type="button" aria-label="Close" onclick={closeModal} disabled={saving || deleting}><Icon name="x" size={16} /></button>
       </header>
 
@@ -454,20 +574,31 @@
           <section class="form-section">
             <div class="section-number">1</div>
             <div class="section-content">
-              <div class="section-heading"><strong>Hostname and project</strong><span>The project sets the list of services available as destinations.</span></div>
+              <div class="section-heading">
+                <strong>{draft.kind === 'registry' ? 'Hostname and destination' : 'Hostname and project'}</strong>
+                <span>{draft.kind === 'registry' ? 'The built-in registry keeps its authentication and image API routes together.' : 'The project sets the list of services available as destinations.'}</span>
+              </div>
               <div class="identity-grid">
                 <label class="field">
                   <span>Domain name</span>
                   <div class="domain-input"><Icon name="globe" size={14} /><input bind:value={draft.domain} autocomplete="off" spellcheck="false" placeholder="app.example.com" required /></div>
                   <small>Hostname only — do not include <code>http://</code> or a path.</small>
                 </label>
-                <label class="field">
-                  <span>Project</span>
-                  <select class="select" value={draft.projectId} onchange={(event) => chooseProject(event.currentTarget.value)} disabled={editingDomainIndex !== -1}>
-                    {#each eligibleProjects as project}<option value={project.id}>{project.name}</option>{/each}
-                  </select>
-                  <small>{editingDomainIndex === -1 ? 'Services come from this project.' : 'Remove and recreate the domain to move it.'}</small>
-                </label>
+                {#if draft.kind === 'registry'}
+                  <div class="registry-destination">
+                    <span class="registry-mark"><Icon name="layers" size={17} /></span>
+                    <span><strong>Dokyr Container Registry</strong><small>Fixed private upstream <code>registry:5000</code></small></span>
+                    {#if !draft.attached}<em>Environment fallback</em>{/if}
+                  </div>
+                {:else}
+                  <label class="field">
+                    <span>Project</span>
+                    <select class="select" value={draft.projectId} onchange={(event) => chooseProject(event.currentTarget.value)} disabled={editingDomainIndex !== -1}>
+                      {#each eligibleProjects as project}<option value={project.id}>{project.name}</option>{/each}
+                    </select>
+                    <small>{editingDomainIndex === -1 ? 'Services come from this project.' : 'Remove and recreate the domain to move it.'}</small>
+                  </label>
+                {/if}
               </div>
             </div>
           </section>
@@ -475,21 +606,29 @@
           <section class="form-section">
             <div class="section-number">2</div>
             <div class="section-content">
-              <div class="section-heading route-heading">
-                <div><strong>Reverse proxy destinations</strong><span>Rules are evaluated from top to bottom. Use <code>/*</code> as the catch-all.</span></div>
-                <button type="button" onclick={addRule}><Icon name="plus" size={13} /> Add path</button>
-              </div>
-              <div class="rule-list">
-                {#each draft.rules as rule, index}
-                  <div class="rule-row">
-                    <label><span>Request path</span><input bind:value={rule.path} required placeholder="/*" spellcheck="false" /></label>
-                    <span class="rule-arrow"><Icon name="arrow-right" size={15} /></span>
-                    <label><span>Service</span><select value={rule.serviceId || ''} onchange={(event) => chooseService(index, event.currentTarget.value)}>{#each activeServices as service}<option value={service.id}>{service.name}{service.legacy ? ' · default' : ''}</option>{/each}</select></label>
-                    <label class="port-field"><span>Port</span><input bind:value={rule.port} type="number" min="1" max="65535" required /></label>
-                    <button class="remove-rule" type="button" onclick={() => removeRule(index)} disabled={draft.rules.length === 1} aria-label="Remove path rule"><Icon name="trash" size={13} /></button>
-                  </div>
-                {/each}
-              </div>
+              {#if draft.kind === 'registry'}
+                <div class="section-heading"><strong>Managed registry routes</strong><span>These protected paths stay fixed so Docker authentication and image traffic continue to work.</span></div>
+                <div class="registry-routes">
+                  <div><code>/api/registry/token</code><Icon name="arrow-right" size={13} /><span><strong>Dokyr token service</strong><small>:8080</small></span></div>
+                  <div><code>/*</code><Icon name="arrow-right" size={13} /><span><strong>Docker Registry</strong><small>:5000</small></span></div>
+                </div>
+              {:else}
+                <div class="section-heading route-heading">
+                  <div><strong>Reverse proxy destinations</strong><span>Rules are evaluated from top to bottom. Use <code>/*</code> as the catch-all.</span></div>
+                  <button type="button" onclick={addRule}><Icon name="plus" size={13} /> Add path</button>
+                </div>
+                <div class="rule-list">
+                  {#each draft.rules as rule, index}
+                    <div class="rule-row">
+                      <label><span>Request path</span><input bind:value={rule.path} required placeholder="/*" spellcheck="false" /></label>
+                      <span class="rule-arrow"><Icon name="arrow-right" size={15} /></span>
+                      <label><span>Service</span><select value={rule.serviceId || ''} onchange={(event) => chooseService(index, event.currentTarget.value)}>{#each activeServices as service}<option value={service.id}>{service.name}{service.legacy ? ' · default' : ''}</option>{/each}</select></label>
+                      <label class="port-field"><span>Port</span><input bind:value={rule.port} type="number" min="1" max="65535" required /></label>
+                      <button class="remove-rule" type="button" onclick={() => removeRule(index)} disabled={draft.rules.length === 1} aria-label="Remove path rule"><Icon name="trash" size={13} /></button>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
             </div>
           </section>
 
@@ -516,14 +655,18 @@
         </div>
 
         <footer>
-          {#if editingDomainIndex !== -1}
+          {#if draft.kind === 'registry' && draft.attached}
+            <button class="btn btn-danger" type="button" onclick={deleteDomain} disabled={saving || deleting}><Icon name="trash" size={13} />{deleting ? 'Detaching…' : 'Detach domain'}</button>
+          {:else if draft.kind === 'project' && editingDomainIndex !== -1}
             <button class="btn btn-danger" type="button" onclick={deleteDomain} disabled={saving || deleting}><Icon name="trash" size={13} />{deleting ? 'Removing…' : 'Remove domain'}</button>
           {:else}
             <span>Changes are applied to Caddy without downtime.</span>
           {/if}
           <div>
             <button class="btn" type="button" onclick={closeModal} disabled={saving || deleting}>Cancel</button>
-            <button class="btn btn-primary" type="submit" disabled={saving || deleting || !draft.domain.trim() || draft.rules.length === 0}><Icon name="check" size={13} />{saving ? 'Applying route…' : editingDomainIndex === -1 ? 'Add domain' : 'Save route'}</button>
+            <button class="btn btn-primary" type="submit" disabled={saving || deleting || !draft.domain.trim() || (draft.kind === 'project' && draft.rules.length === 0)}>
+              <Icon name="check" size={13} />{saving ? 'Applying route…' : draft.kind === 'registry' ? 'Save registry domain' : editingDomainIndex === -1 ? 'Add domain' : 'Save route'}
+            </button>
           </div>
         </footer>
       </form>
@@ -582,6 +725,7 @@
   .tls-badge.http { border-color: var(--color-rule); background: var(--color-surface-subtle); color: var(--color-muted); }
   .edit-button { min-height: 30px; padding: 0 var(--space-2); display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: transparent; color: var(--color-muted); font-size: var(--text-xs); font-weight: 600; cursor: pointer; }
   .edit-button:hover { border-color: var(--color-rule-strong); background: var(--color-paper-subtle); color: var(--color-ink); }
+  .system-badge { min-height: 26px; padding: 0 var(--space-2); display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-surface-subtle); color: var(--color-muted); font-size: var(--text-2xs); font-weight: 700; white-space: nowrap; }
 
   .edge-guide { margin-bottom: var(--space-4); display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-3); }
   .edge-guide article { padding: var(--space-4); display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-paper-raised); box-shadow: var(--shadow-panel); }
@@ -636,6 +780,18 @@
   .domain-input { height: 38px; padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-2); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); color: var(--color-muted); }
   .domain-input:focus-within { border-color: var(--color-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-focus) 14%, transparent); }
   .domain-input input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--color-ink); font: var(--text-sm) var(--font-mono); }
+  .registry-destination { min-height: 68px; padding: var(--space-3); display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface-subtle); }
+  .registry-mark { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-rule)); border-radius: var(--radius-sm); background: var(--color-accent-softer); color: var(--color-accent); }
+  .registry-destination > span:nth-child(2) { min-width: 0; display: grid; gap: 3px; }
+  .registry-destination strong { font-size: var(--text-xs); }
+  .registry-destination small { color: var(--color-muted); font-size: var(--text-2xs); }
+  .registry-destination em { padding: 3px 6px; border-radius: 999px; background: var(--color-warning-soft); color: var(--color-warning); font-size: var(--text-2xs); font-style: normal; font-weight: 700; white-space: nowrap; }
+  .registry-routes { display: grid; gap: var(--space-2); }
+  .registry-routes > div { min-height: 48px; padding: 0 var(--space-3); display: grid; grid-template-columns: minmax(145px, .8fr) auto minmax(160px, 1.2fr); align-items: center; gap: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-surface-subtle); color: var(--color-faint); }
+  .registry-routes code { color: var(--color-ink-secondary); font-size: var(--text-xs); }
+  .registry-routes > div > span { min-width: 0; display: flex; align-items: baseline; gap: 5px; }
+  .registry-routes strong { color: var(--color-ink); font-size: var(--text-xs); }
+  .registry-routes small { color: var(--color-muted); font: var(--text-2xs) var(--font-mono); }
   .rule-list { display: grid; gap: var(--space-2); }
   .rule-row { padding: var(--space-3); display: grid; grid-template-columns: minmax(120px, .7fr) auto minmax(180px, 1.2fr) 92px 30px; align-items: end; gap: var(--space-2); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface-subtle); }
   .rule-row label { min-width: 0; display: grid; gap: 5px; }
@@ -685,6 +841,10 @@
     .domain-toolbar { align-items: stretch; flex-direction: column; }
     .search-field { width: 100%; }
     .identity-grid, .security-picker { grid-template-columns: 1fr; }
+    .registry-destination { grid-template-columns: 34px minmax(0, 1fr); }
+    .registry-destination em { grid-column: 2; width: max-content; }
+    .registry-routes > div { grid-template-columns: 1fr auto; padding: var(--space-3); }
+    .registry-routes > div > span { grid-column: 1 / -1; }
     .rule-row { grid-template-columns: 1fr 90px 30px; }
     .rule-row > label:first-child { grid-column: 1 / -1; }
     .rule-arrow { display: none; }

@@ -437,10 +437,11 @@ DELETE /api/projects/{projectId}
 ### Domain bindings and Caddy routing
 
 `GET /api/domains` returns every project that can own domain bindings, its
-available reverse-proxy service targets, saved bindings, and the current
-generated Caddy configuration. This is the aggregate endpoint used by the
-global **Domains** screen; it avoids inspecting project containers simply to
-build the routing editor.
+available reverse-proxy service targets, saved bindings, the effective
+container-registry domain (including the `REGISTRY_HOSTS` fallback), Caddy
+control-plane hosts, and the current generated Caddy configuration. This is the
+aggregate endpoint used by the global **Domains** screen; it avoids inspecting
+project containers simply to build the routing editor.
 
 `PUT /api/projects/{projectId}/domain` atomically replaces all bindings, updates Caddy, and restores the previous routing if Caddy rejects the configuration.
 

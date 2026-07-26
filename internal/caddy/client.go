@@ -183,6 +183,10 @@ func (c *Client) ControlUpstream() string {
 	return c.controlUpstream
 }
 
+func (c *Client) ControlHosts() []string {
+	return append([]string(nil), c.controlHosts...)
+}
+
 func (c *Client) Ping(ctx context.Context) error {
 	endpoint, err := url.JoinPath(c.adminURL, "config")
 	if err != nil {

@@ -1146,6 +1146,13 @@ func (a *API) domainsIndex(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
+	registrySettings, err := a.store.RegistryDomainSettings(r.Context())
+	if store.NotFound(err) {
+		registrySettings = store.RegistryDomainSettings{HTTPSEnabled: true}
+	} else if err != nil {
+		problem(w, err)
+		return
+	}
 	connectionError := ""
 	if err := a.caddy.Ping(r.Context()); err != nil {
 		connectionError = err.Error()
@@ -1153,7 +1160,10 @@ func (a *API) domainsIndex(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, map[string]any{
 		"connected":       connectionError == "",
 		"connectionError": connectionError,
+		"controlHosts":    a.caddy.ControlHosts(),
+		"publicURL":       a.publicURL,
 		"projects":        workspaces,
+		"registry":        registryDomainResponse(registrySettings, a.effectiveRegistryHosts(r.Context())),
 		"routes":          routes,
 		"configuration":   a.caddy.Render(routes),
 	})
