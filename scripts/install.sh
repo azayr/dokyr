@@ -110,6 +110,10 @@ log "Install directory: ${INSTALL_DIR}"
 printf '\n'
 HTTP_PORT="${HTTP_PORT:-80}"
 HTTPS_PORT="${HTTPS_PORT:-443}"
+DOKYR_IMAGE="${DOKYR_IMAGE:-ghcr.io/azayr/dokyr:latest}"
+DOKYR_REGISTRY_IMAGE="${DOKYR_REGISTRY_IMAGE:-ghcr.io/azayr/dokyr}"
+DOKYR_UPDATE_CHANNEL="${DOKYR_UPDATE_CHANNEL:-latest}"
+REGISTRY_HOSTS="${REGISTRY_HOSTS:-registry.invalid}"
 PUBLIC_URL="${PUBLIC_URL:-$(read_input "Public URL (e.g. http://panel.example.com)" "http://localhost:${HTTP_PORT}")}"
 CONTROL_HOSTS="${CONTROL_HOSTS:-$(read_input "Control panel hostnames (space-separated, e.g. panel.example.com)" "localhost")}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(read_input "PostgreSQL password (leave blank to generate)" "")}"
@@ -152,13 +156,13 @@ ENCRYPTION_KEY=${ENCRYPTION_KEY}
 COOKIE_SECURE=false
 HOST_DISK_PATH=${INSTALL_DIR}/host-disk
 
-DOKYR_IMAGE=ghcr.io/azayr/dokyr:latest
-DOKYR_REGISTRY_IMAGE=ghcr.io/azayr/dokyr
-DOKYR_UPDATE_CHANNEL=latest
+DOKYR_IMAGE=${DOKYR_IMAGE}
+DOKYR_REGISTRY_IMAGE=${DOKYR_REGISTRY_IMAGE}
+DOKYR_UPDATE_CHANNEL=${DOKYR_UPDATE_CHANNEL}
 
-# Built-in Docker Distribution registry. Caddy routes these hostnames to the
-# internal registry service; no registry port is exported directly.
-REGISTRY_HOSTS=registry.invalid
+# Attach the public registry domain from Infrastructure -> Registry after
+# installation. This value is only a first-start and compatibility fallback.
+REGISTRY_HOSTS=${REGISTRY_HOSTS}
 REGISTRY_TOKEN_ISSUER=dokyr-registry
 REGISTRY_TOKEN_SERVICE=dokyr-registry
 REGISTRY_STORAGE=filesystem
@@ -211,7 +215,8 @@ log ""
 log "Next steps:"
 log "  1. Visit ${PUBLIC_URL} and create the owner account."
 log "  2. (Optional) Configure SMTP from Settings -> SMTP."
-log "  3. (Optional) Link GitHub from Settings -> Security."
+log "  3. Point a registry hostname to this server, then attach it from Infrastructure -> Registry -> Registry domain."
+log "  4. (Optional) Link GitHub from Settings -> Security."
 log ""
 log "To manage the stack later:"
 log "  cd ${INSTALL_DIR} && ${COMPOSE_CMD} up -d"
