@@ -187,6 +187,27 @@ func (c *Client) ControlHosts() []string {
 	return append([]string(nil), c.controlHosts...)
 }
 
+// IsControlHost reports whether domain is one of the hostnames that must reach
+// the control panel itself.
+//
+// Rendered project routes are matched before the control-host route, so binding
+// a project to a control hostname would shadow the panel: the operator would
+// lose the UI, and whatever the project serves would receive requests — and
+// session cookies — meant for Dokyr. Callers reject such a domain before
+// persisting it.
+func (c *Client) IsControlHost(domain string) bool {
+	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	if domain == "" {
+		return false
+	}
+	for _, host := range c.controlHosts {
+		if strings.TrimSuffix(strings.ToLower(host), ".") == domain {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Client) Ping(ctx context.Context) error {
 	endpoint, err := url.JoinPath(c.adminURL, "config")
 	if err != nil {
@@ -235,6 +256,21 @@ func (c *Client) ApplyRaw(ctx context.Context, body string) error {
 func render(routes []Route, controlHosts []string, registryHosts []string, controlUpstream string) string {
 	sorted := append([]Route(nil), routes...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Domain < sorted[j].Domain })
+	// Drop any route that claims a control hostname. Callers reject these when
+	// the domain is saved; dropping them here as well means a record that
+	// predates that check, or one written directly to the database, still cannot
+	// take the control panel's hostname away from it.
+	control := make(map[string]bool, len(controlHosts))
+	for _, host := range controlHosts {
+		control[strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")] = true
+	}
+	kept := sorted[:0]
+	for _, route := range sorted {
+		if !control[strings.TrimSuffix(strings.ToLower(route.Domain), ".")] {
+			kept = append(kept, route)
+		}
+	}
+	sorted = kept
 	var body strings.Builder
 	body.WriteString("{\n\tadmin unix//run/caddy-admin/admin.sock\n}\n\n")
 	for _, route := range sorted {
@@ -245,6 +281,11 @@ func render(routes []Route, controlHosts []string, registryHosts []string, contr
 		}
 	}
 	body.WriteString(":80 {\n\tencode zstd gzip\n")
+	// Caddy stops at the first matching handle block, so the control-panel
+	// matchers are written before any project route. The panel stays reachable
+	// even if a project somehow holds one of its hostnames.
+	fmt.Fprintf(&body, "\t@controlIP header_regexp Host \"^(?:[0-9]{1,3}[.]){3}[0-9]{1,3}(?::[0-9]+)?$\"\n\thandle @controlIP {\n\t\treverse_proxy %s\n\t}\n", controlUpstream)
+	fmt.Fprintf(&body, "\t@control host %s\n\thandle @control {\n\t\treverse_proxy %s\n\t}\n", strings.Join(controlHosts, " "), controlUpstream)
 	for index, route := range sorted {
 		fmt.Fprintf(&body, "\t@project%d host %s\n\thandle @project%d {\n", index, route.Domain, index)
 		if route.HTTPS {
@@ -254,8 +295,6 @@ func render(routes []Route, controlHosts []string, registryHosts []string, contr
 		}
 		body.WriteString("\t}\n")
 	}
-	fmt.Fprintf(&body, "\t@controlIP header_regexp Host \"^(?:[0-9]{1,3}[.]){3}[0-9]{1,3}(?::[0-9]+)?$\"\n\thandle @controlIP {\n\t\treverse_proxy %s\n\t}\n", controlUpstream)
-	fmt.Fprintf(&body, "\t@control host %s\n\thandle @control {\n\t\treverse_proxy %s\n\t}\n", strings.Join(controlHosts, " "), controlUpstream)
 	fmt.Fprintf(&body, "\t@registry host %s\n\thandle @registry {\n\t\thandle /api/registry/token {\n\t\t\treverse_proxy %s\n\t\t}\n\t\treverse_proxy registry:5000\n\t}\n", strings.Join(registryHosts, " "), controlUpstream)
 	body.WriteString("\thandle {\n\t\trespond \"Not Found\" 404\n\t}\n}\n")
 	return body.String()

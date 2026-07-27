@@ -357,6 +357,10 @@ func (a *API) updateRegistryDomain(w http.ResponseWriter, r *http.Request) {
 	defer a.domainMu.Unlock()
 
 	if domain != "" {
+		if a.caddy.IsControlHost(domain) {
+			write(w, http.StatusConflict, map[string]string{"error": controlHostConflictMessage})
+			return
+		}
 		assigned, lookupErr := a.store.ProjectDomainBindingByDomain(r.Context(), domain)
 		if lookupErr == nil && assigned.Domain != "" {
 			write(w, http.StatusConflict, map[string]string{"error": "this domain is already assigned to a project"})

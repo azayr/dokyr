@@ -452,6 +452,24 @@ Operational requirements:
 
 AES-GCM protects secrets at rest in PostgreSQL, but the encryption key is present in the Dokyr container environment and plaintext is necessarily passed to Docker/provider APIs at runtime. This is application-level encryption, not protection from a fully compromised control plane.
 
+### Roles and permissions
+
+`internal/authz` holds the entire authorization policy as a single role-to-permission table, and every authenticated route is registered with the permission it requires. The mux wrapper in `internal/api/guard.go` takes the permission as a required argument, so a route cannot be added without choosing one — a forgotten check is a compile error rather than an endpoint open to every account. `TestEveryRouteHasAnExpectedPermission` pins the resulting table so a widening of access shows up as a reviewable diff.
+
+Three permissions are owner-only because each can be escalated into control of the host or of the control panel itself:
+
+| Permission | Why it is owner-only |
+|---|---|
+| `ingress:write` | Rewriting Caddy's routing table — project domains, the registry domain, and the raw Caddyfile — controls every hostname the server answers on, and can reopen Caddy's admin API. |
+| `platform:write` | Replaces the control-plane container and holds SMTP credentials. |
+| `user:manage` | Grants roles, so it is equivalent to every other permission. |
+
+A caller's role is read from PostgreSQL on each request rather than taken from the session token, so removing or re-roling an account takes effect immediately instead of when the 12-hour token expires.
+
+Two properties keep a non-owner role from becoming host access. First, `internal/runtime` builds every container's `HostConfig` itself from a fixed allowlist: the network is pinned to `selfhost-proxy`, `no-new-privileges` is set, and no bind mount, `Privileged`, or namespace override is ever derived from a request. Second, Compose import discards `privileged`, `network_mode`, `devices`, `cap_add`, and `userns_mode`, and rejects application volume mounts. Both must stay that way: they are what make it safe to let a non-owner deploy an arbitrary image.
+
+Domains that match a configured control host are rejected when saved and dropped again at render time, and the control-panel matcher is written before any project route. Caddy stops at the first matching `handle` block, so without that ordering a project could shadow the panel's own hostname and receive its session cookies.
+
 ## 14. Build, run, and verify
 
 Build and run the full reference topology:

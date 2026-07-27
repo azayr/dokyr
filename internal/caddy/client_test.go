@@ -197,3 +197,61 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return fn(request)
 }
+
+func TestIsControlHost(t *testing.T) {
+	client, err := New("http://caddy:2019", []string{"panel.example.com", "Localhost"}, nil, "dokyr:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, domain := range []string{"panel.example.com", "PANEL.example.com", "panel.example.com.", " panel.example.com ", "localhost"} {
+		if !client.IsControlHost(domain) {
+			t.Errorf("IsControlHost(%q) = false, want true", domain)
+		}
+	}
+	for _, domain := range []string{"", "app.example.com", "notpanel.example.com", "panel.example.com.evil.com"} {
+		if client.IsControlHost(domain) {
+			t.Errorf("IsControlHost(%q) = true, want false", domain)
+		}
+	}
+}
+
+// TestRenderKeepsControlHostAheadOfProjects covers the shadowing case: Caddy
+// stops at the first matching handle block, so a project route must never be
+// written before the control-panel matcher.
+func TestRenderControlHostBeforeProjectRoutes(t *testing.T) {
+	client, err := New("http://caddy:2019", []string{"panel.example.com"}, nil, "dokyr:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := client.Render([]Route{{Domain: "app.example.com", Upstream: "selfhost-prj_app:80"}})
+	control, project := strings.Index(configuration, "@control host"), strings.Index(configuration, "@project0 host")
+	if project < 0 {
+		t.Fatalf("project route missing:\n%s", configuration)
+	}
+	if control > project {
+		t.Fatalf("control route must be rendered before project routes:\n%s", configuration)
+	}
+}
+
+// TestRenderDropsRouteClaimingControlHost is the defense in depth behind the
+// API-level rejection: a stored binding for a control hostname is discarded
+// rather than allowed to take over the panel.
+func TestRenderDropsRouteClaimingControlHost(t *testing.T) {
+	client, err := New("http://caddy:2019", []string{"panel.example.com"}, nil, "dokyr:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := client.Render([]Route{
+		{Domain: "panel.example.com", Upstream: "selfhost-prj_evil:80", HTTPS: true},
+		{Domain: "app.example.com", Upstream: "selfhost-prj_app:80"},
+	})
+	if strings.Contains(configuration, "selfhost-prj_evil") {
+		t.Fatalf("route claiming the control host should be dropped:\n%s", configuration)
+	}
+	if !strings.Contains(configuration, "@control host panel.example.com") {
+		t.Fatalf("control route missing:\n%s", configuration)
+	}
+	if !strings.Contains(configuration, "selfhost-prj_app") {
+		t.Fatalf("unrelated project route should survive:\n%s", configuration)
+	}
+}

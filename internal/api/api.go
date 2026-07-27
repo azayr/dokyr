@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/azayr/selfhost/internal/auth"
+	"github.com/azayr/selfhost/internal/authz"
 	"github.com/azayr/selfhost/internal/caddy"
 	"github.com/azayr/selfhost/internal/config"
 	"github.com/azayr/selfhost/internal/integration"
@@ -76,6 +77,16 @@ type domainBindingInput struct {
 }
 
 func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integration.Service, registryTokens *registry.TokenIssuer, box *secretbox.Box, caddyClient *caddy.Client, updates *platformupdate.Client, publicURL string, registryHosts []string, registryInternalSecret string, log *slog.Logger) *API {
+	// Roles come from the database on every request rather than from the
+	// session token, so removing or re-roling an account takes effect at once
+	// instead of when the token expires.
+	a.SetRoleResolver(func(ctx context.Context, userID string) (string, error) {
+		user, err := s.User(ctx, userID)
+		if err != nil {
+			return "", err
+		}
+		return user.Role, nil
+	})
 	return &API{
 		store:                  s,
 		docker:                 d,
@@ -95,7 +106,7 @@ func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integ
 }
 func (a *API) Handler() http.Handler {
 	public := http.NewServeMux()
-	protected := http.NewServeMux()
+	protected := newGuardedMux(a)
 	public.HandleFunc("GET /api/health", a.health)
 	public.HandleFunc("GET /api/setup/status", a.setupStatus)
 	public.HandleFunc("POST /api/setup", a.setup)
@@ -115,113 +126,139 @@ func (a *API) Handler() http.Handler {
 	public.HandleFunc("POST /api/webhooks/registry/{id}/{token}", a.registryWebhook)
 	public.HandleFunc("POST /api/registry/events", a.internalRegistryEvents)
 	public.HandleFunc("GET /api/registry/token", a.registryToken)
-	protected.HandleFunc("GET /api/auth/me", a.me)
-	protected.HandleFunc("GET /api/account/security", a.accountSecurity)
-	protected.HandleFunc("PUT /api/account/password", a.updatePassword)
-	protected.HandleFunc("POST /api/account/2fa/setup", a.setupTwoFactor)
-	protected.HandleFunc("POST /api/account/2fa/confirm", a.confirmTwoFactor)
-	protected.HandleFunc("DELETE /api/account/2fa", a.disableTwoFactor)
-	protected.HandleFunc("GET /api/account/github/start", a.githubLinkStart)
-	protected.HandleFunc("DELETE /api/account/github", a.unlinkGitHub)
-	protected.HandleFunc("GET /api/settings/smtp", a.smtpSettings)
-	protected.HandleFunc("PUT /api/settings/smtp", a.updateSMTPSettings)
-	protected.HandleFunc("POST /api/settings/smtp/test", a.testSMTPSettings)
-	protected.HandleFunc("GET /api/settings/platform/update", a.platformUpdateStatusHandler)
-	protected.HandleFunc("POST /api/settings/platform/update/check", a.checkPlatformUpdate)
-	protected.HandleFunc("PUT /api/settings/platform/update", a.updatePlatformUpdateSettings)
-	protected.HandleFunc("POST /api/settings/platform/update/apply", a.applyPlatformUpdate)
-	protected.HandleFunc("GET /api/dashboard", a.dashboard)
-	protected.HandleFunc("GET /api/domains", a.domainsIndex)
-	protected.HandleFunc("GET /api/projects", a.projects)
-	protected.HandleFunc("POST /api/projects", a.createProject)
-	protected.HandleFunc("GET /api/projects/{id}", a.project)
-	protected.HandleFunc("PUT /api/projects/{id}", a.updateProject)
-	protected.HandleFunc("DELETE /api/projects/{id}", a.deleteProject)
-	protected.HandleFunc("PUT /api/projects/{id}/domain", a.updateProjectDomain)
-	protected.HandleFunc("POST /api/projects/{id}/deploy", a.deployProject)
-	protected.HandleFunc("POST /api/projects/{id}/stop", a.stopProjectService)
-	protected.HandleFunc("POST /api/projects/{id}/restart", a.restartProjectService)
-	protected.HandleFunc("GET /api/projects/{id}/logs", a.projectLogs)
-	protected.HandleFunc("GET /api/projects/{id}/metrics", a.projectMetrics)
-	protected.HandleFunc("GET /api/projects/{id}/environment", a.projectEnvironment)
-	protected.HandleFunc("PUT /api/projects/{id}/environment", a.updateProjectEnvironment)
-	protected.HandleFunc("POST /api/projects/{id}/databases", a.createDatabaseService)
-	protected.HandleFunc("POST /api/projects/{id}/services", a.createApplicationService)
-	protected.HandleFunc("POST /api/projects/{id}/compose/validate", a.validateCompose)
-	protected.HandleFunc("POST /api/projects/{id}/compose", a.importCompose)
-	protected.HandleFunc("PUT /api/services/{id}", a.updateApplicationService)
-	protected.HandleFunc("POST /api/services/{id}/deploy", a.deployApplicationService)
-	protected.HandleFunc("POST /api/services/{id}/stop", a.stopApplicationService)
-	protected.HandleFunc("POST /api/services/{id}/restart", a.restartApplicationService)
-	protected.HandleFunc("POST /api/services/{id}/exec", a.executeApplicationServiceCommand)
-	protected.HandleFunc("GET /api/services/{id}/deployment-triggers", a.applicationServiceDeploymentTriggers)
-	protected.HandleFunc("PUT /api/services/{id}/deployment-triggers", a.updateApplicationServiceDeploymentTriggers)
-	protected.HandleFunc("GET /api/services/{id}/logs", a.applicationServiceLogs)
-	protected.HandleFunc("GET /api/services/{id}/environment", a.applicationServiceEnvironment)
-	protected.HandleFunc("PUT /api/services/{id}/environment", a.updateApplicationServiceEnvironment)
-	protected.HandleFunc("DELETE /api/services/{id}", a.deleteApplicationService)
-	protected.HandleFunc("GET /api/databases/{id}/credentials", a.databaseCredentials)
-	protected.HandleFunc("PUT /api/databases/{id}/exposure", a.updateDatabaseExposure)
-	protected.HandleFunc("POST /api/databases/{id}/stop", a.stopDatabaseService)
-	protected.HandleFunc("POST /api/databases/{id}/restart", a.restartDatabaseService)
-	protected.HandleFunc("GET /api/databases/{id}/logs", a.databaseLogs)
-	protected.HandleFunc("GET /api/databases/{id}/events", a.databaseDeploymentEvents)
-	protected.HandleFunc("DELETE /api/databases/{id}", a.deleteDatabaseService)
-	protected.HandleFunc("GET /api/deployments", a.deployments)
-	protected.HandleFunc("GET /api/deployments/{id}", a.deployment)
-	protected.HandleFunc("POST /api/deployments/{id}/cancel", a.cancelDeployment)
-	protected.HandleFunc("GET /api/integrations", a.integrationsIndex)
-	protected.HandleFunc("GET /api/integrations/oauth/{provider}/start", a.oauthStart)
-	protected.HandleFunc("GET /api/integrations/github/install/start", a.githubInstallationStart)
-	protected.HandleFunc("POST /api/integrations/github/installations/sync", a.syncGitHubInstallations)
-	protected.HandleFunc("GET /api/integrations/sources/{id}/repositories", a.repositories)
-	protected.HandleFunc("DELETE /api/integrations/sources/{id}", a.deleteSourceConnection)
-	protected.HandleFunc("POST /api/integrations/registries", a.createRegistry)
-	protected.HandleFunc("POST /api/integrations/registries/{id}/check", a.checkRegistry)
-	protected.HandleFunc("DELETE /api/integrations/registries/{id}", a.deleteRegistry)
-	protected.HandleFunc("GET /api/caddy/config", a.caddyConfig)
-	protected.HandleFunc("PUT /api/caddy/config", a.applyCaddyConfig)
-	protected.HandleFunc("POST /api/caddy/reset", a.resetCaddyConfig)
-	protected.HandleFunc("GET /api/infrastructure/metrics", a.infrastructureMetrics)
-	protected.HandleFunc("GET /api/infrastructure/control-plane/metrics", a.controlPlaneMetrics)
-	protected.HandleFunc("GET /api/infrastructure/control-plane/logs", a.controlPlaneLogs)
-	protected.HandleFunc("GET /api/infrastructure/cleanup", a.dockerCleanupPreview)
-	protected.HandleFunc("POST /api/infrastructure/cleanup", a.dockerCleanup)
-	protected.HandleFunc("GET /api/infrastructure/cleanup/schedule", a.cleanupSchedule)
-	protected.HandleFunc("PUT /api/infrastructure/cleanup/schedule", a.updateCleanupSchedule)
-	protected.HandleFunc("GET /api/registry/status", a.registryStatus)
-	protected.HandleFunc("GET /api/registry/settings", a.registrySettings)
-	protected.HandleFunc("PUT /api/registry/settings", a.updateRegistrySettings)
-	protected.HandleFunc("GET /api/registry/domain", a.registryDomain)
-	protected.HandleFunc("PUT /api/registry/domain", a.updateRegistryDomain)
-	protected.HandleFunc("GET /api/registry/access-tokens", a.registryAccessTokens)
-	protected.HandleFunc("POST /api/registry/access-tokens", a.createRegistryAccessToken)
-	protected.HandleFunc("DELETE /api/registry/access-tokens/{id}", a.deleteRegistryAccessToken)
-	protected.HandleFunc("GET /api/registry/repositories", a.registryRepositories)
-	protected.HandleFunc("DELETE /api/registry/repositories/{name}/tags/{tag}", a.registryDeleteTag)
-	protected.HandleFunc("DELETE /api/registry/tags", a.registryDeleteTag)
-	protected.HandleFunc("POST /api/registry/garbage-collection", a.registryGarbageCollect)
+	a.registerProtectedRoutes(protected)
+	return a.mountRoutes(public, protected)
+}
+
+// registerProtectedRoutes declares every authenticated route with the permission
+// it requires. Kept separate from Handler so the authorization policy of the
+// whole surface can be inspected in a test without live dependencies.
+func (a *API) registerProtectedRoutes(protected *guardedMux) {
+	// Own-account routes are reachable by every authenticated caller: a viewer
+	// still has to be able to read their session and rotate their password.
+	protected.handleAnyRole("GET /api/auth/me", a.me)
+	protected.handleAnyRole("GET /api/account/security", a.accountSecurity)
+	protected.handleAnyRole("PUT /api/account/password", a.updatePassword)
+	protected.handleAnyRole("POST /api/account/2fa/setup", a.setupTwoFactor)
+	protected.handleAnyRole("POST /api/account/2fa/confirm", a.confirmTwoFactor)
+	protected.handleAnyRole("DELETE /api/account/2fa", a.disableTwoFactor)
+	protected.handleAnyRole("GET /api/account/github/start", a.githubLinkStart)
+	protected.handleAnyRole("DELETE /api/account/github", a.unlinkGitHub)
+	// SMTP settings hold credentials, and the platform update endpoints can
+	// replace the control-plane container, so both stay with the owner.
+	protected.handle("GET /api/settings/smtp", authz.PermPlatformWrite, a.smtpSettings)
+	protected.handle("PUT /api/settings/smtp", authz.PermPlatformWrite, a.updateSMTPSettings)
+	protected.handle("POST /api/settings/smtp/test", authz.PermPlatformWrite, a.testSMTPSettings)
+	protected.handle("GET /api/settings/platform/update", authz.PermPlatformWrite, a.platformUpdateStatusHandler)
+	protected.handle("POST /api/settings/platform/update/check", authz.PermPlatformWrite, a.checkPlatformUpdate)
+	protected.handle("PUT /api/settings/platform/update", authz.PermPlatformWrite, a.updatePlatformUpdateSettings)
+	protected.handle("POST /api/settings/platform/update/apply", authz.PermPlatformWrite, a.applyPlatformUpdate)
+	protected.handle("GET /api/dashboard", authz.PermProjectRead, a.dashboard)
+	protected.handle("GET /api/domains", authz.PermProjectRead, a.domainsIndex)
+	protected.handle("GET /api/projects", authz.PermProjectRead, a.projects)
+	protected.handle("POST /api/projects", authz.PermProjectWrite, a.createProject)
+	protected.handle("GET /api/projects/{id}", authz.PermProjectRead, a.project)
+	protected.handle("PUT /api/projects/{id}", authz.PermProjectWrite, a.updateProject)
+	protected.handle("DELETE /api/projects/{id}", authz.PermProjectWrite, a.deleteProject)
+	// Assigning a domain rewrites Caddy's routing table, which can shadow the
+	// control panel's own hostname. Owner only.
+	protected.handle("PUT /api/projects/{id}/domain", authz.PermIngressWrite, a.updateProjectDomain)
+	protected.handle("POST /api/projects/{id}/deploy", authz.PermProjectDeploy, a.deployProject)
+	protected.handle("POST /api/projects/{id}/stop", authz.PermProjectDeploy, a.stopProjectService)
+	protected.handle("POST /api/projects/{id}/restart", authz.PermProjectDeploy, a.restartProjectService)
+	protected.handle("GET /api/projects/{id}/logs", authz.PermProjectRead, a.projectLogs)
+	protected.handle("GET /api/projects/{id}/metrics", authz.PermProjectRead, a.projectMetrics)
+	protected.handle("GET /api/projects/{id}/environment", authz.PermSecretRead, a.projectEnvironment)
+	protected.handle("PUT /api/projects/{id}/environment", authz.PermSecretWrite, a.updateProjectEnvironment)
+	protected.handle("POST /api/projects/{id}/databases", authz.PermProjectWrite, a.createDatabaseService)
+	protected.handle("POST /api/projects/{id}/services", authz.PermProjectWrite, a.createApplicationService)
+	protected.handle("POST /api/projects/{id}/compose/validate", authz.PermProjectWrite, a.validateCompose)
+	protected.handle("POST /api/projects/{id}/compose", authz.PermProjectWrite, a.importCompose)
+	protected.handle("PUT /api/services/{id}", authz.PermProjectWrite, a.updateApplicationService)
+	protected.handle("POST /api/services/{id}/deploy", authz.PermProjectDeploy, a.deployApplicationService)
+	protected.handle("POST /api/services/{id}/stop", authz.PermProjectDeploy, a.stopApplicationService)
+	protected.handle("POST /api/services/{id}/restart", authz.PermProjectDeploy, a.restartApplicationService)
+	protected.handle("POST /api/services/{id}/exec", authz.PermContainerExec, a.executeApplicationServiceCommand)
+	protected.handle("GET /api/services/{id}/deployment-triggers", authz.PermProjectRead, a.applicationServiceDeploymentTriggers)
+	protected.handle("PUT /api/services/{id}/deployment-triggers", authz.PermProjectWrite, a.updateApplicationServiceDeploymentTriggers)
+	protected.handle("GET /api/services/{id}/logs", authz.PermProjectRead, a.applicationServiceLogs)
+	protected.handle("GET /api/services/{id}/environment", authz.PermSecretRead, a.applicationServiceEnvironment)
+	protected.handle("PUT /api/services/{id}/environment", authz.PermSecretWrite, a.updateApplicationServiceEnvironment)
+	protected.handle("DELETE /api/services/{id}", authz.PermProjectWrite, a.deleteApplicationService)
+	protected.handle("GET /api/databases/{id}/credentials", authz.PermSecretRead, a.databaseCredentials)
+	// Exposure publishes the database on a host port, i.e. to the internet.
+	protected.handle("PUT /api/databases/{id}/exposure", authz.PermInfraWrite, a.updateDatabaseExposure)
+	protected.handle("POST /api/databases/{id}/stop", authz.PermProjectDeploy, a.stopDatabaseService)
+	protected.handle("POST /api/databases/{id}/restart", authz.PermProjectDeploy, a.restartDatabaseService)
+	protected.handle("GET /api/databases/{id}/logs", authz.PermProjectRead, a.databaseLogs)
+	protected.handle("GET /api/databases/{id}/events", authz.PermProjectRead, a.databaseDeploymentEvents)
+	protected.handle("DELETE /api/databases/{id}", authz.PermProjectWrite, a.deleteDatabaseService)
+	protected.handle("GET /api/deployments", authz.PermProjectRead, a.deployments)
+	protected.handle("GET /api/deployments/{id}", authz.PermProjectRead, a.deployment)
+	protected.handle("POST /api/deployments/{id}/cancel", authz.PermProjectDeploy, a.cancelDeployment)
+	protected.handle("GET /api/integrations", authz.PermProjectRead, a.integrationsIndex)
+	protected.handle("GET /api/integrations/oauth/{provider}/start", authz.PermIntegrationWrite, a.oauthStart)
+	protected.handle("GET /api/integrations/github/install/start", authz.PermIntegrationWrite, a.githubInstallationStart)
+	protected.handle("POST /api/integrations/github/installations/sync", authz.PermIntegrationWrite, a.syncGitHubInstallations)
+	protected.handle("GET /api/integrations/sources/{id}/repositories", authz.PermProjectRead, a.repositories)
+	protected.handle("DELETE /api/integrations/sources/{id}", authz.PermIntegrationWrite, a.deleteSourceConnection)
+	protected.handle("POST /api/integrations/registries", authz.PermIntegrationWrite, a.createRegistry)
+	protected.handle("POST /api/integrations/registries/{id}/check", authz.PermIntegrationWrite, a.checkRegistry)
+	protected.handle("DELETE /api/integrations/registries/{id}", authz.PermIntegrationWrite, a.deleteRegistry)
+	// A raw Caddyfile can redirect the control host or reopen Caddy's admin
+	// API, which is full control of inbound traffic. Owner only, read included:
+	// the current config lists every configured hostname.
+	protected.handle("GET /api/caddy/config", authz.PermIngressWrite, a.caddyConfig)
+	protected.handle("PUT /api/caddy/config", authz.PermIngressWrite, a.applyCaddyConfig)
+	protected.handle("POST /api/caddy/reset", authz.PermIngressWrite, a.resetCaddyConfig)
+	protected.handle("GET /api/infrastructure/metrics", authz.PermProjectRead, a.infrastructureMetrics)
+	protected.handle("GET /api/infrastructure/control-plane/metrics", authz.PermProjectRead, a.controlPlaneMetrics)
+	protected.handle("GET /api/infrastructure/control-plane/logs", authz.PermInfraWrite, a.controlPlaneLogs)
+	protected.handle("GET /api/infrastructure/cleanup", authz.PermInfraWrite, a.dockerCleanupPreview)
+	protected.handle("POST /api/infrastructure/cleanup", authz.PermInfraWrite, a.dockerCleanup)
+	protected.handle("GET /api/infrastructure/cleanup/schedule", authz.PermInfraWrite, a.cleanupSchedule)
+	protected.handle("PUT /api/infrastructure/cleanup/schedule", authz.PermInfraWrite, a.updateCleanupSchedule)
+	protected.handle("GET /api/registry/status", authz.PermProjectRead, a.registryStatus)
+	protected.handle("GET /api/registry/settings", authz.PermRegistryWrite, a.registrySettings)
+	protected.handle("PUT /api/registry/settings", authz.PermRegistryWrite, a.updateRegistrySettings)
+	protected.handle("GET /api/registry/domain", authz.PermRegistryWrite, a.registryDomain)
+	// The registry hostname is also a Caddy route, with the same shadowing
+	// risk as a project domain.
+	protected.handle("PUT /api/registry/domain", authz.PermIngressWrite, a.updateRegistryDomain)
+	protected.handle("GET /api/registry/access-tokens", authz.PermSecretRead, a.registryAccessTokens)
+	protected.handle("POST /api/registry/access-tokens", authz.PermRegistryWrite, a.createRegistryAccessToken)
+	protected.handle("DELETE /api/registry/access-tokens/{id}", authz.PermRegistryWrite, a.deleteRegistryAccessToken)
+	protected.handle("GET /api/registry/repositories", authz.PermProjectRead, a.registryRepositories)
+	protected.handle("DELETE /api/registry/repositories/{name}/tags/{tag}", authz.PermRegistryWrite, a.registryDeleteTag)
+	protected.handle("DELETE /api/registry/tags", authz.PermRegistryWrite, a.registryDeleteTag)
+	protected.handle("POST /api/registry/garbage-collection", authz.PermRegistryWrite, a.registryGarbageCollect)
+}
+
+// mountRoutes mounts the public and authenticated trees. Prefixes listed here
+// pass through auth.Require, which establishes the session and resolves the
+// caller's current role before the per-route permission check runs.
+func (a *API) mountRoutes(public *http.ServeMux, protected *guardedMux) http.Handler {
 	root := http.NewServeMux()
-	root.Handle("/api/auth/me", a.auth.Require(protected))
-	root.Handle("/api/account/", a.auth.Require(protected))
-	root.Handle("/api/settings/", a.auth.Require(protected))
-	root.Handle("/api/dashboard", a.auth.Require(protected))
-	root.Handle("/api/domains", a.auth.Require(protected))
-	root.Handle("/api/projects", a.auth.Require(protected))
-	root.Handle("/api/projects/", a.auth.Require(protected))
-	root.Handle("/api/deployments", a.auth.Require(protected))
-	root.Handle("/api/deployments/", a.auth.Require(protected))
-	root.Handle("/api/databases/", a.auth.Require(protected))
-	root.Handle("/api/services/", a.auth.Require(protected))
+	root.Handle("/api/auth/me", a.auth.Require(protected.handler()))
+	root.Handle("/api/account/", a.auth.Require(protected.handler()))
+	root.Handle("/api/settings/", a.auth.Require(protected.handler()))
+	root.Handle("/api/dashboard", a.auth.Require(protected.handler()))
+	root.Handle("/api/domains", a.auth.Require(protected.handler()))
+	root.Handle("/api/projects", a.auth.Require(protected.handler()))
+	root.Handle("/api/projects/", a.auth.Require(protected.handler()))
+	root.Handle("/api/deployments", a.auth.Require(protected.handler()))
+	root.Handle("/api/deployments/", a.auth.Require(protected.handler()))
+	root.Handle("/api/databases/", a.auth.Require(protected.handler()))
+	root.Handle("/api/services/", a.auth.Require(protected.handler()))
 	root.Handle("GET /api/integrations/oauth/{provider}/callback", public)
 	root.Handle("GET /api/integrations/github/install/callback", public)
 	root.Handle("GET /api/registry/token", public)
 	root.Handle("POST /api/registry/events", public)
-	root.Handle("/api/integrations", a.auth.Require(protected))
-	root.Handle("/api/integrations/", a.auth.Require(protected))
-	root.Handle("/api/caddy/", a.auth.Require(protected))
-	root.Handle("/api/infrastructure/", a.auth.Require(protected))
-	root.Handle("/api/registry/", a.auth.Require(protected))
+	root.Handle("/api/integrations", a.auth.Require(protected.handler()))
+	root.Handle("/api/integrations/", a.auth.Require(protected.handler()))
+	root.Handle("/api/caddy/", a.auth.Require(protected.handler()))
+	root.Handle("/api/infrastructure/", a.auth.Require(protected.handler()))
+	root.Handle("/api/registry/", a.auth.Require(protected.handler()))
 	root.Handle("/", public)
 	return withJSON(root)
 }
@@ -1248,6 +1285,10 @@ func (a *API) createProject(w http.ResponseWriter, r *http.Request) {
 		in.Branch = "main"
 	}
 	if domain != "" {
+		if a.caddy.IsControlHost(domain) {
+			write(w, 409, map[string]string{"error": controlHostConflictMessage})
+			return
+		}
 		if assigned, err := a.registryDomainMatches(r.Context(), domain); err != nil {
 			problem(w, err)
 			return
@@ -1371,6 +1412,10 @@ func (a *API) updateProjectDomain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		seenDomains[domain] = true
+		if a.caddy.IsControlHost(domain) {
+			write(w, 409, map[string]string{"error": controlHostConflictMessage})
+			return
+		}
 		if assigned, err := a.registryDomainMatches(r.Context(), domain); err != nil {
 			problem(w, err)
 			return
@@ -3961,15 +4006,14 @@ func cleanApplicationCommandInput(input applicationCommandInput) (applicationCom
 }
 
 func canExecuteContainerCommands(role string) bool {
-	return role == "owner" || role == "admin" || role == "developer"
+	return authz.Can(role, authz.PermContainerExec)
 }
 
 func (a *API) executeApplicationServiceCommand(w http.ResponseWriter, r *http.Request) {
-	claims, ok := auth.FromContext(r.Context())
-	if !ok || !canExecuteContainerCommands(claims.Role) {
-		write(w, http.StatusForbidden, map[string]string{"error": "your role cannot execute commands in containers"})
-		return
-	}
+	// The route is registered behind authz.PermContainerExec, so reaching this
+	// handler already implies the caller may exec. Claims are still read to
+	// attribute the command in the log.
+	claims, _ := auth.FromContext(r.Context())
 	var input applicationCommandInput
 	if !decode(w, r, &input) {
 		return

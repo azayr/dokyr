@@ -26,10 +26,17 @@ type Claims struct {
 	Purpose string `json:"purpose,omitempty"`
 	jwt.RegisteredClaims
 }
+
+// RoleResolver reports the role a user currently holds. Require consults it on
+// every request so that re-roling or deleting an account takes effect
+// immediately instead of when the session token expires.
+type RoleResolver func(ctx context.Context, userID string) (role string, err error)
+
 type Manager struct {
-	secret []byte
-	issuer string
-	secure bool
+	secret      []byte
+	issuer      string
+	secure      bool
+	resolveRole RoleResolver
 }
 
 func New(secret, issuer string, secure bool) (*Manager, error) {
@@ -37,6 +44,12 @@ func New(secret, issuer string, secure bool) (*Manager, error) {
 		return nil, errors.New("SELFHOST_JWT_SECRET must be at least 32 characters")
 	}
 	return &Manager{secret: []byte(secret), issuer: issuer, secure: secure}, nil
+}
+
+// SetRoleResolver installs the authoritative source for a caller's role. Until
+// it is set, Require falls back to the role embedded in the session token.
+func (m *Manager) SetRoleResolver(resolve RoleResolver) {
+	m.resolveRole = resolve
 }
 func (m *Manager) Token(userID, name, email, role string) (string, error) {
 	now := time.Now()
@@ -111,8 +124,24 @@ func (m *Manager) Require(next http.Handler) http.Handler {
 			writeUnauthorized(w)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), claimsKey, claims)))
+		// The token carries a role, but it is only a cached copy that stays
+		// valid for the token's lifetime. Re-read the role so that a demoted or
+		// deleted account loses access on its next request.
+		if m.resolveRole != nil {
+			role, err := m.resolveRole(r.Context(), claims.Subject)
+			if err != nil {
+				writeUnauthorized(w)
+				return
+			}
+			claims.Role = role
+		}
+		next.ServeHTTP(w, r.WithContext(WithClaims(r.Context(), claims)))
 	})
+}
+
+// WithClaims attaches claims to ctx so FromContext can retrieve them.
+func WithClaims(ctx context.Context, claims Claims) context.Context {
+	return context.WithValue(ctx, claimsKey, claims)
 }
 func FromContext(ctx context.Context) (Claims, bool) {
 	claims, ok := ctx.Value(claimsKey).(Claims)
