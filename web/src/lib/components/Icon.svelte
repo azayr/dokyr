@@ -56,6 +56,8 @@
 {:else if name==='folder'}<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
 {:else if name==='terminal'}<path d="m5 8 4 4-4 4M12 17h7"/><rect x="2.5" y="4" width="19" height="16" rx="2"/>
 {:else if name==='user'}<circle cx="12" cy="8" r="4"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/>
+{:else if name==='users'}<circle cx="9.5" cy="8.5" r="3.5"/><path d="M3 20a6.5 6.5 0 0 1 13 0"/><path d="M16.5 4.6a3.5 3.5 0 0 1 0 6.8"/><path d="M18 14.3a6.5 6.5 0 0 1 3 5.7"/>
+{:else if name==='user-plus'}<circle cx="10" cy="8" r="4"/><path d="M3 20a7 7 0 0 1 12.2-4.7"/><path d="M18 14v6M15 17h6"/>
 {:else if name==='more'}<circle cx="5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1" fill="currentColor" stroke="none"/>
 {:else if name==='home'}<path d="m4 11 8-7 8 7"/><path d="M6 10v9a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-9"/>
 {:else if name==='file-text'}<path d="M13 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9l-6-6z"/><path d="M13 3v6h6M9 13h6M9 17h6"/>

@@ -153,6 +153,13 @@ func (a *API) registerProtectedRoutes(protected *guardedMux) {
 	protected.handle("POST /api/settings/platform/update/check", authz.PermPlatformWrite, a.checkPlatformUpdate)
 	protected.handle("PUT /api/settings/platform/update", authz.PermPlatformWrite, a.updatePlatformUpdateSettings)
 	protected.handle("POST /api/settings/platform/update/apply", authz.PermPlatformWrite, a.applyPlatformUpdate)
+	// Managing users means granting roles, which is equivalent to holding every
+	// permission. Owner only.
+	protected.handle("GET /api/users", authz.PermUserManage, a.users)
+	protected.handle("POST /api/users", authz.PermUserManage, a.inviteUser)
+	protected.handle("POST /api/users/{id}/invitation", authz.PermUserManage, a.resendUserInvitation)
+	protected.handle("PUT /api/users/{id}/role", authz.PermUserManage, a.updateUserRole)
+	protected.handle("DELETE /api/users/{id}", authz.PermUserManage, a.deleteUser)
 	protected.handle("GET /api/dashboard", authz.PermProjectRead, a.dashboard)
 	protected.handle("GET /api/domains", authz.PermProjectRead, a.domainsIndex)
 	protected.handle("GET /api/projects", authz.PermProjectRead, a.projects)
@@ -242,6 +249,8 @@ func (a *API) mountRoutes(public *http.ServeMux, protected *guardedMux) http.Han
 	root.Handle("/api/auth/me", a.auth.Require(protected.handler()))
 	root.Handle("/api/account/", a.auth.Require(protected.handler()))
 	root.Handle("/api/settings/", a.auth.Require(protected.handler()))
+	root.Handle("/api/users", a.auth.Require(protected.handler()))
+	root.Handle("/api/users/", a.auth.Require(protected.handler()))
 	root.Handle("/api/dashboard", a.auth.Require(protected.handler()))
 	root.Handle("/api/domains", a.auth.Require(protected.handler()))
 	root.Handle("/api/projects", a.auth.Require(protected.handler()))
@@ -440,6 +449,14 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		write(w, 401, map[string]string{"error": "invalid email or password"})
 		return
 	}
+	// An invited account holds an unusable random hash until it consumes its
+	// invitation, so the comparison above should already have failed. Rejecting
+	// it explicitly means a future change to how invited accounts are stored
+	// cannot turn into a way to sign in without setting a password.
+	if u.MustSetPassword {
+		write(w, 401, map[string]string{"error": "invalid email or password"})
+		return
+	}
 	if u.TwoFactorEnabled {
 		if !a.issueTwoFactorChallenge(w, u.ID) {
 			return
@@ -499,7 +516,9 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 		write(w, 401, map[string]string{"error": "user no longer exists"})
 		return
 	}
-	write(w, 200, map[string]any{"user": u})
+	// Permissions are sent so the interface can hide controls the caller cannot
+	// use. This is presentation only — every route enforces its own permission.
+	write(w, 200, map[string]any{"user": u, "permissions": authz.Permissions(u.Role)})
 }
 func (a *API) issueSession(w http.ResponseWriter, u store.User) bool {
 	token, err := a.auth.Token(u.ID, u.Name, u.Email, u.Role)

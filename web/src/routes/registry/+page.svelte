@@ -64,6 +64,7 @@
   });
 
   $: visibleRepositories = repositories.filter((item) => {
+    if ((item.images || []).length === 0) return false;
     const query = filter.trim().toLowerCase();
     return item.name.toLowerCase().includes(query)
       || (item.tags || []).some((tag) => tag.toLowerCase().includes(query))

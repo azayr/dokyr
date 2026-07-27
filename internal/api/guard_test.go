@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/azayr/selfhost/internal/auth"
@@ -32,6 +33,12 @@ var routePermissions = map[string]authz.Permission{
 	"POST /api/settings/platform/update/check": authz.PermPlatformWrite,
 	"PUT /api/settings/platform/update":        authz.PermPlatformWrite,
 	"POST /api/settings/platform/update/apply": authz.PermPlatformWrite,
+
+	"GET /api/users":                  authz.PermUserManage,
+	"POST /api/users":                 authz.PermUserManage,
+	"POST /api/users/{id}/invitation": authz.PermUserManage,
+	"PUT /api/users/{id}/role":        authz.PermUserManage,
+	"DELETE /api/users/{id}":          authz.PermUserManage,
 
 	"GET /api/dashboard":                       authz.PermProjectRead,
 	"GET /api/domains":                         authz.PermProjectRead,
@@ -253,4 +260,36 @@ func registeredRoutes(t *testing.T) map[string]authz.Permission {
 	mux := newGuardedMux(a)
 	a.registerProtectedRoutes(mux)
 	return mux.patterns()
+}
+
+// TestUserManagementRoutesAreOwnerOnly covers the escalation path that matters
+// most once invitations exist: whoever can grant roles can grant themselves any
+// permission, so the route set must be owner-only in its entirety.
+func TestUserManagementRoutesAreOwnerOnly(t *testing.T) {
+	registered := registeredRoutes(t)
+	found := 0
+	for pattern, perm := range registered {
+		if !strings.HasPrefix(trimMethod(pattern), "/api/users") {
+			continue
+		}
+		found++
+		if perm != authz.PermUserManage {
+			t.Errorf("route %q requires %q, want %q", pattern, perm, authz.PermUserManage)
+		}
+		for _, role := range []string{authz.RoleViewer, authz.RoleDeveloper, authz.RoleAdmin} {
+			if authz.Can(role, perm) {
+				t.Errorf("%q can reach %q", role, pattern)
+			}
+		}
+	}
+	if found == 0 {
+		t.Fatal("expected user management routes to be registered")
+	}
+}
+
+func trimMethod(pattern string) string {
+	if index := strings.IndexByte(pattern, ' '); index >= 0 {
+		return pattern[index+1:]
+	}
+	return pattern
 }

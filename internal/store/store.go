@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -18,6 +19,20 @@ import (
 var migrationFiles embed.FS
 
 var ErrAlreadyConfigured = errors.New("selfhost is already configured")
+
+// ErrEmailTaken reports that an account already exists for an email address.
+var ErrEmailTaken = errors.New("an account already exists for this email address")
+
+// ErrLastOwner reports a change that would leave the installation with no
+// owner, and therefore with nobody able to manage ingress, platform updates, or
+// users.
+var ErrLastOwner = errors.New("the last owner cannot be removed or demoted")
+
+// isUniqueViolation reports whether err is Postgres error 23505.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
 
 type Store struct{ db *sql.DB }
 type User struct {
@@ -31,6 +46,10 @@ type User struct {
 	GitHubAccountID          string    `json:"-"`
 	GitHubLogin              string    `json:"githubLogin,omitempty"`
 	CreatedAt                time.Time `json:"createdAt"`
+	// MustSetPassword marks an invited account that has not yet chosen a
+	// password. Such an account cannot sign in until it consumes its invitation.
+	MustSetPassword bool   `json:"mustSetPassword"`
+	InvitedBy       string `json:"invitedBy,omitempty"`
 }
 type Project struct {
 	ID            string    `json:"id"`
@@ -442,23 +461,23 @@ func (s *Store) CreateInitialUser(ctx context.Context, u User) error {
 func (s *Store) UserByEmail(ctx context.Context, email string) (User, error) {
 	var u User
 	err := s.db.QueryRowContext(ctx, `SELECT id,name,email,password_hash,role,two_factor_secret_encrypted,
-		two_factor_enabled,github_account_id,github_login,created_at FROM users WHERE email=LOWER($1)`, email).
-		Scan(&u.ID, &u.Name, &u.Email, &u.PasswordHash, &u.Role, &u.TwoFactorSecretEncrypted, &u.TwoFactorEnabled, &u.GitHubAccountID, &u.GitHubLogin, &u.CreatedAt)
+		two_factor_enabled,github_account_id,github_login,created_at,must_set_password,COALESCE(invited_by,'') FROM users WHERE email=LOWER($1)`, email).
+		Scan(&u.ID, &u.Name, &u.Email, &u.PasswordHash, &u.Role, &u.TwoFactorSecretEncrypted, &u.TwoFactorEnabled, &u.GitHubAccountID, &u.GitHubLogin, &u.CreatedAt, &u.MustSetPassword, &u.InvitedBy)
 	return u, err
 }
 func (s *Store) User(ctx context.Context, id string) (User, error) {
 	var u User
 	err := s.db.QueryRowContext(ctx, `SELECT id,name,email,password_hash,role,two_factor_secret_encrypted,
-		two_factor_enabled,github_account_id,github_login,created_at FROM users WHERE id=$1`, id).
-		Scan(&u.ID, &u.Name, &u.Email, &u.PasswordHash, &u.Role, &u.TwoFactorSecretEncrypted, &u.TwoFactorEnabled, &u.GitHubAccountID, &u.GitHubLogin, &u.CreatedAt)
+		two_factor_enabled,github_account_id,github_login,created_at,must_set_password,COALESCE(invited_by,'') FROM users WHERE id=$1`, id).
+		Scan(&u.ID, &u.Name, &u.Email, &u.PasswordHash, &u.Role, &u.TwoFactorSecretEncrypted, &u.TwoFactorEnabled, &u.GitHubAccountID, &u.GitHubLogin, &u.CreatedAt, &u.MustSetPassword, &u.InvitedBy)
 	return u, err
 }
 
 func (s *Store) UserByGitHubAccount(ctx context.Context, accountID string) (User, error) {
 	var u User
 	err := s.db.QueryRowContext(ctx, `SELECT id,name,email,password_hash,role,two_factor_secret_encrypted,
-		two_factor_enabled,github_account_id,github_login,created_at FROM users WHERE github_account_id=$1`, accountID).
-		Scan(&u.ID, &u.Name, &u.Email, &u.PasswordHash, &u.Role, &u.TwoFactorSecretEncrypted, &u.TwoFactorEnabled, &u.GitHubAccountID, &u.GitHubLogin, &u.CreatedAt)
+		two_factor_enabled,github_account_id,github_login,created_at,must_set_password,COALESCE(invited_by,'') FROM users WHERE github_account_id=$1`, accountID).
+		Scan(&u.ID, &u.Name, &u.Email, &u.PasswordHash, &u.Role, &u.TwoFactorSecretEncrypted, &u.TwoFactorEnabled, &u.GitHubAccountID, &u.GitHubLogin, &u.CreatedAt, &u.MustSetPassword, &u.InvitedBy)
 	return u, err
 }
 
@@ -480,9 +499,106 @@ func (s *Store) UpdatePassword(ctx context.Context, userID, passwordHash string)
 func (s *Store) OwnerUser(ctx context.Context) (User, error) {
 	var u User
 	err := s.db.QueryRowContext(ctx, `SELECT id,name,email,password_hash,role,two_factor_secret_encrypted,
-		two_factor_enabled,github_account_id,github_login,created_at FROM users ORDER BY CASE WHEN role='owner' THEN 0 ELSE 1 END,created_at LIMIT 1`).
-		Scan(&u.ID, &u.Name, &u.Email, &u.PasswordHash, &u.Role, &u.TwoFactorSecretEncrypted, &u.TwoFactorEnabled, &u.GitHubAccountID, &u.GitHubLogin, &u.CreatedAt)
+		two_factor_enabled,github_account_id,github_login,created_at,must_set_password,COALESCE(invited_by,'') FROM users ORDER BY CASE WHEN role='owner' THEN 0 ELSE 1 END,created_at LIMIT 1`).
+		Scan(&u.ID, &u.Name, &u.Email, &u.PasswordHash, &u.Role, &u.TwoFactorSecretEncrypted, &u.TwoFactorEnabled, &u.GitHubAccountID, &u.GitHubLogin, &u.CreatedAt, &u.MustSetPassword, &u.InvitedBy)
 	return u, err
+}
+
+// Users lists every account, owners first, then by creation order.
+func (s *Store) Users(ctx context.Context) ([]User, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,email,password_hash,role,two_factor_secret_encrypted,
+		two_factor_enabled,github_account_id,github_login,created_at,must_set_password,COALESCE(invited_by,'')
+		FROM users ORDER BY CASE WHEN role='owner' THEN 0 ELSE 1 END,created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	users := []User{}
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(&u.ID, &u.Name, &u.Email, &u.PasswordHash, &u.Role, &u.TwoFactorSecretEncrypted,
+			&u.TwoFactorEnabled, &u.GitHubAccountID, &u.GitHubLogin, &u.CreatedAt, &u.MustSetPassword, &u.InvitedBy); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+// CreateUser inserts an additional account. ErrEmailTaken is returned when the
+// address already exists, which the unique index on LOWER(email) enforces.
+func (s *Store) CreateUser(ctx context.Context, u User) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO users(id,name,email,password_hash,role,must_set_password,invited_by)
+		VALUES($1,$2,LOWER($3),$4,$5,$6,NULLIF($7,''))`,
+		u.ID, u.Name, u.Email, u.PasswordHash, u.Role, u.MustSetPassword, u.InvitedBy)
+	if isUniqueViolation(err) {
+		return ErrEmailTaken
+	}
+	return err
+}
+
+// UpdateUserRole changes a single account's role.
+//
+// The last owner cannot be demoted: an installation with no owner would have no
+// account able to manage ingress, platform updates, or users, and no way to
+// recover through the API. The check and the write share one transaction so two
+// concurrent demotions cannot both observe a second owner and proceed.
+func (s *Store) UpdateUserRole(ctx context.Context, userID, role string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "LOCK TABLE users IN EXCLUSIVE MODE"); err != nil {
+		return err
+	}
+	var current string
+	if err := tx.QueryRowContext(ctx, "SELECT role FROM users WHERE id=$1", userID).Scan(&current); err != nil {
+		return err
+	}
+	if current == "owner" && role != "owner" {
+		var owners int
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE role='owner'").Scan(&owners); err != nil {
+			return err
+		}
+		if owners <= 1 {
+			return ErrLastOwner
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE users SET role=$2,updated_at=NOW() WHERE id=$1", userID, role); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// DeleteUser removes an account. As with UpdateUserRole, the last owner is
+// protected so an installation cannot be left unmanageable.
+func (s *Store) DeleteUser(ctx context.Context, userID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "LOCK TABLE users IN EXCLUSIVE MODE"); err != nil {
+		return err
+	}
+	var role string
+	if err := tx.QueryRowContext(ctx, "SELECT role FROM users WHERE id=$1", userID).Scan(&role); err != nil {
+		return err
+	}
+	if role == "owner" {
+		var owners int
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE role='owner'").Scan(&owners); err != nil {
+			return err
+		}
+		if owners <= 1 {
+			return ErrLastOwner
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM users WHERE id=$1", userID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) SMTPSettings(ctx context.Context) (SMTPSettings, error) {
@@ -680,7 +796,10 @@ func (s *Store) ConsumePasswordResetToken(ctx context.Context, tokenHash, passwo
 	if err := tx.QueryRowContext(ctx, `DELETE FROM password_reset_tokens WHERE token_hash=$1 AND expires_at>NOW() RETURNING user_id`, tokenHash).Scan(&userID); err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, "UPDATE users SET password_hash=$2,updated_at=NOW() WHERE id=$1", userID, passwordHash)
+	// Clearing must_set_password here is what completes an invitation: the same
+	// token type serves both a reset and a first password, so consuming it is
+	// the single point where an invited account becomes able to sign in.
+	result, err := tx.ExecContext(ctx, "UPDATE users SET password_hash=$2,must_set_password=FALSE,updated_at=NOW() WHERE id=$1", userID, passwordHash)
 	if err != nil {
 		return err
 	}
