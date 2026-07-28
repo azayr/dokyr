@@ -1547,11 +1547,11 @@ func (s *Store) UpsertSourceConnectionReturningID(ctx context.Context, c SourceC
 	return id, err
 }
 
-func (s *Store) SourceConnections(ctx context.Context, userID string) ([]SourceConnection, error) {
+func (s *Store) SourceConnections(ctx context.Context) ([]SourceConnection, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT c.id,c.user_id,c.provider,c.account_id,c.account_name,c.account_avatar,c.base_url,c.scopes,c.created_at,c.updated_at,
 		COALESCE(i.installation_id,0),COALESCE(i.repository_selection,''),COALESCE(i.manage_url,''),COALESCE(i.contents_permission,'')
 		FROM source_connections c LEFT JOIN github_app_installations i ON i.connection_id=c.id
-		WHERE c.user_id=$1 ORDER BY c.updated_at DESC`, userID)
+		ORDER BY c.updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1567,17 +1567,17 @@ func (s *Store) SourceConnections(ctx context.Context, userID string) ([]SourceC
 	return items, rows.Err()
 }
 
-func (s *Store) SourceConnection(ctx context.Context, id, userID string) (SourceConnection, error) {
+func (s *Store) SourceConnection(ctx context.Context, id string) (SourceConnection, error) {
 	var c SourceConnection
 	err := s.db.QueryRowContext(ctx, `SELECT c.id,c.user_id,c.provider,c.account_id,c.account_name,c.account_avatar,c.base_url,c.access_token_encrypted,c.scopes,c.created_at,c.updated_at,
 		COALESCE(i.installation_id,0),COALESCE(i.repository_selection,''),COALESCE(i.manage_url,''),COALESCE(i.contents_permission,'')
 		FROM source_connections c LEFT JOIN github_app_installations i ON i.connection_id=c.id
-		WHERE c.id=$1 AND c.user_id=$2`, id, userID).Scan(&c.ID, &c.UserID, &c.Provider, &c.AccountID, &c.AccountName, &c.AccountAvatar, &c.BaseURL, &c.AccessTokenEncrypted, &c.Scopes, &c.CreatedAt, &c.UpdatedAt, &c.InstallationID, &c.RepositorySelection, &c.ManageURL, &c.ContentsPermission)
+		WHERE c.id=$1`, id).Scan(&c.ID, &c.UserID, &c.Provider, &c.AccountID, &c.AccountName, &c.AccountAvatar, &c.BaseURL, &c.AccessTokenEncrypted, &c.Scopes, &c.CreatedAt, &c.UpdatedAt, &c.InstallationID, &c.RepositorySelection, &c.ManageURL, &c.ContentsPermission)
 	return c, err
 }
 
-func (s *Store) DeleteSourceConnection(ctx context.Context, id, userID string) error {
-	result, err := s.db.ExecContext(ctx, "DELETE FROM source_connections WHERE id=$1 AND user_id=$2", id, userID)
+func (s *Store) DeleteSourceConnection(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, "DELETE FROM source_connections WHERE id=$1", id)
 	if err != nil {
 		return err
 	}

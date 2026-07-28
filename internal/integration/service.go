@@ -269,9 +269,9 @@ func (s *Service) startGitHubManifest(ctx context.Context, userID, mode string) 
 func (s *Service) githubManifest(mode, suffix string) (map[string]any, string, error) {
 	manifest := map[string]any{
 		"url":    s.cfg.PublicURL,
-		"public": mode == githubAccountLinkMode,
+		"public": true,
 	}
-	purpose := "Create a private GitHub App for explicitly selected repositories."
+	purpose := "Create a public GitHub App that users can install for explicitly selected repositories."
 	if mode == githubAccountLinkMode {
 		manifest["name"] = "dokyr-login-" + suffix
 		manifest["redirect_url"] = s.loginManifestCallbackURL()
@@ -283,7 +283,7 @@ func (s *Service) githubManifest(mode, suffix string) (map[string]any, string, e
 		manifest["redirect_url"] = s.manifestCallbackURL()
 		manifest["setup_url"] = s.installationCallbackURL()
 		manifest["setup_on_update"] = true
-		manifest["description"] = "Private repository access for this Dokyr control plane."
+		manifest["description"] = "Selected repository access for this Dokyr control plane."
 		manifest["hook_attributes"] = map[string]any{
 			"url":    s.cfg.PublicURL + "/api/webhooks/github",
 			"active": true,

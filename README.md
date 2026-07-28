@@ -159,10 +159,15 @@ requests no repository permissions and cannot list or clone repositories.
 After setup, each user signs in with their password once and links their GitHub
 identity under **Settings → Security**. Repository access is optional and
 remains separate: open **Sources**, select **Select repositories**, and Dokyr
-will create a second, private GitHub App. The user then chooses all repositories
-or only selected repositories.
+will create a second, public GitHub App so every Dokyr user can install it. Each
+user then grants it access to all repositories or only selected repositories.
+Connected repository sources are shared across the Dokyr server. They are
+visible to roles that can read projects and usable for project changes or
+deployments when that role holds the corresponding permission. The GitHub
+installation management link remains visible only to the Dokyr user who
+connected that installation.
 
-If the private GitHub App is deleted from GitHub, its encrypted local
+If the repository-access GitHub App is deleted from GitHub, its encrypted local
 credentials become unusable. The next repository-install attempt verifies the
 App with GitHub first. A confirmed 401/404 clears the stale App credentials and
 installations, then **Select repositories** starts a fresh App creation flow.

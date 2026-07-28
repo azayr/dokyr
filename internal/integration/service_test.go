@@ -44,14 +44,14 @@ func TestGitHubLoginManifestIsPublicAndIdentityOnly(t *testing.T) {
 	}
 }
 
-func TestGitHubRepositoryManifestRemainsPrivateWithContentsRead(t *testing.T) {
+func TestGitHubRepositoryManifestIsPublicWithContentsRead(t *testing.T) {
 	service := New(nil, nil, Config{PublicURL: "https://dokyr.example"})
 	manifest, _, err := service.githubManifest(githubRepositoryInstallMode, "1234abcd")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest["public"] != false {
-		t.Fatalf("repository App public = %v, want false", manifest["public"])
+	if manifest["public"] != true {
+		t.Fatalf("repository App public = %v, want true", manifest["public"])
 	}
 	permissions := manifest["default_permissions"].(map[string]string)
 	if permissions["contents"] != "read" {

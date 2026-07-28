@@ -1304,7 +1304,7 @@ func (a *API) createProject(w http.ResponseWriter, r *http.Request) {
 	}
 	claims, _ := auth.FromContext(r.Context())
 	if in.ConnectionID != "" {
-		if _, err := a.store.SourceConnection(r.Context(), in.ConnectionID, claims.Subject); err != nil {
+		if _, err := a.store.SourceConnection(r.Context(), in.ConnectionID); err != nil {
 			bad(w, "source connection is invalid")
 			return
 		}
@@ -1679,11 +1679,12 @@ func (a *API) resetCaddyConfig(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) integrationsIndex(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.FromContext(r.Context())
-	connections, err := a.store.SourceConnections(r.Context(), claims.Subject)
+	connections, err := a.store.SourceConnections(r.Context())
 	if err != nil {
 		problem(w, err)
 		return
 	}
+	connections = sourceConnectionsForUser(connections, claims.Subject)
 	registries, err := a.store.Registries(r.Context(), claims.Subject)
 	if err != nil {
 		problem(w, err)
@@ -1704,6 +1705,21 @@ func (a *API) integrationsIndex(w http.ResponseWriter, r *http.Request) {
 		github["login"] = user.GitHubLogin
 	}
 	write(w, 200, map[string]any{"providers": providers, "connections": connections, "registries": registries})
+}
+
+func sourceConnectionsForUser(connections []store.SourceConnection, userID string) []store.SourceConnection {
+	items := make([]store.SourceConnection, len(connections))
+	for index, connection := range connections {
+		items[index] = sourceConnectionForUser(connection, userID)
+	}
+	return items
+}
+
+func sourceConnectionForUser(connection store.SourceConnection, userID string) store.SourceConnection {
+	if connection.UserID != userID {
+		connection.ManageURL = ""
+	}
+	return connection
 }
 
 func (a *API) githubInstallationStart(w http.ResponseWriter, r *http.Request) {
@@ -1806,7 +1822,7 @@ func (a *API) oauthCallback(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) repositories(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.FromContext(r.Context())
-	connection, err := a.store.SourceConnection(r.Context(), r.PathValue("id"), claims.Subject)
+	connection, err := a.store.SourceConnection(r.Context(), r.PathValue("id"))
 	if store.NotFound(err) {
 		write(w, 404, map[string]string{"error": "source connection not found"})
 		return
@@ -1822,14 +1838,13 @@ func (a *API) repositories(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, 200, map[string]any{
-		"connection":   connection,
+		"connection":   sourceConnectionForUser(connection, claims.Subject),
 		"repositories": items,
 	})
 }
 
 func (a *API) deleteSourceConnection(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.FromContext(r.Context())
-	connection, err := a.store.SourceConnection(r.Context(), r.PathValue("id"), claims.Subject)
+	connection, err := a.store.SourceConnection(r.Context(), r.PathValue("id"))
 	if store.NotFound(err) {
 		write(w, 404, map[string]string{"error": "source connection not found"})
 		return
@@ -1838,7 +1853,7 @@ func (a *API) deleteSourceConnection(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
-	if err := a.store.DeleteSourceConnection(r.Context(), connection.ID, claims.Subject); err != nil {
+	if err := a.store.DeleteSourceConnection(r.Context(), connection.ID); err != nil {
 		problem(w, err)
 		return
 	}
@@ -2040,7 +2055,7 @@ func (a *API) updateProject(w http.ResponseWriter, r *http.Request) {
 			in.Branch = "main"
 		}
 		if in.ConnectionID != "" {
-			if _, err := a.store.SourceConnection(r.Context(), in.ConnectionID, claims.Subject); err != nil {
+			if _, err := a.store.SourceConnection(r.Context(), in.ConnectionID); err != nil {
 				bad(w, "source connection is invalid")
 				return
 			}
@@ -3110,7 +3125,7 @@ func (a *API) createApplicationService(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if in.SourceType == "repository" {
-		connection, err := a.store.SourceConnection(r.Context(), in.ConnectionID, claims.Subject)
+		connection, err := a.store.SourceConnection(r.Context(), in.ConnectionID)
 		if err != nil {
 			bad(w, "source connection is invalid")
 			return
@@ -3179,7 +3194,7 @@ func (a *API) updateApplicationService(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if clean.SourceType == "repository" {
-		connection, err := a.store.SourceConnection(r.Context(), clean.ConnectionID, claims.Subject)
+		connection, err := a.store.SourceConnection(r.Context(), clean.ConnectionID)
 		if err != nil {
 			bad(w, "source connection is invalid")
 			return
@@ -3518,7 +3533,7 @@ func (a *API) startApplicationServiceDeployment(ctx context.Context, serviceID, 
 		service.ImageURL = host + "/" + service.ImageURL
 	}
 	if service.SourceType == "repository" {
-		connection, err := a.store.SourceConnection(ctx, service.ConnectionID, userID)
+		connection, err := a.store.SourceConnection(ctx, service.ConnectionID)
 		if err != nil {
 			return service, store.Deployment{}, errors.New("source connection is unavailable")
 		}

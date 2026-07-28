@@ -5,7 +5,7 @@
   import Icon from '$lib/components/Icon.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-  import { api } from '$lib/auth.js';
+  import { api, can, currentPermissions } from '$lib/auth.js';
   import { toast } from '$lib/toast.js';
 
   let data = { providers: { github: {}, gitlab: {} }, connections: [], registries: [] };
@@ -23,6 +23,9 @@
   let accountToUnlink = null;
   let unlinkBusy = false;
   let unlinkError = '';
+  let canManageIntegrations = false;
+
+  $: canManageIntegrations = can($currentPermissions, 'integration:write');
 
   const providerInfo = {
     github: { name: 'GitHub', mark: 'GH', hint: 'Organizations and private repositories' },
@@ -34,7 +37,7 @@
     const response = await api('/api/integrations');
     data = await response.json();
     loading = false;
-    if (trySync && !syncAttempted && data.providers?.github?.linked && data.providers?.github?.managed) {
+    if (trySync && canManageIntegrations && !syncAttempted && data.providers?.github?.linked && data.providers?.github?.managed) {
       syncAttempted = true;
       await syncGitHubInstallations(false);
     }
@@ -136,7 +139,7 @@
 
 <Shell eyebrow="Infrastructure" title="Sources" subtitle="Git providers and private registries used to build and pull application images.">
   {#if page.url.searchParams.get('connected')}
-    <div class="alert alert-success"><Icon name="check-circle" size={15} /><div><strong>Account connected</strong><span>Private repositories are now available when creating a project.</span></div></div>
+    <div class="alert alert-success"><Icon name="check-circle" size={15} /><div><strong>Account connected</strong><span>These repositories are now available to everyone on this Dokyr server who can access projects.</span></div></div>
   {/if}
   {#if page.url.searchParams.get('error')}
     <div class="alert alert-error"><Icon name="x-circle" size={15} /><div><strong>Connection failed</strong><span>{page.url.searchParams.get('error')}</span></div></div>
@@ -184,7 +187,7 @@
                 </span>
                 <span class="account-actions">
                   {#if account.manageUrl}<a class="btn btn-sm" href={account.manageUrl}>Change access <Icon name="external" size={12} /></a>{/if}
-                  <button class="btn btn-sm btn-danger" onclick={() => { unlinkError = ''; accountToUnlink = account; }}>Unlink</button>
+                  {#if canManageIntegrations}<button class="btn btn-sm btn-danger" onclick={() => { unlinkError = ''; accountToUnlink = account; }}>Unlink</button>{/if}
                 </span>
               </div>
             {/each}
@@ -203,14 +206,14 @@
           <div>
             {#if key === 'github'}
               <small>Repository access</small>
-              <code>{connections.length ? 'Access can be changed any time on GitHub' : state.linked ? 'Choose all repositories or only selected repositories' : 'Uses the GitHub account linked in Settings'}</code>
+              <code>{connections.length ? 'Shared with everyone who can access projects' : state.linked ? 'Choose all repositories or only selected repositories' : 'Uses the GitHub account linked in Settings'}</code>
             {:else}
               <small>OAuth callback</small>
               <code>{state.callbackUrl || '—'}</code>
             {/if}
           </div>
           <div class="provider-actions">
-            {#if key === 'github'}
+            {#if canManageIntegrations && key === 'github'}
               {#if connections.length}
                 <a class="btn btn-sm btn-primary" href="/api/integrations/github/install/start">Add installation <Icon name="arrow-right" size={12} /></a>
               {:else if state.linked}
@@ -221,9 +224,9 @@
               {:else}
                 <a class="btn btn-sm btn-primary" href="/api/account/github/start">Set up GitHub login <Icon name="arrow-right" size={12} /></a>
               {/if}
-            {:else if state.configured}
+            {:else if canManageIntegrations && state.configured}
               <a class="btn btn-sm btn-primary" href={'/api/integrations/oauth/' + key + '/start'}>Connect {provider.name} <Icon name="arrow-right" size={12} /></a>
-            {:else}
+            {:else if canManageIntegrations}
               <button class="btn btn-sm" disabled>Configure {provider.name}</button>
             {/if}
           </div>
@@ -233,7 +236,7 @@
           <div class="config-note accent">
             <Icon name="info" size={14} />
             {#if state.linked}
-              <span>Select repositories to create a private GitHub App used only for repository access. Login remains a separate identity connection.</span>
+              <span>Select repositories to create a public, installable GitHub App used only for repository access. Each user controls which repositories it can access.</span>
             {:else if state.loginConfigured}
               <span>Link your identity-only GitHub App in <a href="/settings?section=security">Settings → Security</a> before selecting repositories.</span>
             {:else}

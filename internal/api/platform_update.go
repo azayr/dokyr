@@ -149,11 +149,7 @@ func (a *API) readPlatformUpdateStatus(ctx context.Context, force bool) platform
 	}
 	status.Latest = a.latestRelease
 	if status.Latest != nil && status.UpdateSupported {
-		if status.CurrentDigest != "" {
-			status.UpdateAvailable = status.CurrentDigest != status.Latest.Digest
-		} else {
-			status.UpdateAvailable = status.Current.Version != "dev" && status.Current.Version != status.Latest.Version
-		}
+		status.UpdateAvailable = isNewerSemanticVersion(status.Current.Version, status.Latest.Version)
 	}
 	return status
 }
@@ -161,6 +157,157 @@ func (a *API) readPlatformUpdateStatus(ctx context.Context, force bool) platform
 func isDevelopmentVersion(value string) bool {
 	value = strings.ToLower(strings.TrimSpace(value))
 	return value == "dev" || value == "development" || strings.HasSuffix(value, "-dev")
+}
+
+type semanticVersion struct {
+	core       [3]string
+	prerelease []string
+}
+
+func isNewerSemanticVersion(current, candidate string) bool {
+	currentVersion, currentOK := parseSemanticVersion(current)
+	candidateVersion, candidateOK := parseSemanticVersion(candidate)
+	return currentOK && candidateOK && compareSemanticVersions(candidateVersion, currentVersion) > 0
+}
+
+func parseSemanticVersion(value string) (semanticVersion, bool) {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "v")
+	if value == "" {
+		return semanticVersion{}, false
+	}
+	if buildAt := strings.IndexByte(value, '+'); buildAt >= 0 {
+		buildValue := value[buildAt+1:]
+		if !validSemanticIdentifiers(buildValue) {
+			return semanticVersion{}, false
+		}
+		value = value[:buildAt]
+	}
+	coreValue, prereleaseValue, hasPrerelease := strings.Cut(value, "-")
+	coreParts := strings.Split(coreValue, ".")
+	if len(coreParts) != 3 {
+		return semanticVersion{}, false
+	}
+	var parsed semanticVersion
+	for index, part := range coreParts {
+		if part == "" || (len(part) > 1 && part[0] == '0') || !isNumericIdentifier(part) {
+			return semanticVersion{}, false
+		}
+		parsed.core[index] = part
+	}
+	if !hasPrerelease {
+		return parsed, true
+	}
+	if prereleaseValue == "" {
+		return semanticVersion{}, false
+	}
+	for _, identifier := range strings.Split(prereleaseValue, ".") {
+		if !validSemanticIdentifier(identifier) {
+			return semanticVersion{}, false
+		}
+		if isNumericIdentifier(identifier) && len(identifier) > 1 && identifier[0] == '0' {
+			return semanticVersion{}, false
+		}
+		parsed.prerelease = append(parsed.prerelease, identifier)
+	}
+	return parsed, true
+}
+
+func validSemanticIdentifiers(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, identifier := range strings.Split(value, ".") {
+		if !validSemanticIdentifier(identifier) {
+			return false
+		}
+	}
+	return true
+}
+
+func validSemanticIdentifier(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') &&
+			(character < 'A' || character > 'Z') &&
+			(character < 'a' || character > 'z') &&
+			character != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func isNumericIdentifier(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func compareSemanticVersions(left, right semanticVersion) int {
+	for index := range left.core {
+		if compared := compareNumericIdentifiers(left.core[index], right.core[index]); compared != 0 {
+			return compared
+		}
+	}
+	if len(left.prerelease) == 0 && len(right.prerelease) == 0 {
+		return 0
+	}
+	if len(left.prerelease) == 0 {
+		return 1
+	}
+	if len(right.prerelease) == 0 {
+		return -1
+	}
+	for index := 0; index < len(left.prerelease) && index < len(right.prerelease); index++ {
+		leftPart, rightPart := left.prerelease[index], right.prerelease[index]
+		leftNumeric, rightNumeric := isNumericIdentifier(leftPart), isNumericIdentifier(rightPart)
+		switch {
+		case leftNumeric && rightNumeric:
+			if compared := compareNumericIdentifiers(leftPart, rightPart); compared != 0 {
+				return compared
+			}
+		case leftNumeric:
+			return -1
+		case rightNumeric:
+			return 1
+		case leftPart < rightPart:
+			return -1
+		case leftPart > rightPart:
+			return 1
+		}
+	}
+	if len(left.prerelease) < len(right.prerelease) {
+		return -1
+	}
+	if len(left.prerelease) > len(right.prerelease) {
+		return 1
+	}
+	return 0
+}
+
+func compareNumericIdentifiers(left, right string) int {
+	if len(left) < len(right) {
+		return -1
+	}
+	if len(left) > len(right) {
+		return 1
+	}
+	if left < right {
+		return -1
+	}
+	if left > right {
+		return 1
+	}
+	return 0
 }
 
 func (a *API) beginPlatformUpdate(sourceVersion string, release platformupdate.Release, requestedBy string) (store.PlatformUpdateJob, error) {

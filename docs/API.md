@@ -308,7 +308,7 @@ credentials or callback domain are configured manually.
 This authorization requests no repository permissions and is used only to read
 the authenticated user's public GitHub identity. It does not create a source
 connection or grant repository access. Repository access uses the separate,
-private GitHub App installation flow described under Sources and registries.
+public GitHub App installation flow described under Sources and registries.
 
 ### SMTP
 
@@ -775,14 +775,23 @@ A frontend can poll every 1–3 seconds while `deployment.status` is `deploying`
 | `POST` | `/api/integrations/registries` | Add private Docker registry |
 | `DELETE` | `/api/integrations/registries/{registryId}` | Delete registry credential |
 
-GitHub repository integration uses a private GitHub App installation flow. If
-the server has no repository App yet, `GET /api/integrations/github/install/start`
-first starts the App Manifest flow and then continues to repository selection.
-The returned installation has a `manageUrl`; use this to change repository
-selection in GitHub. GitLab currently
-uses OAuth and requires provider configuration on the server.
+GitHub repository integration uses a public GitHub App installation flow so
+users other than the App owner can install it. If the server has no repository
+App yet, `GET /api/integrations/github/install/start` first starts the App
+Manifest flow and then continues to repository selection. Each user still
+chooses all repositories or only selected repositories, and the App requests
+read-only contents access. The returned installation has a `manageUrl`; use this
+to change repository selection in GitHub. GitLab currently uses OAuth and
+requires provider configuration on the server.
 
-If GitHub shows the App as installed but `GET /api/integrations` has no GitHub source connection, call `POST /api/integrations/github/installations/sync`. It lists installations using the server's private GitHub App credential and imports only an installation whose GitHub account ID exactly matches the account already linked to the authenticated Dokyr user. It never imports an unrelated personal or organization installation.
+Source connections are server-wide resources. `GET /api/integrations` and the
+repository listing endpoint return every configured source to any role with
+project read access. Roles with project write or deploy access can use those
+connections for the same shared projects. Only the Dokyr user who created an
+installation receives its `manageUrl`; creating or unlinking connections still
+requires `integration:write`.
+
+If GitHub shows the App as installed but `GET /api/integrations` has no GitHub source connection, call `POST /api/integrations/github/installations/sync`. It lists installations using the server's repository-access GitHub App credential and imports only an installation whose GitHub account ID exactly matches the account already linked to the authenticated Dokyr user. It never imports an unrelated personal or organization installation.
 
 ```json
 {
