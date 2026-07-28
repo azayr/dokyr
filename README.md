@@ -146,19 +146,27 @@ To deliberately bootstrap a different SMTP server, first remove the SMTP
 configuration through an explicit administrative/database operation. Merely
 restarting the containers is intentionally not enough.
 
-## Private repositories and registries
+## GitHub login, private repositories, and registries
 
-GitHub needs no OAuth values in `.env`. Open **Settings → Security**, select
-**Link GitHub**, and authorize creation of this server's private GitHub App.
-Then open **Sources** and select which repositories—or all repositories—the
-app may access. Repository access can be changed later from the same page.
+GitHub login and repository access use separate applications and permissions.
+No GitHub domain, client ID, or client secret is configured in `.env`. The first
+authenticated user who selects **Connect GitHub** under **Settings → Security**
+is sent through GitHub's App Manifest flow. Dokyr includes the current
+`PUBLIC_URL` automatically, then stores the returned credentials encrypted.
+This creates a public, identity-only GitHub App for that Dokyr server. It
+requests no repository permissions and cannot list or clone repositories.
+
+After setup, each user signs in with their password once and links their GitHub
+identity under **Settings → Security**. Repository access is optional and
+remains separate: open **Sources**, select **Select repositories**, and Dokyr
+will create a second, private GitHub App. The user then chooses all repositories
+or only selected repositories.
 
 If the private GitHub App is deleted from GitHub, its encrypted local
-credentials become unusable. The next GitHub link, login, or repository-install
-attempt verifies the App with GitHub first. A confirmed 401/404 clears the stale
-App credentials and installations; an authenticated owner is then taken through
-the App creation flow again. Users attempting GitHub login must sign in with
-their password once and reconnect GitHub from **Settings → Security**.
+credentials become unusable. The next repository-install attempt verifies the
+App with GitHub first. A confirmed 401/404 clears the stale App credentials and
+installations, then **Select repositories** starts a fresh App creation flow.
+GitHub login is unaffected because it uses the separate identity App.
 
 GitLab does not provide GitHub's App Manifest flow. To connect GitLab, copy
 `.env.example` to `.env`, create a GitLab OAuth application, and use this exact
@@ -185,7 +193,7 @@ Private container images are supported from the project creation screen. Save an
 - Project overview with services, traffic and deployment history
 - Deployment detail with pipeline and logs
 - PostgreSQL schema managed by ordered, embedded SQL migration files
-- GitHub and GitLab OAuth connections with private repository discovery
+- Identity-only GitHub App plus separate GitHub App/GitLab repository discovery
 - Encrypted private Docker registry credentials and image-based projects
 - Docker Engine health integration using the official Go client
 - Production multi-stage image and Caddy/Compose topology

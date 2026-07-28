@@ -62,6 +62,12 @@ type GitHubManifestStart struct {
 	Action   string
 	State    string
 	Manifest string
+	Purpose  string
+}
+
+type githubOAuthCredentials struct {
+	clientID     string
+	clientSecret string
 }
 
 type githubInstallationRemote struct {
@@ -76,15 +82,15 @@ type githubInstallationRemote struct {
 	} `json:"account"`
 }
 
-type githubOAuthCredentials struct {
-	clientID     string
-	clientSecret string
-	managed      bool
-	appSlug      string
-}
-
 var ErrGitHubAccountNotConfigured = errors.New("GitHub account authorization is not configured")
 var errGitHubAppRemoved = errors.New("the configured GitHub App no longer exists")
+
+const (
+	githubRepositoryAppProvider = "github"
+	githubLoginAppProvider      = "github_login"
+	githubAccountLinkMode       = "account_link"
+	githubRepositoryInstallMode = "repository_install"
+)
 
 func New(s *store.Store, box *secretbox.Box, cfg Config) *Service {
 	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
@@ -93,43 +99,62 @@ func New(s *store.Store, box *secretbox.Box, cfg Config) *Service {
 }
 
 func (s *Service) ProviderStatus(ctx context.Context) (map[string]any, error) {
-	github, err := s.githubAccountCredentials(ctx)
-	if err != nil {
+	githubConfig, err := s.store.ProviderAppConfig(ctx, githubRepositoryAppProvider)
+	githubConfigured := err == nil
+	if err != nil && !store.NotFound(err) {
 		return nil, err
 	}
+	_, loginErr := s.store.ProviderAppConfig(ctx, githubLoginAppProvider)
+	loginConfigured := loginErr == nil
+	if loginErr != nil && !store.NotFound(loginErr) {
+		return nil, loginErr
+	}
+	githubSlug := ""
+	if githubConfigured {
+		githubSlug = githubConfig.AppSlug
+	}
 	return map[string]any{
-		"github": map[string]any{"configured": github.clientID != "" && github.clientSecret != "", "managed": github.managed, "appSlug": github.appSlug, "callbackUrl": s.callbackURL("github")},
+		"github": map[string]any{
+			"configured":      githubConfigured,
+			"managed":         githubConfigured,
+			"appSlug":         githubSlug,
+			"loginConfigured": loginConfigured,
+			"callbackUrl":     s.installationCallbackURL(),
+		},
 		"gitlab": map[string]any{"configured": s.cfg.GitLabClientID != "" && s.cfg.GitLabClientSecret != "", "callbackUrl": s.callbackURL("gitlab"), "baseUrl": s.cfg.GitLabBaseURL},
 	}, nil
 }
 
 func (s *Service) AccountProviderStatus(ctx context.Context) (map[string]any, error) {
-	credentials, err := s.githubAccountCredentials(ctx)
-	if err != nil {
+	config, err := s.store.ProviderAppConfig(ctx, githubLoginAppProvider)
+	configured := err == nil
+	if err != nil && !store.NotFound(err) {
 		return nil, err
+	}
+	appSlug := ""
+	if configured {
+		appSlug = config.AppSlug
 	}
 	return map[string]any{
 		"github": map[string]any{
-			"configured":  credentials.clientID != "" && credentials.clientSecret != "",
+			"configured":  configured,
 			"callbackUrl": s.accountCallbackURL(),
-			"managed":     credentials.managed,
-			"appSlug":     credentials.appSlug,
+			"managed":     configured,
+			"appSlug":     appSlug,
 		},
 	}, nil
 }
 
 func (s *Service) StartGitHubAccountOAuth(ctx context.Context, userID, mode string) (string, error) {
-	credentials, err := s.githubAccountCredentials(ctx)
+	credentials, err := s.githubOAuthCredentials(ctx, githubLoginAppProvider)
 	if err != nil {
+		if store.NotFound(err) {
+			return "", ErrGitHubAccountNotConfigured
+		}
 		return "", err
 	}
-	if credentials.clientID == "" || credentials.clientSecret == "" {
-		return "", ErrGitHubAccountNotConfigured
-	}
-	if credentials.managed {
-		if err := s.ensureGitHubAppAvailable(ctx); err != nil {
-			return "", err
-		}
+	if err := s.ensureGitHubAppAvailable(ctx, githubLoginAppProvider); err != nil {
+		return "", err
 	}
 	if mode != "login" && mode != "link" {
 		return "", errors.New("invalid GitHub OAuth mode")
@@ -157,9 +182,6 @@ func (s *Service) StartGitHubAccountOAuth(ctx context.Context, userID, mode stri
 		"redirect_uri": {s.accountCallbackURL()},
 		"state":        {state},
 	}
-	if !credentials.managed {
-		values.Set("scope", "read:user user:email")
-	}
 	return "https://github.com/login/oauth/authorize?" + values.Encode(), nil
 }
 
@@ -172,8 +194,11 @@ func (s *Service) CompleteGitHubAccountOAuth(ctx context.Context, stateValue, co
 	if err != nil {
 		return store.AuthOAuthState{}, GitHubIdentity{}, errors.New("GitHub OAuth state is invalid or expired")
 	}
-	credentials, err := s.githubAccountCredentials(ctx)
+	credentials, err := s.githubOAuthCredentials(ctx, githubLoginAppProvider)
 	if err != nil {
+		if store.NotFound(err) {
+			return store.AuthOAuthState{}, GitHubIdentity{}, ErrGitHubAccountNotConfigured
+		}
 		return store.AuthOAuthState{}, GitHubIdentity{}, err
 	}
 	token, _, err := s.exchangeWithCredentials(ctx, "github", code, s.accountCallbackURL(), credentials.clientID, credentials.clientSecret)
@@ -187,21 +212,36 @@ func (s *Service) CompleteGitHubAccountOAuth(ctx context.Context, stateValue, co
 	return state, GitHubIdentity{AccountID: profile.id, Login: profile.name, Avatar: profile.avatar}, nil
 }
 
+func (s *Service) StartGitHubLoginManifest(ctx context.Context, userID string) (GitHubManifestStart, error) {
+	return s.startGitHubManifest(ctx, userID, githubAccountLinkMode)
+}
+
 func (s *Service) StartGitHubManifest(ctx context.Context, userID string) (GitHubManifestStart, error) {
+	return s.startGitHubManifest(ctx, userID, githubRepositoryInstallMode)
+}
+
+func (s *Service) startGitHubManifest(ctx context.Context, userID, mode string) (GitHubManifestStart, error) {
 	if userID == "" {
 		return GitHubManifestStart{}, errors.New("GitHub App setup requires authentication")
+	}
+	if mode != githubAccountLinkMode && mode != githubRepositoryInstallMode {
+		return GitHubManifestStart{}, errors.New("invalid GitHub App setup mode")
 	}
 	randomState, err := randomToken(32)
 	if err != nil {
 		return GitHubManifestStart{}, err
 	}
-	stateValue := "manifest." + randomState
+	statePrefix := "manifest.repository."
+	if mode == githubAccountLinkMode {
+		statePrefix = "manifest.login."
+	}
+	stateValue := statePrefix + randomState
 	hash := sha256.Sum256([]byte(stateValue))
 	if err := s.store.SaveProviderSetupState(ctx, store.ProviderSetupState{
 		StateHash: hex.EncodeToString(hash[:]),
 		UserID:    userID,
-		Provider:  "github",
-		Mode:      "account_link",
+		Provider:  githubRepositoryAppProvider,
+		Mode:      mode,
 		ExpiresAt: time.Now().Add(time.Hour),
 	}); err != nil {
 		return GitHubManifestStart{}, err
@@ -210,24 +250,9 @@ func (s *Service) StartGitHubManifest(ctx context.Context, userID string) (GitHu
 	if _, err := rand.Read(suffix); err != nil {
 		return GitHubManifestStart{}, err
 	}
-	manifest := map[string]any{
-		"name":            "dokyr-selfhost-" + hex.EncodeToString(suffix),
-		"url":             s.cfg.PublicURL,
-		"redirect_url":    s.manifestCallbackURL(),
-		"callback_urls":   []string{s.accountCallbackURL()},
-		"setup_url":       s.installationCallbackURL(),
-		"setup_on_update": true,
-		"description":     "Private GitHub authentication for this Dokyr control plane.",
-		"public":          false,
-		"hook_attributes": map[string]any{
-			"url":    s.cfg.PublicURL + "/api/webhooks/github",
-			"active": true,
-		},
-		"default_events": []string{"push"},
-		"default_permissions": map[string]string{
-			"metadata": "read",
-			"contents": "read",
-		},
+	manifest, purpose, err := s.githubManifest(mode, hex.EncodeToString(suffix))
+	if err != nil {
+		return GitHubManifestStart{}, err
 	}
 	encoded, err := json.Marshal(manifest)
 	if err != nil {
@@ -237,21 +262,55 @@ func (s *Service) StartGitHubManifest(ctx context.Context, userID string) (GitHu
 		Action:   "https://github.com/settings/apps/new?state=" + url.QueryEscape(stateValue),
 		State:    stateValue,
 		Manifest: string(encoded),
+		Purpose:  purpose,
 	}, nil
+}
+
+func (s *Service) githubManifest(mode, suffix string) (map[string]any, string, error) {
+	manifest := map[string]any{
+		"url":    s.cfg.PublicURL,
+		"public": mode == githubAccountLinkMode,
+	}
+	purpose := "Create a private GitHub App for explicitly selected repositories."
+	if mode == githubAccountLinkMode {
+		manifest["name"] = "dokyr-login-" + suffix
+		manifest["redirect_url"] = s.loginManifestCallbackURL()
+		manifest["callback_urls"] = []string{s.accountCallbackURL()}
+		manifest["description"] = "Identity-only GitHub login for this Dokyr control plane."
+		purpose = "Create a public, identity-only GitHub App for login. It requests no repository permissions."
+	} else if mode == githubRepositoryInstallMode {
+		manifest["name"] = "dokyr-selfhost-" + suffix
+		manifest["redirect_url"] = s.manifestCallbackURL()
+		manifest["setup_url"] = s.installationCallbackURL()
+		manifest["setup_on_update"] = true
+		manifest["description"] = "Private repository access for this Dokyr control plane."
+		manifest["hook_attributes"] = map[string]any{
+			"url":    s.cfg.PublicURL + "/api/webhooks/github",
+			"active": true,
+		}
+		manifest["default_events"] = []string{"push"}
+		manifest["default_permissions"] = map[string]string{
+			"metadata": "read",
+			"contents": "read",
+		}
+	} else {
+		return nil, "", errors.New("invalid GitHub App setup mode")
+	}
+	return manifest, purpose, nil
 }
 
 func (s *Service) StartGitHubInstallation(ctx context.Context, userID string) (string, error) {
 	if userID == "" {
 		return "", errors.New("GitHub repository selection requires authentication")
 	}
-	config, err := s.store.ProviderAppConfig(ctx, "github")
+	config, err := s.store.ProviderAppConfig(ctx, githubRepositoryAppProvider)
 	if store.NotFound(err) {
 		return "", ErrGitHubAccountNotConfigured
 	}
 	if err != nil {
 		return "", err
 	}
-	if err := s.ensureGitHubAppAvailable(ctx); err != nil {
+	if err := s.ensureGitHubAppAvailable(ctx, githubRepositoryAppProvider); err != nil {
 		return "", err
 	}
 	stateValue, err := randomToken(32)
@@ -261,7 +320,7 @@ func (s *Service) StartGitHubInstallation(ctx context.Context, userID string) (s
 	stateValue = "install." + stateValue
 	hash := sha256.Sum256([]byte(stateValue))
 	if err := s.store.SaveProviderSetupState(ctx, store.ProviderSetupState{
-		StateHash: hex.EncodeToString(hash[:]), UserID: userID, Provider: "github", Mode: "repository_install", ExpiresAt: time.Now().Add(time.Hour),
+		StateHash: hex.EncodeToString(hash[:]), UserID: userID, Provider: githubRepositoryAppProvider, Mode: githubRepositoryInstallMode, ExpiresAt: time.Now().Add(time.Hour),
 	}); err != nil {
 		return "", err
 	}
@@ -275,8 +334,8 @@ func (s *Service) CompleteGitHubInstallation(ctx context.Context, stateValue str
 	userID := ""
 	if stateValue != "" {
 		hash := sha256.Sum256([]byte(stateValue))
-		state, err := s.store.ConsumeProviderSetupState(ctx, hex.EncodeToString(hash[:]), "github")
-		if err != nil || state.Mode != "repository_install" {
+		state, err := s.store.ConsumeProviderSetupState(ctx, hex.EncodeToString(hash[:]), githubRepositoryAppProvider)
+		if err != nil || state.Mode != githubRepositoryInstallMode {
 			return store.SourceConnection{}, errors.New("GitHub installation state is invalid or expired")
 		}
 		userID = state.UserID
@@ -333,7 +392,7 @@ func (s *Service) SyncGitHubInstallations(ctx context.Context, userID, linkedAcc
 	if userID == "" || linkedAccountID == "" {
 		return nil, "", errors.New("link your GitHub account before synchronizing repository access")
 	}
-	jwt, err := s.githubAppJWT(ctx)
+	jwt, err := s.githubAppJWT(ctx, githubRepositoryAppProvider)
 	if err != nil {
 		return nil, "", err
 	}
@@ -369,7 +428,7 @@ func (s *Service) CompleteGitHubManifest(ctx context.Context, stateValue, code s
 		return store.ProviderSetupState{}, errors.New("GitHub App setup callback is missing state or code")
 	}
 	hash := sha256.Sum256([]byte(stateValue))
-	state, err := s.store.ConsumeProviderSetupState(ctx, hex.EncodeToString(hash[:]), "github")
+	state, err := s.store.ConsumeProviderSetupState(ctx, hex.EncodeToString(hash[:]), githubRepositoryAppProvider)
 	if err != nil {
 		return store.ProviderSetupState{}, errors.New("GitHub App setup state is invalid or expired")
 	}
@@ -410,8 +469,14 @@ func (s *Service) CompleteGitHubManifest(ctx context.Context, stateValue, code s
 	if err != nil {
 		return store.ProviderSetupState{}, err
 	}
+	providerApp := githubRepositoryAppProvider
+	if state.Mode == githubAccountLinkMode {
+		providerApp = githubLoginAppProvider
+	} else if state.Mode != githubRepositoryInstallMode {
+		return store.ProviderSetupState{}, errors.New("GitHub App setup mode is invalid")
+	}
 	if err := s.store.UpsertProviderAppConfig(ctx, store.ProviderAppConfig{
-		Provider:               "github",
+		Provider:               providerApp,
 		AppID:                  string(converted.ID),
 		AppSlug:                converted.Slug,
 		ClientIDEncrypted:      clientID,
@@ -425,11 +490,8 @@ func (s *Service) CompleteGitHubManifest(ctx context.Context, stateValue, code s
 	return state, nil
 }
 
-func (s *Service) githubAccountCredentials(ctx context.Context) (githubOAuthCredentials, error) {
-	config, err := s.store.ProviderAppConfig(ctx, "github")
-	if store.NotFound(err) {
-		return githubOAuthCredentials{}, nil
-	}
+func (s *Service) githubOAuthCredentials(ctx context.Context, providerApp string) (githubOAuthCredentials, error) {
+	config, err := s.store.ProviderAppConfig(ctx, providerApp)
 	if err != nil {
 		return githubOAuthCredentials{}, err
 	}
@@ -441,20 +503,14 @@ func (s *Service) githubAccountCredentials(ctx context.Context) (githubOAuthCred
 	if err != nil {
 		return githubOAuthCredentials{}, err
 	}
-	return githubOAuthCredentials{clientID: clientID, clientSecret: clientSecret, managed: true, appSlug: config.AppSlug}, nil
+	return githubOAuthCredentials{clientID: clientID, clientSecret: clientSecret}, nil
 }
 
 func (s *Service) Start(ctx context.Context, userID, provider string) (string, error) {
-	clientID, clientSecret := "", ""
-	if provider == "github" {
-		credentials, err := s.githubAccountCredentials(ctx)
-		if err != nil {
-			return "", err
-		}
-		clientID, clientSecret = credentials.clientID, credentials.clientSecret
-	} else if provider == "gitlab" {
-		clientID, clientSecret = s.cfg.GitLabClientID, s.cfg.GitLabClientSecret
+	if provider != "gitlab" {
+		return "", errors.New("unsupported source provider")
 	}
+	clientID, clientSecret := s.cfg.GitLabClientID, s.cfg.GitLabClientSecret
 	if clientID == "" || clientSecret == "" {
 		return "", fmt.Errorf("%s OAuth is not configured", provider)
 	}
@@ -470,9 +526,6 @@ func (s *Service) Start(ctx context.Context, userID, provider string) (string, e
 	var endpoint string
 	values := url.Values{"client_id": {clientID}, "redirect_uri": {callback}, "state": {state}, "response_type": {"code"}}
 	switch provider {
-	case "github":
-		endpoint = "https://github.com/login/oauth/authorize"
-		values.Set("scope", "repo read:user user:email")
 	case "gitlab":
 		endpoint = s.cfg.GitLabBaseURL + "/oauth/authorize"
 		values.Set("scope", "read_api read_repository")
@@ -483,6 +536,9 @@ func (s *Service) Start(ctx context.Context, userID, provider string) (string, e
 }
 
 func (s *Service) Complete(ctx context.Context, provider, stateValue, code string) error {
+	if provider != "gitlab" {
+		return errors.New("unsupported source provider")
+	}
 	if stateValue == "" || code == "" {
 		return errors.New("OAuth callback is missing state or code")
 	}
@@ -605,13 +661,6 @@ func (s *Service) CloneRepository(ctx context.Context, connection store.SourceCo
 type profile struct{ id, name, avatar string }
 
 func (s *Service) exchange(ctx context.Context, provider, code string) (string, string, error) {
-	if provider == "github" {
-		credentials, err := s.githubAccountCredentials(ctx)
-		if err != nil {
-			return "", "", err
-		}
-		return s.exchangeWithCredentials(ctx, provider, code, s.callbackURL(provider), credentials.clientID, credentials.clientSecret)
-	}
 	return s.exchangeWithCredentials(ctx, provider, code, s.callbackURL(provider), s.cfg.GitLabClientID, s.cfg.GitLabClientSecret)
 }
 
@@ -729,7 +778,7 @@ func (s *Service) githubInstallationRepositories(ctx context.Context, installati
 }
 
 func (s *Service) githubInstallation(ctx context.Context, installationID int64) (githubInstallationRemote, error) {
-	jwt, err := s.githubAppJWT(ctx)
+	jwt, err := s.githubAppJWT(ctx, githubRepositoryAppProvider)
 	if err != nil {
 		return githubInstallationRemote{}, err
 	}
@@ -746,7 +795,7 @@ func (s *Service) githubInstallation(ctx context.Context, installationID int64) 
 }
 
 func (s *Service) githubInstallationToken(ctx context.Context, installationID int64, requireContents bool) (string, error) {
-	jwt, err := s.githubAppJWT(ctx)
+	jwt, err := s.githubAppJWT(ctx, githubRepositoryAppProvider)
 	if err != nil {
 		return "", err
 	}
@@ -774,8 +823,8 @@ func (s *Service) githubInstallationToken(ctx context.Context, installationID in
 	return out.Token, nil
 }
 
-func (s *Service) githubAppJWT(ctx context.Context) (string, error) {
-	config, err := s.store.ProviderAppConfig(ctx, "github")
+func (s *Service) githubAppJWT(ctx context.Context, providerApp string) (string, error) {
+	config, err := s.store.ProviderAppConfig(ctx, providerApp)
 	if err != nil {
 		return "", err
 	}
@@ -813,8 +862,8 @@ func (s *Service) githubAppJWT(ctx context.Context) (string, error) {
 	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature), nil
 }
 
-func (s *Service) ensureGitHubAppAvailable(ctx context.Context) error {
-	jwt, err := s.githubAppJWT(ctx)
+func (s *Service) ensureGitHubAppAvailable(ctx context.Context, providerApp string) error {
+	jwt, err := s.githubAppJWT(ctx, providerApp)
 	if err != nil {
 		return err
 	}
@@ -834,7 +883,7 @@ func (s *Service) ensureGitHubAppAvailable(ctx context.Context) error {
 	}
 	if err := githubAppResponseError(response.StatusCode, response.Status, body); err != nil {
 		if errors.Is(err, errGitHubAppRemoved) {
-			if resetErr := s.store.ResetProviderAppConfig(ctx, "github"); resetErr != nil {
+			if resetErr := s.store.ResetProviderAppConfig(ctx, providerApp); resetErr != nil {
 				return fmt.Errorf("reset removed GitHub App: %w", resetErr)
 			}
 			return ErrGitHubAccountNotConfigured
@@ -911,10 +960,13 @@ func (s *Service) callbackURL(provider string) string {
 	return s.cfg.PublicURL + "/api/integrations/oauth/" + provider + "/callback"
 }
 func (s *Service) accountCallbackURL() string {
-	return s.callbackURL("github")
+	return s.cfg.PublicURL + "/api/auth/github/callback"
+}
+func (s *Service) loginManifestCallbackURL() string {
+	return s.cfg.PublicURL + "/api/auth/github/manifest/callback"
 }
 func (s *Service) manifestCallbackURL() string {
-	return s.cfg.PublicURL + "/api/auth/github/manifest/callback"
+	return s.cfg.PublicURL + "/api/integrations/github/manifest/callback"
 }
 func (s *Service) installationCallbackURL() string {
 	return s.cfg.PublicURL + "/api/integrations/github/install/callback"

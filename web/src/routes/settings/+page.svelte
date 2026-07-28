@@ -461,7 +461,7 @@
             </header>
             {#if !security.providers.github.configured}
               <div class="panel-body split-row">
-                <div class="explanation"><b>Authorize Dokyr on GitHub.</b><p>You will be redirected to GitHub to create and authorize a private GitHub App for this server. No client ID or secret needs to be copied manually.</p></div>
+                <div class="explanation"><b>Set up identity-only GitHub login.</b><p>Dokyr will ask GitHub to create a public login App for this server automatically. It requests no repository permissions.</p></div>
                 <a class="btn btn-primary" href="/api/account/github/start"><Icon name="github" size={15} /> Connect GitHub</a>
               </div>
             {:else if security.github.linked}
@@ -486,7 +486,7 @@
               {/if}
             {:else}
               <div class="panel-body split-row">
-                <div class="explanation"><b>Use your existing GitHub identity.</b><p>{security.providers.github.managed && security.providers.github.appSlug ? `Authorize with ${security.providers.github.appSlug}.` : 'You will be redirected to GitHub to authorize this account.'} Repository access remains a separate permission.</p></div>
+                <div class="explanation"><b>Use your existing GitHub identity.</b><p>You will authorize the identity-only GitHub App. Repository access is configured separately under Sources.</p></div>
                 <a class="btn btn-primary" href="/api/account/github/start"><Icon name="link" size={14} /> Link GitHub account</a>
               </div>
             {/if}

@@ -213,11 +213,13 @@
             {#if key === 'github'}
               {#if connections.length}
                 <a class="btn btn-sm btn-primary" href="/api/integrations/github/install/start">Add installation <Icon name="arrow-right" size={12} /></a>
-              {:else if state.linked && state.managed}
-                <button class="btn btn-sm" type="button" onclick={() => syncGitHubInstallations(true)} disabled={syncing}>{syncing ? 'Checking…' : 'Refresh installation'}</button>
+              {:else if state.linked}
+                {#if state.managed}<button class="btn btn-sm" type="button" onclick={() => syncGitHubInstallations(true)} disabled={syncing}>{syncing ? 'Checking…' : 'Refresh installation'}</button>{/if}
                 <a class="btn btn-sm btn-primary" href="/api/integrations/github/install/start">Select repositories <Icon name="arrow-right" size={12} /></a>
+              {:else if state.loginConfigured}
+                <a class="btn btn-sm btn-primary" href="/api/account/github/start">Link GitHub identity <Icon name="arrow-right" size={12} /></a>
               {:else}
-                <a class="btn btn-sm btn-primary" href="/api/account/github/start">Link GitHub <Icon name="arrow-right" size={12} /></a>
+                <a class="btn btn-sm btn-primary" href="/api/account/github/start">Set up GitHub login <Icon name="arrow-right" size={12} /></a>
               {/if}
             {:else if state.configured}
               <a class="btn btn-sm btn-primary" href={'/api/integrations/oauth/' + key + '/start'}>Connect {provider.name} <Icon name="arrow-right" size={12} /></a>
@@ -230,7 +232,13 @@
         {#if key === 'github' && !state.managed}
           <div class="config-note accent">
             <Icon name="info" size={14} />
-            <span>Link GitHub in <a href="/settings?section=security">Settings → Security</a>. Dokyr creates a private GitHub App and stores its credentials encrypted.</span>
+            {#if state.linked}
+              <span>Select repositories to create a private GitHub App used only for repository access. Login remains a separate identity connection.</span>
+            {:else if state.loginConfigured}
+              <span>Link your identity-only GitHub App in <a href="/settings?section=security">Settings → Security</a> before selecting repositories.</span>
+            {:else}
+              <span>Set up the identity-only GitHub App first. Dokyr creates it automatically for this server without repository permissions.</span>
+            {/if}
           </div>
         {/if}
         {#if key === 'gitlab' && !state.configured}

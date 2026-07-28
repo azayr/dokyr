@@ -117,7 +117,7 @@
       <a class="auth-alt-button" href="/api/auth/github/start"><Icon name="github" size={16} /> Continue with GitHub</a>
     {:else}
       <button class="auth-alt-button" disabled title="GitHub login is not configured on this server"><Icon name="github" size={16} /> GitHub login is not configured</button>
-      <p class="auth-provider-help">An owner can configure and link GitHub from Settings → Security.</p>
+      <p class="auth-provider-help">Sign in with your password once, then connect the identity-only GitHub App from Settings → Security.</p>
     {/if}
   {:else}
     <span class="auth-challenge-icon"><Icon name="shield" size={20} /></span>

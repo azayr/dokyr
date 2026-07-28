@@ -9,7 +9,8 @@ Dokyr is a lightweight, single-node deployment control plane. It runs as one Go 
 The current release can:
 
 - create the first owner account and authenticate with a JWT stored in an HTTP-only cookie;
-- connect GitHub and GitLab accounts through OAuth and list private repositories;
+- authenticate users through a manifest-created identity-only GitHub App, and connect private
+  repositories through a separate GitHub App installation or GitLab OAuth;
 - store private Registry V2 credentials;
 - create and deploy image-based projects;
 - validate and bulk-import image services and managed databases from a Docker Compose YAML file;
@@ -422,7 +423,6 @@ Applied filenames are recorded in `schema_migrations`. Each migration runs in it
 | `SELFHOST_COOKIE_SECURE` | `false` | Set `true` when the panel is served over HTTPS |
 | `SELFHOST_PUBLIC_URL` | `http://localhost:8080` | Base URL used to construct OAuth callbacks |
 | `SELFHOST_ENCRYPTION_KEY` | insecure development value | Derives the AES-GCM key for stored credentials and environment values |
-| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | empty | GitHub OAuth application |
 | `GITLAB_CLIENT_ID`, `GITLAB_CLIENT_SECRET` | empty | GitLab OAuth application |
 | `GITLAB_BASE_URL` | `https://gitlab.com` | GitLab SaaS or self-managed base URL |
 | `CADDY_ADMIN_URL` | `unix:///run/caddy-admin/admin.sock` | Caddy admin API transport |

@@ -298,13 +298,17 @@ Disable with `DELETE /api/account/2fa`:
 
 GitHub account linking uses the redirect returned by `GET /api/account/github/start`; unlink with `DELETE /api/account/github`.
 
-For a managed private GitHub App, the login/link endpoint performs a signed
-`GET /app` preflight before returning GitHub's OAuth URL. If GitHub returns 401
-or 404 because the App was deleted, the server removes the stale provider
-credentials and GitHub installation connections. An authenticated link request
-immediately starts a fresh App Manifest flow. An unauthenticated login request
-returns to `/login` with instructions to use password login and reconnect the
-App in Settings. Other GitHub or network failures do not erase configuration.
+GitHub login and account linking use a public, identity-only GitHub App created
+for the individual Dokyr server through GitHub's App Manifest flow. When it is
+not configured, an authenticated request to `GET /api/account/github/start`
+creates it automatically using `SELFHOST_PUBLIC_URL` for its manifest and
+callback URLs, then continues into account authorization. No GitHub client
+credentials or callback domain are configured manually.
+
+This authorization requests no repository permissions and is used only to read
+the authenticated user's public GitHub identity. It does not create a source
+connection or grant repository access. Repository access uses the separate,
+private GitHub App installation flow described under Sources and registries.
 
 ### SMTP
 
@@ -771,7 +775,12 @@ A frontend can poll every 1–3 seconds while `deployment.status` is `deploying`
 | `POST` | `/api/integrations/registries` | Add private Docker registry |
 | `DELETE` | `/api/integrations/registries/{registryId}` | Delete registry credential |
 
-GitHub integration uses the GitHub App installation flow. The returned installation has a `manageUrl`; use this to change repository selection in GitHub. GitLab currently uses OAuth and requires provider configuration on the server.
+GitHub repository integration uses a private GitHub App installation flow. If
+the server has no repository App yet, `GET /api/integrations/github/install/start`
+first starts the App Manifest flow and then continues to repository selection.
+The returned installation has a `manageUrl`; use this to change repository
+selection in GitHub. GitLab currently
+uses OAuth and requires provider configuration on the server.
 
 If GitHub shows the App as installed but `GET /api/integrations` has no GitHub source connection, call `POST /api/integrations/github/installations/sync`. It lists installations using the server's private GitHub App credential and imports only an installation whose GitHub account ID exactly matches the account already linked to the authenticated Dokyr user. It never imports an unrelated personal or organization installation.
 
@@ -790,7 +799,7 @@ An installation created with an older App manifest may return a warning and `con
 
 ```json
 {
-  "providers": { "github": { "configured": true, "linked": true, "login": "…" } },
+  "providers": { "github": { "configured": true, "managed": true, "loginConfigured": true, "linked": true, "login": "…" } },
   "connections": [{ "id": "src_…", "provider": "github", "accountName": "…", "manageUrl": "https://github.com/settings/installations/…" }],
   "registries": [{ "id": "reg_…", "name": "GHCR", "registryUrl": "ghcr.io", "username": "…" }]
 }

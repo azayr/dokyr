@@ -120,6 +120,7 @@ func (a *API) Handler() http.Handler {
 	public.HandleFunc("GET /api/auth/github/start", a.githubLoginStart)
 	public.HandleFunc("GET /api/auth/github/callback", a.githubAccountCallback)
 	public.HandleFunc("GET /api/auth/github/manifest/callback", a.githubManifestCallback)
+	public.HandleFunc("GET /api/integrations/github/manifest/callback", a.githubManifestCallback)
 	public.HandleFunc("GET /api/integrations/github/install/callback", a.githubInstallationCallback)
 	public.HandleFunc("GET /api/integrations/oauth/{provider}/callback", a.oauthCallback)
 	public.HandleFunc("POST /api/webhooks/github", a.githubWebhook)
@@ -994,7 +995,7 @@ func (a *API) githubLoginStart(w http.ResponseWriter, r *http.Request) {
 	destination, err := a.integrations.StartGitHubAccountOAuth(r.Context(), "", "login")
 	if err != nil {
 		if errors.Is(err, integration.ErrGitHubAccountNotConfigured) {
-			err = errors.New("The GitHub App was removed or is not configured. Sign in with your password, then reconnect GitHub in Settings → Security.")
+			err = errors.New("GitHub login is not configured yet. Sign in with your email and password, then connect GitHub in Settings → Security.")
 		}
 		http.Redirect(w, r, "/login?error="+url.QueryEscape(err.Error()), http.StatusFound)
 		return
@@ -1006,7 +1007,7 @@ func (a *API) githubLinkStart(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.FromContext(r.Context())
 	destination, err := a.integrations.StartGitHubAccountOAuth(r.Context(), claims.Subject, "link")
 	if errors.Is(err, integration.ErrGitHubAccountNotConfigured) {
-		manifest, manifestErr := a.integrations.StartGitHubManifest(r.Context(), claims.Subject)
+		manifest, manifestErr := a.integrations.StartGitHubLoginManifest(r.Context(), claims.Subject)
 		if manifestErr != nil {
 			problem(w, manifestErr)
 			return
@@ -1022,27 +1023,41 @@ func (a *API) githubLinkStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) githubManifestCallback(w http.ResponseWriter, r *http.Request) {
+	errorDestination := "/integrations"
+	if strings.HasPrefix(r.URL.Query().Get("state"), "manifest.login.") {
+		errorDestination = "/settings?section=security"
+	}
 	if oauthError := r.URL.Query().Get("error"); oauthError != "" {
-		http.Redirect(w, r, "/settings?section=security&error="+url.QueryEscape("GitHub App setup was cancelled."), http.StatusFound)
+		http.Redirect(w, r, errorDestination+querySeparator(errorDestination)+"error="+url.QueryEscape("GitHub App setup was cancelled."), http.StatusFound)
 		return
 	}
 	state, err := a.integrations.CompleteGitHubManifest(r.Context(), r.URL.Query().Get("state"), r.URL.Query().Get("code"))
 	if err != nil {
 		a.log.Warn("GitHub App manifest callback failed", "error", err)
-		http.Redirect(w, r, "/settings?section=security&error="+url.QueryEscape(err.Error()), http.StatusFound)
+		http.Redirect(w, r, errorDestination+querySeparator(errorDestination)+"error="+url.QueryEscape(err.Error()), http.StatusFound)
 		return
 	}
-	destination, err := a.integrations.StartGitHubAccountOAuth(r.Context(), state.UserID, "link")
+	if state.Mode == "account_link" {
+		destination, err := a.integrations.StartGitHubAccountOAuth(r.Context(), state.UserID, "link")
+		if err != nil {
+			a.log.Warn("start GitHub authorization after login App setup", "error", err)
+			http.Redirect(w, r, "/settings?section=security&error="+url.QueryEscape(err.Error()), http.StatusFound)
+			return
+		}
+		http.Redirect(w, r, destination, http.StatusFound)
+		return
+	}
+	destination, err := a.integrations.StartGitHubInstallation(r.Context(), state.UserID)
 	if err != nil {
-		a.log.Warn("start GitHub authorization after app setup", "error", err)
-		http.Redirect(w, r, "/settings?section=security&error="+url.QueryEscape(err.Error()), http.StatusFound)
+		a.log.Warn("start GitHub repository installation after app setup", "error", err)
+		http.Redirect(w, r, "/integrations?error="+url.QueryEscape(err.Error()), http.StatusFound)
 		return
 	}
 	http.Redirect(w, r, destination, http.StatusFound)
 }
 
 func (a *API) renderGitHubManifestForm(w http.ResponseWriter, manifest integration.GitHubManifestStart) {
-	const page = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connecting GitHub — Dokyr</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0c1117;color:#e7edf3;font:14px system-ui,sans-serif}.card{width:min(420px,calc(100% - 40px));padding:32px;border:1px solid #223040;border-radius:12px;background:#121922;text-align:center}.mark{width:42px;height:42px;margin:auto;display:grid;place-items:center;border-radius:10px;background:#0b63e5;color:#ffffff;font-weight:800}h1{font-size:22px;margin:18px 0 8px}p{color:#8494a5;line-height:1.6}button{height:42px;margin-top:14px;padding:0 18px;border:0;border-radius:7px;background:#0b63e5;color:#ffffff;font-weight:750;cursor:pointer}</style></head><body><main class="card"><div class="mark">GH</div><h1>Continue to GitHub</h1><p>Dokyr is redirecting you to create and authorize a private GitHub App for this server.</p><form id="github-manifest" method="post" action="{{.Action}}"><input type="hidden" name="manifest" value="{{.Manifest}}"><button type="submit">Continue to GitHub</button></form></main><script>document.getElementById('github-manifest').submit()</script></body></html>`
+	const page = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connecting GitHub — Dokyr</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0c1117;color:#e7edf3;font:14px system-ui,sans-serif}.card{width:min(420px,calc(100% - 40px));padding:32px;border:1px solid #223040;border-radius:12px;background:#121922;text-align:center}.mark{width:42px;height:42px;margin:auto;display:grid;place-items:center;border-radius:10px;background:#0b63e5;color:#ffffff;font-weight:800}h1{font-size:22px;margin:18px 0 8px}p{color:#8494a5;line-height:1.6}button{height:42px;margin-top:14px;padding:0 18px;border:0;border-radius:7px;background:#0b63e5;color:#ffffff;font-weight:750;cursor:pointer}</style></head><body><main class="card"><div class="mark">GH</div><h1>Continue to GitHub</h1><p>{{.Purpose}}</p><form id="github-manifest" method="post" action="{{.Action}}"><input type="hidden" name="manifest" value="{{.Manifest}}"><button type="submit">Continue to GitHub</button></form></main><script>document.getElementById('github-manifest').submit()</script></body></html>`
 	tmpl, err := template.New("github-manifest").Parse(page)
 	if err != nil {
 		problem(w, err)
