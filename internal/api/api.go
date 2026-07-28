@@ -261,6 +261,7 @@ func (a *API) mountRoutes(public *http.ServeMux, protected *guardedMux) http.Han
 	root.Handle("/api/databases/", a.auth.Require(protected.handler()))
 	root.Handle("/api/services/", a.auth.Require(protected.handler()))
 	root.Handle("GET /api/integrations/oauth/{provider}/callback", public)
+	root.Handle("GET /api/integrations/github/manifest/callback", public)
 	root.Handle("GET /api/integrations/github/install/callback", public)
 	root.Handle("GET /api/registry/token", public)
 	root.Handle("POST /api/registry/events", public)

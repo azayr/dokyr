@@ -252,6 +252,23 @@ func TestAuthorizeAllowsAnyRoleForOwnAccountRoutes(t *testing.T) {
 	}
 }
 
+func TestGitHubManifestCallbackBypassesProtectedIntegrationsPrefix(t *testing.T) {
+	a := &API{auth: &auth.Manager{}}
+	public := http.NewServeMux()
+	public.HandleFunc("GET /api/integrations/github/manifest/callback", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := a.mountRoutes(public, newGuardedMux(a))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/integrations/github/manifest/callback?code=manifest-code&state=manifest-state", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("manifest callback status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
 // registeredRoutes builds the route table the way Handler does, without needing
 // the dependencies a live API has, so the policy can be asserted in a unit test.
 func registeredRoutes(t *testing.T) map[string]authz.Permission {
