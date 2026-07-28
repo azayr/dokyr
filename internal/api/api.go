@@ -1303,7 +1303,6 @@ func (a *API) createProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	claims, _ := auth.FromContext(r.Context())
 	if in.ConnectionID != "" {
 		if _, err := a.store.SourceConnection(r.Context(), in.ConnectionID); err != nil {
 			bad(w, "source connection is invalid")
@@ -1311,7 +1310,7 @@ func (a *API) createProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if in.RegistryID != "" {
-		if _, err := a.store.Registry(r.Context(), in.RegistryID, claims.Subject); err != nil {
+		if _, err := a.store.Registry(r.Context(), in.RegistryID); err != nil {
 			bad(w, "registry is invalid")
 			return
 		}
@@ -1685,12 +1684,13 @@ func (a *API) integrationsIndex(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
-	connections = sourceConnectionsForUser(connections, claims.Subject)
-	registries, err := a.store.Registries(r.Context(), claims.Subject)
+	connections = sourceConnectionsForUser(connections, claims.Subject, claims.Role)
+	registries, err := a.store.Registries(r.Context())
 	if err != nil {
 		problem(w, err)
 		return
 	}
+	registries = registryCredentialsForUser(registries, claims.Subject, claims.Role)
 	providers, err := a.integrations.ProviderStatus(r.Context())
 	if err != nil {
 		problem(w, err)
@@ -1708,19 +1708,33 @@ func (a *API) integrationsIndex(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, map[string]any{"providers": providers, "connections": connections, "registries": registries})
 }
 
-func sourceConnectionsForUser(connections []store.SourceConnection, userID string) []store.SourceConnection {
+func sourceConnectionsForUser(connections []store.SourceConnection, userID, role string) []store.SourceConnection {
 	items := make([]store.SourceConnection, len(connections))
 	for index, connection := range connections {
-		items[index] = sourceConnectionForUser(connection, userID)
+		items[index] = sourceConnectionForUser(connection, userID, role)
 	}
 	return items
 }
 
-func sourceConnectionForUser(connection store.SourceConnection, userID string) store.SourceConnection {
+func sourceConnectionForUser(connection store.SourceConnection, userID, role string) store.SourceConnection {
 	if connection.UserID != userID {
 		connection.ManageURL = ""
 	}
+	connection.CanDelete = canDeleteIntegrationResource(userID, role, connection.UserID)
 	return connection
+}
+
+func registryCredentialsForUser(registries []store.RegistryCredential, userID, role string) []store.RegistryCredential {
+	items := make([]store.RegistryCredential, len(registries))
+	for index, credential := range registries {
+		credential.CanDelete = canDeleteIntegrationResource(userID, role, credential.CreatedBy)
+		items[index] = credential
+	}
+	return items
+}
+
+func canDeleteIntegrationResource(userID, role, createdBy string) bool {
+	return authz.Can(role, authz.PermIntegrationWrite) && (role == authz.RoleOwner || userID == createdBy)
 }
 
 func (a *API) githubInstallationStart(w http.ResponseWriter, r *http.Request) {
@@ -1839,12 +1853,13 @@ func (a *API) repositories(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, 200, map[string]any{
-		"connection":   sourceConnectionForUser(connection, claims.Subject),
+		"connection":   sourceConnectionForUser(connection, claims.Subject, claims.Role),
 		"repositories": items,
 	})
 }
 
 func (a *API) deleteSourceConnection(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.FromContext(r.Context())
 	connection, err := a.store.SourceConnection(r.Context(), r.PathValue("id"))
 	if store.NotFound(err) {
 		write(w, 404, map[string]string{"error": "source connection not found"})
@@ -1852,6 +1867,10 @@ func (a *API) deleteSourceConnection(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		problem(w, err)
+		return
+	}
+	if !canDeleteIntegrationResource(claims.Subject, claims.Role, connection.UserID) {
+		write(w, http.StatusForbidden, map[string]string{"error": "admins can unlink only source connections they added; the owner can unlink any source connection"})
 		return
 	}
 	if err := a.store.DeleteSourceConnection(r.Context(), connection.ID); err != nil {
@@ -1897,18 +1916,18 @@ func (a *API) createRegistry(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
-	created, err := a.store.Registry(r.Context(), c.ID, claims.Subject)
+	created, err := a.store.Registry(r.Context(), c.ID)
 	if err != nil {
 		problem(w, err)
 		return
 	}
+	created.CanDelete = true
 	write(w, 201, created)
 }
 
 func (a *API) checkRegistry(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.FromContext(r.Context())
 	registryID := strings.TrimSpace(r.PathValue("id"))
-	registryAuth, err := a.registryAuthForService(r.Context(), store.ApplicationService{RegistryID: registryID}, claims.Subject)
+	registryAuth, err := a.registryAuthForService(r.Context(), store.ApplicationService{RegistryID: registryID})
 	if store.NotFound(err) {
 		write(w, http.StatusNotFound, map[string]string{"error": "registry not found"})
 		return
@@ -1930,12 +1949,20 @@ func (a *API) checkRegistry(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) deleteRegistry(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.FromContext(r.Context())
-	err := a.store.DeleteRegistry(r.Context(), r.PathValue("id"), claims.Subject)
+	credential, err := a.store.Registry(r.Context(), r.PathValue("id"))
 	if store.NotFound(err) {
 		write(w, 404, map[string]string{"error": "registry not found"})
 		return
 	}
 	if err != nil {
+		problem(w, err)
+		return
+	}
+	if !canDeleteIntegrationResource(claims.Subject, claims.Role, credential.CreatedBy) {
+		write(w, http.StatusForbidden, map[string]string{"error": "admins can remove only registry credentials they added; the owner can remove any registry credential"})
+		return
+	}
+	if err := a.store.DeleteRegistry(r.Context(), credential.ID); err != nil {
 		problem(w, err)
 		return
 	}
@@ -2046,7 +2073,6 @@ func (a *API) updateProject(w http.ResponseWriter, r *http.Request) {
 		bad(w, "source type must be empty, repository, or image")
 		return
 	}
-	claims, _ := auth.FromContext(r.Context())
 	if in.SourceType == "repository" {
 		if in.Repository == "" || strings.ContainsAny(in.Repository, " \t\r\n") {
 			bad(w, "enter a valid repository URL")
@@ -2069,7 +2095,7 @@ func (a *API) updateProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if in.RegistryID != "" {
-			if _, err := a.store.Registry(r.Context(), in.RegistryID, claims.Subject); err != nil {
+			if _, err := a.store.Registry(r.Context(), in.RegistryID); err != nil {
 				bad(w, "registry credential is invalid")
 				return
 			}
@@ -2760,8 +2786,7 @@ func (a *API) deployProject(w http.ResponseWriter, r *http.Request) {
 
 	var registryAuth *runtime.RegistryAuth
 	if project.RegistryID != "" {
-		claims, _ := auth.FromContext(r.Context())
-		credential, credentialErr := a.store.Registry(r.Context(), project.RegistryID, claims.Subject)
+		credential, credentialErr := a.store.Registry(r.Context(), project.RegistryID)
 		if credentialErr != nil {
 			a.recordDeploymentEvent(r.Context(), deployment.ID, "prepare", "error", "Registry credential is unavailable")
 			a.failDeployment(r.Context(), deployment.ID, project.ID, started, "Registry credential is unavailable", credentialErr)
@@ -3118,9 +3143,8 @@ func (a *API) createApplicationService(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
-	claims, _ := auth.FromContext(r.Context())
 	if in.RegistryID != "" {
-		if _, err := a.store.Registry(r.Context(), in.RegistryID, claims.Subject); err != nil {
+		if _, err := a.store.Registry(r.Context(), in.RegistryID); err != nil {
 			bad(w, "registry credential is invalid")
 			return
 		}
@@ -3187,9 +3211,8 @@ func (a *API) updateApplicationService(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
-	claims, _ := auth.FromContext(r.Context())
 	if clean.RegistryID != "" {
-		if _, err := a.store.Registry(r.Context(), clean.RegistryID, claims.Subject); err != nil {
+		if _, err := a.store.Registry(r.Context(), clean.RegistryID); err != nil {
 			bad(w, "registry credential is invalid")
 			return
 		}
@@ -3455,7 +3478,7 @@ func (a *API) updateApplicationServiceDeploymentTriggers(w http.ResponseWriter, 
 	write(w, 200, response)
 }
 
-func (a *API) registryAuthForService(ctx context.Context, service store.ApplicationService, userID string) (*runtime.RegistryAuth, error) {
+func (a *API) registryAuthForService(ctx context.Context, service store.ApplicationService) (*runtime.RegistryAuth, error) {
 	if service.InternalRegistry {
 		host, err := a.internalRegistryHost(ctx)
 		if err != nil {
@@ -3466,7 +3489,7 @@ func (a *API) registryAuthForService(ctx context.Context, service store.Applicat
 	if service.RegistryID == "" {
 		return nil, nil
 	}
-	credential, err := a.store.Registry(ctx, service.RegistryID, userID)
+	credential, err := a.store.Registry(ctx, service.RegistryID)
 	if err != nil {
 		return nil, err
 	}
@@ -3481,8 +3504,7 @@ func (a *API) registryAuthForService(ctx context.Context, service store.Applicat
 }
 
 func (a *API) deployApplicationService(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.FromContext(r.Context())
-	service, deployment, err := a.startApplicationServiceDeployment(r.Context(), strings.TrimSpace(r.PathValue("id")), claims.Subject, "", "")
+	service, deployment, err := a.startApplicationServiceDeployment(r.Context(), strings.TrimSpace(r.PathValue("id")), "", "")
 	if store.NotFound(err) {
 		write(w, 404, map[string]string{"error": "application service not found"})
 		return
@@ -3498,7 +3520,7 @@ func (a *API) deployApplicationService(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusAccepted, map[string]any{"service": service, "deployment": deployment})
 }
 
-func (a *API) startApplicationServiceDeployment(ctx context.Context, serviceID, userID, message, commitOverride string) (store.ApplicationService, store.Deployment, error) {
+func (a *API) startApplicationServiceDeployment(ctx context.Context, serviceID, message, commitOverride string) (store.ApplicationService, store.Deployment, error) {
 	a.applicationMu.Lock()
 	defer a.applicationMu.Unlock()
 	service, err := a.store.ApplicationService(ctx, serviceID)
@@ -3516,7 +3538,7 @@ func (a *API) startApplicationServiceDeployment(ctx context.Context, serviceID, 
 	if environmentValue != "" {
 		service.Environment = strings.Split(environmentValue, "\n")
 	}
-	registryAuth, err := a.registryAuthForService(ctx, service, userID)
+	registryAuth, err := a.registryAuthForService(ctx, service)
 	if err != nil {
 		if service.InternalRegistry {
 			return service, store.Deployment{}, fmt.Errorf("Dokyr Registry is unavailable: %w", err)
@@ -3648,18 +3670,13 @@ func (a *API) githubWebhook(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
-	owner, err := a.store.OwnerUser(r.Context())
-	if err != nil {
-		problem(w, err)
-		return
-	}
 	deploymentIDs := []string{}
 	for _, service := range services {
 		message := "Auto-deploy " + service.Name + " from GitHub push"
 		if payload.Pusher.Name != "" {
 			message += " by " + payload.Pusher.Name
 		}
-		_, deployment, startErr := a.startApplicationServiceDeployment(r.Context(), service.ID, owner.ID, message, payload.After)
+		_, deployment, startErr := a.startApplicationServiceDeployment(r.Context(), service.ID, message, payload.After)
 		if startErr != nil {
 			a.log.Warn("start GitHub auto-deploy", "service", service.ID, "error", startErr)
 			continue
@@ -3745,12 +3762,7 @@ func (a *API) registryWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	owner, err := a.store.OwnerUser(r.Context())
-	if err != nil {
-		problem(w, err)
-		return
-	}
-	_, deployment, err := a.startApplicationServiceDeployment(r.Context(), service.ID, owner.ID, "Auto-deploy "+service.Name+" from registry webhook", service.ImageURL)
+	_, deployment, err := a.startApplicationServiceDeployment(r.Context(), service.ID, "Auto-deploy "+service.Name+" from registry webhook", service.ImageURL)
 	if err != nil {
 		if strings.Contains(err.Error(), "already deploying") {
 			write(w, http.StatusAccepted, map[string]any{"triggered": false, "ignored": err.Error()})
@@ -3791,11 +3803,6 @@ func (a *API) internalRegistryEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		bad(w, "invalid registry event payload")
-		return
-	}
-	owner, err := a.store.OwnerUser(r.Context())
-	if err != nil {
-		problem(w, err)
 		return
 	}
 	deploymentIDs := []string{}
@@ -3840,7 +3847,7 @@ func (a *API) internalRegistryEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		a.log.Debug("internal registry event matched services", "image", image, "count", len(services))
 		for _, service := range services {
-			_, deployment, startErr := a.startApplicationServiceDeployment(r.Context(), service.ID, owner.ID, "Auto-deploy "+service.Name+" from Dokyr Registry", event.Target.Digest)
+			_, deployment, startErr := a.startApplicationServiceDeployment(r.Context(), service.ID, "Auto-deploy "+service.Name+" from Dokyr Registry", event.Target.Digest)
 			if startErr != nil {
 				a.log.Warn("start internal registry auto-deploy", "service", service.ID, "image", image, "error", startErr)
 				continue

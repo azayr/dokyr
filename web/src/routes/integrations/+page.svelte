@@ -187,7 +187,7 @@
                 </span>
                 <span class="account-actions">
                   {#if account.manageUrl}<a class="btn btn-sm" href={account.manageUrl}>Change access <Icon name="external" size={12} /></a>{/if}
-                  {#if canManageIntegrations}<button class="btn btn-sm btn-danger" onclick={() => { unlinkError = ''; accountToUnlink = account; }}>Unlink</button>{/if}
+                  {#if account.canDelete}<button class="btn btn-sm btn-danger" onclick={() => { unlinkError = ''; accountToUnlink = account; }}>Unlink</button>{/if}
                 </span>
               </div>
             {/each}
@@ -293,11 +293,13 @@
                   <span class="registry-text"><strong>{item.name}</strong><small>{item.registryUrl}</small></span>
                   <code>{item.username || 'anonymous'} / ••••••••</code>
                   <div class="registry-actions">
-                    <button class="btn btn-sm registry-check" disabled={check?.status === 'checking'} onclick={() => checkRegistry(item)}>
-                      <span class:spin={check?.status === 'checking'}><Icon name={check?.status === 'checking' ? 'refresh' : 'activity'} size={13} /></span>
-                      {check?.status === 'checking' ? 'Checking…' : 'Check connection'}
-                    </button>
-                    <button class="btn btn-sm btn-danger" onclick={() => (registryToRemove = item)}>Remove</button>
+                    {#if canManageIntegrations}
+                      <button class="btn btn-sm registry-check" disabled={check?.status === 'checking'} onclick={() => checkRegistry(item)}>
+                        <span class:spin={check?.status === 'checking'}><Icon name={check?.status === 'checking' ? 'refresh' : 'activity'} size={13} /></span>
+                        {check?.status === 'checking' ? 'Checking…' : 'Check connection'}
+                      </button>
+                    {/if}
+                    {#if item.canDelete}<button class="btn btn-sm btn-danger" onclick={() => (registryToRemove = item)}>Remove</button>{/if}
                   </div>
                 </div>
                 {#if check}

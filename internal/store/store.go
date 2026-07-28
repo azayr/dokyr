@@ -100,6 +100,7 @@ type SourceConnection struct {
 	RepositorySelection  string    `json:"repositorySelection,omitempty"`
 	ManageURL            string    `json:"manageUrl,omitempty"`
 	ContentsPermission   string    `json:"contentsPermission,omitempty"`
+	CanDelete            bool      `json:"canDelete"`
 	CreatedAt            time.Time `json:"createdAt"`
 	UpdatedAt            time.Time `json:"updatedAt"`
 }
@@ -206,6 +207,7 @@ type RegistryCredential struct {
 	Username          string    `json:"username"`
 	PasswordEncrypted string    `json:"-"`
 	CreatedBy         string    `json:"-"`
+	CanDelete         bool      `json:"canDelete"`
 	CreatedAt         time.Time `json:"createdAt"`
 	UpdatedAt         time.Time `json:"updatedAt"`
 }
@@ -1612,8 +1614,8 @@ func (s *Store) GitHubInstallation(ctx context.Context, installationID int64) (G
 	return installation, err
 }
 
-func (s *Store) Registries(ctx context.Context, userID string) ([]RegistryCredential, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT id,name,registry_url,username,created_by,created_at,updated_at FROM registry_credentials WHERE created_by=$1 ORDER BY updated_at DESC", userID)
+func (s *Store) Registries(ctx context.Context) ([]RegistryCredential, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT id,name,registry_url,username,created_by,created_at,updated_at FROM registry_credentials ORDER BY updated_at DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -1634,14 +1636,14 @@ func (s *Store) CreateRegistry(ctx context.Context, c RegistryCredential) error 
 	return err
 }
 
-func (s *Store) Registry(ctx context.Context, id, userID string) (RegistryCredential, error) {
+func (s *Store) Registry(ctx context.Context, id string) (RegistryCredential, error) {
 	var c RegistryCredential
-	err := s.db.QueryRowContext(ctx, "SELECT id,name,registry_url,username,password_encrypted,created_by,created_at,updated_at FROM registry_credentials WHERE id=$1 AND created_by=$2", id, userID).Scan(&c.ID, &c.Name, &c.RegistryURL, &c.Username, &c.PasswordEncrypted, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, "SELECT id,name,registry_url,username,password_encrypted,created_by,created_at,updated_at FROM registry_credentials WHERE id=$1", id).Scan(&c.ID, &c.Name, &c.RegistryURL, &c.Username, &c.PasswordEncrypted, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt)
 	return c, err
 }
 
-func (s *Store) DeleteRegistry(ctx context.Context, id, userID string) error {
-	result, err := s.db.ExecContext(ctx, "DELETE FROM registry_credentials WHERE id=$1 AND created_by=$2", id, userID)
+func (s *Store) DeleteRegistry(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, "DELETE FROM registry_credentials WHERE id=$1", id)
 	if err != nil {
 		return err
 	}

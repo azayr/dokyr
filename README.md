@@ -165,7 +165,9 @@ Connected repository sources are shared across the Dokyr server. They are
 visible to roles that can read projects and usable for project changes or
 deployments when that role holds the corresponding permission. The GitHub
 installation management link remains visible only to the Dokyr user who
-connected that installation.
+connected that installation. Admins may unlink only source connections they
+added; the Owner may unlink any connection. Private registry credentials follow
+the same rule and are shared for authorized project deployments.
 
 If the repository-access GitHub App is deleted from GitHub, its encrypted local
 credentials become unusable. The next repository-install attempt verifies the

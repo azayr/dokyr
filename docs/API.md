@@ -788,8 +788,11 @@ Source connections are server-wide resources. `GET /api/integrations` and the
 repository listing endpoint return every configured source to any role with
 project read access. Roles with project write or deploy access can use those
 connections for the same shared projects. Only the Dokyr user who created an
-installation receives its `manageUrl`; creating or unlinking connections still
-requires `integration:write`.
+installation receives its `manageUrl`. Source connections and private registry
+credentials expose `canDelete` for the current caller. Admins may delete only
+resources they created; the Owner may delete any integration resource.
+Creating, unlinking, or removing integrations still requires
+`integration:write`.
 
 If GitHub shows the App as installed but `GET /api/integrations` has no GitHub source connection, call `POST /api/integrations/github/installations/sync`. It lists installations using the server's repository-access GitHub App credential and imports only an installation whose GitHub account ID exactly matches the account already linked to the authenticated Dokyr user. It never imports an unrelated personal or organization installation.
 

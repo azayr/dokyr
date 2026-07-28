@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/azayr/selfhost/internal/auth"
 	"github.com/azayr/selfhost/internal/runtime"
 	"github.com/azayr/selfhost/internal/store"
 	"gopkg.in/yaml.v3"
@@ -206,11 +205,10 @@ func (a *API) importCompose(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	claims, _ := auth.FromContext(r.Context())
 	deployments := []store.Deployment{}
 	deploymentErrors := []composeIssue{}
 	for _, service := range applications {
-		_, deployment, err := a.startApplicationServiceDeployment(r.Context(), service.ID, claims.Subject, "Deploy "+service.Name+" from Compose import", "")
+		_, deployment, err := a.startApplicationServiceDeployment(r.Context(), service.ID, "Deploy "+service.Name+" from Compose import", "")
 		if err != nil {
 			deploymentErrors = append(deploymentErrors, composeIssue{Service: service.Name, Message: err.Error()})
 			continue
