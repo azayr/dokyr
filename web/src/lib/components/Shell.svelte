@@ -5,7 +5,7 @@
   import Logo from './Logo.svelte';
   import Toaster from './Toaster.svelte';
   import CommandMenu from './CommandMenu.svelte';
-  import { currentUser, logout } from '$lib/auth.js';
+  import { currentUser, currentPermissions, can, logout } from '$lib/auth.js';
   import { themeMode, resolvedTheme, initTheme, setTheme } from '$lib/theme.js';
   import { platformUpdate, loadPlatformUpdate, formatPlatformVersion } from '$lib/platform.js';
 
@@ -14,7 +14,10 @@
   export let subtitle = '';
   export let meta = [];
 
-  const navGroups = [
+  // Only an owner can manage users, so the nav entry is hidden for everyone
+  // else. The server rejects the requests regardless; this keeps the nav honest.
+  $: manageUsers = can($currentPermissions, 'user:manage');
+  $: navGroups = [
     {
       label: 'Workspace',
       items: [
@@ -34,7 +37,10 @@
     },
     {
       label: 'Administration',
-      items: [{ href: '/settings', icon: 'settings', label: 'Settings' }]
+      items: [
+        ...(manageUsers ? [{ href: '/users', icon: 'users', label: 'Users' }] : []),
+        { href: '/settings', icon: 'settings', label: 'Settings' }
+      ]
     }
   ];
 

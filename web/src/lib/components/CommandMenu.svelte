@@ -2,7 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { goto } from '$app/navigation';
   import { setTheme } from '$lib/theme.js';
-  import { logout } from '$lib/auth.js';
+  import { logout, currentPermissions, can } from '$lib/auth.js';
   import Icon from './Icon.svelte';
 
   export let open = false;
@@ -13,7 +13,8 @@
   let inputEl;
   let listEl;
 
-  const commands = [
+  $: manageUsers = can($currentPermissions, 'user:manage');
+  $: commands = [
     { group: 'Navigate', icon: 'grid', label: 'Overview', hint: '/', run: () => goto('/') },
     { group: 'Navigate', icon: 'box', label: 'Projects', hint: '/projects', run: () => goto('/projects') },
     { group: 'Navigate', icon: 'rocket', label: 'Deployments', hint: '/deployments', run: () => goto('/deployments') },
@@ -21,6 +22,7 @@
     { group: 'Navigate', icon: 'globe', label: 'Domains', hint: '/domains', run: () => goto('/domains') },
     { group: 'Navigate', icon: 'layers', label: 'Registry', hint: '/registry', run: () => goto('/registry') },
     { group: 'Navigate', icon: 'git', label: 'Sources', hint: '/integrations', run: () => goto('/integrations') },
+    ...(manageUsers ? [{ group: 'Navigate', icon: 'users', label: 'Users', hint: '/users', run: () => goto('/users') }] : []),
     { group: 'Navigate', icon: 'settings', label: 'Settings', hint: '/settings', run: () => goto('/settings') },
     { group: 'Actions', icon: 'plus', label: 'New project', hint: '', run: () => goto('/projects?new=1') },
     { group: 'Actions', icon: 'sun', label: 'Use light theme', hint: '', run: () => setTheme('light') },
