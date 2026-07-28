@@ -9,6 +9,7 @@
 
   const emptySettings = () => ({
     storage: 'filesystem',
+    objectStorageId: '',
     s3Region: '',
     s3Bucket: '',
     s3AccessKey: '',
@@ -48,6 +49,7 @@
   let status = { available: false };
   let settings = emptySettings();
   let repositories = [];
+  let objectStorages = [];
   let filter = '';
   let expandedRepositories = [];
   let gcResult = null;
@@ -71,7 +73,8 @@
       || (item.images || []).some((image) => (image.digest || '').toLowerCase().includes(query));
   });
   $: tagCount = repositories.reduce((count, item) => count + (item.tags || []).length, 0);
-  $: storageLabel = settings.storage === 's3' ? 'S3-compatible object storage' : 'Docker volume filesystem';
+  $: selectedObjectStorage = objectStorages.find((item) => item.id === settings.objectStorageId);
+  $: storageLabel = settings.storage === 's3' ? (selectedObjectStorage?.name || 'Object storage') : 'Docker volume filesystem';
   $: registryHost = registryHosts[0] || 'registry.example.com';
   $: loginCommand = `docker login ${registryHost} --username ${createdCredential?.username || registryUsername || 'you@example.com'}`;
 
@@ -80,20 +83,23 @@
     error = '';
     warning = '';
     try {
-      const [statusResponse, settingsResponse, tokensResponse, domainResponse] = await Promise.all([
+      const [statusResponse, settingsResponse, tokensResponse, domainResponse, objectStorageResponse] = await Promise.all([
         api('/api/registry/status'),
         api('/api/registry/settings'),
         api('/api/registry/access-tokens'),
-        api('/api/registry/domain')
+        api('/api/registry/domain'),
+        api('/api/object-storage')
       ]);
       const statusPayload = await statusResponse.json();
       const settingsPayload = await settingsResponse.json();
       const tokensPayload = await tokensResponse.json();
       const domainPayload = await domainResponse.json();
+      const objectStoragePayload = await objectStorageResponse.json();
       if (!statusResponse.ok) throw new Error(statusPayload.error || 'Could not load registry status');
       if (!settingsResponse.ok) throw new Error(settingsPayload.error || 'Could not load registry settings');
       if (!tokensResponse.ok) throw new Error(tokensPayload.error || 'Could not load registry tokens');
       if (!domainResponse.ok) throw new Error(domainPayload.error || 'Could not load registry domain');
+      if (!objectStorageResponse.ok) throw new Error(objectStoragePayload.error || 'Could not load object storage');
       status = statusPayload;
       settings = { ...emptySettings(), ...settingsPayload, s3SecretKey: '' };
       accessTokens = tokensPayload.tokens || [];
@@ -101,6 +107,7 @@
       registryDomain = { domain: '', httpsEnabled: true, attached: false, ...domainPayload };
       domainDraft = registryDomain.domain || '';
       registryHosts = domainPayload.registryHosts || tokensPayload.registryHosts || [];
+      objectStorages = objectStoragePayload.connections || [];
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not load registry';
     } finally {
@@ -254,6 +261,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           storage: settings.storage,
+          objectStorageId: settings.objectStorageId,
           s3Region: settings.s3Region,
           s3Bucket: settings.s3Bucket,
           s3AccessKey: settings.s3AccessKey,
@@ -384,31 +392,47 @@
       <form class="settings-form" onsubmit={(event) => { event.preventDefault(); saveSettings(); }}>
         <div class="storage-picker" role="radiogroup" aria-label="Storage backend">
           <label class:active={settings.storage === 'filesystem'}><input type="radio" bind:group={settings.storage} value="filesystem" /><Icon name="hard-drive" size={16} /><span><strong>Filesystem</strong><small>Use the registry Docker volume.</small></span></label>
-          <label class:active={settings.storage === 's3'}><input type="radio" bind:group={settings.storage} value="s3" /><Icon name="database" size={16} /><span><strong>S3</strong><small>Use an object storage bucket.</small></span></label>
+          <label class:active={settings.storage === 's3'}><input type="radio" bind:group={settings.storage} value="s3" /><Icon name="cloud" size={16} /><span><strong>Object storage</strong><small>Use a saved S3-compatible bucket.</small></span></label>
         </div>
 
         {#if settings.storage === 's3'}
-          <div class="form-grid">
-            <label><span>Region</span><input bind:value={settings.s3Region} autocomplete="off" placeholder="us-east-1" required /></label>
-            <label><span>Bucket</span><input bind:value={settings.s3Bucket} autocomplete="off" placeholder="dokyr-registry" required /></label>
-            <label><span>Access key</span><input bind:value={settings.s3AccessKey} autocomplete="off" required /></label>
-            <label><span>Secret key <em>{settings.hasS3SecretKey ? 'leave blank to keep current' : 'required'}</em></span><input bind:value={settings.s3SecretKey} type="password" autocomplete="new-password" placeholder={settings.hasS3SecretKey ? 'Stored encrypted' : ''} /></label>
-            <label class="wide"><span>Endpoint <em>optional</em></span><input bind:value={settings.s3Endpoint} autocomplete="off" placeholder="https://minio.example.com" /></label>
-            <div class="toggle-row wide">
-              <label class="switch"><input type="checkbox" bind:checked={settings.s3ForcePathStyle} /><span></span><em>{settings.s3ForcePathStyle ? 'On' : 'Off'}</em></label>
-              <div><strong>Force path-style URLs</strong><small>Enable for MinIO and other S3-compatible services that do not support bucket hostnames.</small></div>
+          {#if objectStorages.length}
+            <div class="object-storage-selection">
+              <label>
+                <span>Object storage connection</span>
+                <select bind:value={settings.objectStorageId} required>
+                  <option value="" disabled>Select a bucket…</option>
+                  {#each objectStorages as storage}
+                    <option value={storage.id}>{storage.name} · {storage.bucket}</option>
+                  {/each}
+                </select>
+                <small>Connections are managed independently and their secret keys stay encrypted.</small>
+              </label>
+              {#if selectedObjectStorage}
+                <div class="selected-storage">
+                  <span class="selected-storage-mark"><Icon name="cloud" size={18} /></span>
+                  <div>
+                    <strong>{selectedObjectStorage.name}</strong>
+                    <span><code>{selectedObjectStorage.bucket}</code> · {selectedObjectStorage.region}</span>
+                    <small>{selectedObjectStorage.endpoint || 'Amazon S3 managed endpoint'}</small>
+                  </div>
+                  <a class="btn btn-sm" href="/object-storage">Manage</a>
+                </div>
+              {/if}
             </div>
-            <div class="toggle-row wide">
-              <label class="switch"><input type="checkbox" bind:checked={settings.s3Secure} /><span></span><em>{settings.s3Secure ? 'TLS' : 'HTTP'}</em></label>
-              <div><strong>Secure transport</strong><small>Keep enabled unless the endpoint is only available over plain HTTP.</small></div>
+          {:else}
+            <div class="no-object-storage">
+              <span><Icon name="cloud" size={20} /></span>
+              <div><strong>No object storage connected</strong><small>Add an S3-compatible bucket first, then return here to select it.</small></div>
+              <a class="btn btn-primary btn-sm" href="/object-storage"><Icon name="plus" size={13} /> Add object storage</a>
             </div>
-          </div>
+          {/if}
         {:else}
           <div class="filesystem-note"><Icon name="hard-drive" size={18} /><div><strong>Registry data stays in the Compose volume.</strong><span>Changing from S3 back to filesystem does not migrate objects automatically.</span></div></div>
         {/if}
 
         <footer>
-          <button type="submit" class="primary" disabled={saving || loading}><Icon name="check" size={14} />{saving ? 'Saving…' : 'Save and restart registry'}</button>
+          <button type="submit" class="primary" disabled={saving || loading || (settings.storage === 's3' && !objectStorages.length)}><Icon name="check" size={14} />{saving ? 'Saving…' : 'Save and restart registry'}</button>
         </footer>
       </form>
     </section>
@@ -712,17 +736,27 @@
   .storage-picker label { min-height: 76px; padding: var(--space-3); display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface-subtle); cursor: pointer; }
   .storage-picker label.active { border-color: var(--color-accent); background: var(--color-accent-softer); }
   .storage-picker input { position: absolute; opacity: 0; pointer-events: none; }
-  .storage-picker span, .toggle-row div { display: grid; gap: 3px; }
-  .storage-picker strong, .toggle-row strong { font-size: var(--text-sm); }
-  .storage-picker small, .toggle-row small, .filesystem-note span { color: var(--color-muted); font-size: var(--text-xs); line-height: 1.45; }
-  .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
-  .form-grid label { display: grid; gap: var(--space-2); color: var(--color-muted); font-size: var(--text-xs); font-weight: 600; }
-  .form-grid label em { color: var(--color-faint); font-style: normal; font-weight: 500; }
-  .form-grid input, .repo-filter input { width: 100%; min-width: 0; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-sm); outline: 0; }
-  .form-grid input { height: 38px; padding: 0 var(--space-3); }
-  .form-grid input:focus, .repo-filter input:focus { border-color: var(--color-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-focus) 16%, transparent); }
-  .wide { grid-column: 1 / -1; }
-  .toggle-row { min-height: 54px; padding: var(--space-3); display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
+  .storage-picker span { display: grid; gap: 3px; }
+  .storage-picker strong { font-size: var(--text-sm); }
+  .storage-picker small, .filesystem-note span { color: var(--color-muted); font-size: var(--text-xs); line-height: 1.45; }
+  .object-storage-selection { display: grid; gap: var(--space-3); }
+  .object-storage-selection > label { display: grid; gap: var(--space-2); color: var(--color-muted); font-size: var(--text-xs); font-weight: 600; }
+  .object-storage-selection select { width: 100%; height: 40px; padding: 0 34px 0 var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background-color: var(--color-paper-raised); background-image: linear-gradient(45deg, transparent 50%, var(--color-muted) 50%), linear-gradient(135deg, var(--color-muted) 50%, transparent 50%); background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%; background-repeat: no-repeat; background-size: 5px 5px; color: var(--color-ink); font-size: var(--text-sm); appearance: none; outline: 0; }
+  .object-storage-selection select:focus { border-color: var(--color-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-focus) 16%, transparent); }
+  .object-storage-selection > label small { color: var(--color-muted); font-size: var(--text-2xs); font-weight: 500; }
+  .selected-storage { min-height: 82px; padding: var(--space-3); display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); border: 1px solid color-mix(in srgb, var(--color-accent) 30%, var(--color-rule)); border-radius: var(--radius-md); background: linear-gradient(120deg, var(--color-accent-softer), var(--color-paper-raised)); }
+  .selected-storage-mark { width: 42px; height: 42px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-rule)); border-radius: var(--radius-md); background: var(--color-paper-raised); color: var(--color-accent); }
+  .selected-storage > div { min-width: 0; display: grid; gap: 2px; }
+  .selected-storage strong { font-size: var(--text-sm); }
+  .selected-storage span, .selected-storage small { min-width: 0; overflow: hidden; color: var(--color-muted); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+  .selected-storage code { color: var(--color-ink-secondary); font-size: var(--text-xs); }
+  .no-object-storage { min-height: 86px; padding: var(--space-4); display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); border: 1px dashed var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-surface-subtle); }
+  .no-object-storage > span { width: 42px; height: 42px; display: grid; place-items: center; border-radius: var(--radius-md); background: var(--color-paper-subtle); color: var(--color-muted); }
+  .no-object-storage > div { display: grid; gap: 3px; }
+  .no-object-storage strong { font-size: var(--text-sm); }
+  .no-object-storage small { color: var(--color-muted); font-size: var(--text-xs); }
+  .repo-filter input { width: 100%; min-width: 0; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-sm); outline: 0; }
+  .repo-filter input:focus { border-color: var(--color-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-focus) 16%, transparent); }
   .switch { display: grid; grid-template-columns: 36px 28px; align-items: center; gap: 7px; cursor: pointer; }
   .switch input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
   .switch > span { width: 36px; height: 20px; position: relative; border: 1px solid var(--color-rule-strong); border-radius: 999px; background: var(--color-paper-subtle); }
@@ -932,5 +966,5 @@
     .image-actions { justify-content: stretch; }
     .image-actions button { width: 100%; }
   }
-  @media (max-width: 860px) { .registry-grid { grid-template-columns: 1fr; } .form-grid, .storage-picker, .gc-actions, .credential-fields { grid-template-columns: 1fr; } .credential-fields .login-command { grid-column: auto; } .settings-form footer, .primary { width: 100%; } .panel-header { align-items: flex-start; flex-direction: column; } .access-intro { grid-template-columns: 38px minmax(0, 1fr); } .access-intro > code { grid-column: 2; width: max-content; max-width: 100%; overflow: auto; } .repo-filter { width: 100%; } .repository-error { grid-template-columns: 1fr; justify-items: center; text-align: center; } }
+  @media (max-width: 860px) { .registry-grid { grid-template-columns: 1fr; } .storage-picker, .gc-actions, .credential-fields { grid-template-columns: 1fr; } .credential-fields .login-command { grid-column: auto; } .settings-form footer, .primary { width: 100%; } .panel-header { align-items: flex-start; flex-direction: column; } .access-intro { grid-template-columns: 38px minmax(0, 1fr); } .access-intro > code { grid-column: 2; width: max-content; max-width: 100%; overflow: auto; } .repo-filter { width: 100%; } .repository-error { grid-template-columns: 1fr; justify-items: center; text-align: center; } .no-object-storage, .selected-storage { grid-template-columns: 42px minmax(0, 1fr); } .no-object-storage .btn, .selected-storage .btn { grid-column: 1 / -1; width: 100%; } }
 </style>

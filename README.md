@@ -109,9 +109,14 @@ can push for `developer`, `admin`, and `owner` users; `viewer` users remain
 pull-only. Revoke a credential from the Registry page to invalidate it
 immediately.
 
-For S3-compatible storage, set `REGISTRY_STORAGE=s3` and fill the
-`REGISTRY_S3_*` variables in `.env`. For MinIO, set
-`REGISTRY_S3_ENDPOINT=https://minio.example.com` and
+For S3-compatible storage, open **Infrastructure → Object storage**, add an
+Amazon S3, Cloudflare R2, MinIO, DigitalOcean Spaces, or custom connection, then
+select it under **Registry → Storage backend**. Secret keys are encrypted and
+are never returned by the API after saving.
+
+`REGISTRY_STORAGE=s3` and the `REGISTRY_S3_*` variables remain available for
+first-start configuration. Dokyr imports them into a reusable object storage
+connection. For MinIO, set `REGISTRY_S3_ENDPOINT=https://minio.example.com` and
 `REGISTRY_S3_FORCEPATHSTYLE=true`. Use `REGISTRY_S3_SECURE=false` only when the
 endpoint is plain HTTP.
 

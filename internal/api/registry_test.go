@@ -50,6 +50,18 @@ func TestRegistrySettingsInputStillRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestRegistrySettingsAcceptsReusableObjectStorage(t *testing.T) {
+	clean, err := cleanRegistrySettings(registrySettingsInput{
+		Storage: "s3", ObjectStorageID: "obj_123",
+	})
+	if err != nil {
+		t.Fatalf("clean reusable object storage settings: %v", err)
+	}
+	if clean.ObjectStorageID != "obj_123" {
+		t.Fatalf("object storage ID = %q, want obj_123", clean.ObjectStorageID)
+	}
+}
+
 func TestRegistryDomainResponseUsesAttachedDomain(t *testing.T) {
 	response := registryDomainResponse(store.RegistryDomainSettings{
 		Domain:       "registry.example.com",

@@ -17,6 +17,7 @@
   // Only an owner can manage users, so the nav entry is hidden for everyone
   // else. The server rejects the requests regardless; this keeps the nav honest.
   $: manageUsers = can($currentPermissions, 'user:manage');
+  $: manageRegistry = can($currentPermissions, 'registry:write');
   $: navGroups = [
     {
       label: 'Workspace',
@@ -31,6 +32,7 @@
       items: [
         { href: '/servers', icon: 'server', label: 'Servers' },
         { href: '/domains', icon: 'globe', label: 'Domains' },
+        ...(manageRegistry ? [{ href: '/object-storage', icon: 'cloud', label: 'Object storage' }] : []),
         { href: '/registry', icon: 'layers', label: 'Registry' },
         { href: '/integrations', icon: 'git', label: 'Sources' }
       ]
@@ -48,9 +50,11 @@
   let commandOpen = false;
   let userMenuOpen = false;
   let themeMenuOpen = false;
+  let sidebarCollapsed = false;
 
   onMount(() => {
     initTheme();
+    sidebarCollapsed = window.localStorage.getItem('dokyr.sidebar.collapsed') === 'true';
     loadPlatformUpdate().catch(() => {});
   });
 
@@ -74,6 +78,12 @@
     userMenuOpen = false;
     themeMenuOpen = false;
   }
+
+  function toggleSidebar() {
+    sidebarCollapsed = !sidebarCollapsed;
+    userMenuOpen = false;
+    window.localStorage.setItem('dokyr.sidebar.collapsed', String(sidebarCollapsed));
+  }
 </script>
 
 <svelte:head>
@@ -84,12 +94,22 @@
   if (!event.target.closest?.('[data-menu]')) closeMenus();
 }} />
 
-<div class="app">
-  <aside class="sidebar" class:open={drawerOpen} aria-label="Primary">
+<div class="app" class:sidebar-collapsed={sidebarCollapsed}>
+  <aside id="primary-sidebar" class="sidebar" class:open={drawerOpen} aria-label="Primary">
     <div class="sidebar-top">
       <a class="brand" href="/" aria-label="Dokyr overview">
         <Logo size={28} />
       </a>
+      <button
+        class="sidebar-collapse"
+        type="button"
+        aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        aria-expanded={!sidebarCollapsed}
+        aria-controls="primary-sidebar"
+        onclick={toggleSidebar}
+      >
+        <Icon name={sidebarCollapsed ? 'chevron-right' : 'chevron-left'} size={13} />
+      </button>
       <button class="icon-btn drawer-close" type="button" aria-label="Close navigation" onclick={() => (drawerOpen = false)}>
         <Icon name="x" size={16} />
       </button>
@@ -100,7 +120,7 @@
         <div class="nav-group">
           <span class="nav-label">{group.label}</span>
           {#each group.items as item}
-            <a href={item.href} class:active={isActive(item.href)} aria-current={isActive(item.href) ? 'page' : undefined}>
+            <a href={item.href} class:active={isActive(item.href)} aria-current={isActive(item.href) ? 'page' : undefined} data-sidebar-tip={item.label}>
               <Icon name={item.icon} size={16} /><span>{item.label}</span>
             </a>
           {/each}
@@ -109,7 +129,7 @@
     </nav>
 
     <div class="sidebar-bottom">
-      <a class="platform-version" class:update-ready={$platformUpdate?.updateAvailable} href="/settings?section=platform">
+      <a class="platform-version" class:update-ready={$platformUpdate?.updateAvailable} href="/settings?section=platform" data-sidebar-tip="Platform version">
         <span class="version-mark"><Icon name={$platformUpdate?.updateAvailable ? 'arrow-right' : 'check'} size={12} /></span>
         <span>
           <b>Dokyr {formatPlatformVersion($platformUpdate?.current?.version, '…')}</b>
@@ -128,7 +148,7 @@
             <button type="button" role="menuitem" onclick={logout}><Icon name="logout" size={14} /> Sign out</button>
           </div>
         {/if}
-        <button class="identity" type="button" aria-haspopup="menu" aria-expanded={userMenuOpen} onclick={() => { userMenuOpen = !userMenuOpen; themeMenuOpen = false; }}>
+        <button class="identity" type="button" aria-label={`Account: ${$currentUser?.name || 'Owner'}`} aria-haspopup="menu" aria-expanded={userMenuOpen} data-sidebar-tip={$currentUser?.name || 'Account'} onclick={() => { userMenuOpen = !userMenuOpen; themeMenuOpen = false; }}>
           <span class="avatar">{initials($currentUser?.name)}</span>
           <span class="identity-text"><b>{$currentUser?.name || 'Owner'}</b><small>{$currentUser?.email || 'Account'}</small></span>
           <Icon name="chevron-down" size={14} />
@@ -249,6 +269,9 @@
   .brand {
     color: var(--color-ink);
     text-decoration: none;
+  }
+  .sidebar-collapse {
+    display: none;
   }
   .drawer-close {
     display: grid;
@@ -690,6 +713,10 @@
     .app {
       display: grid;
       grid-template-columns: 248px minmax(0, 1fr);
+      transition: grid-template-columns var(--duration-base) var(--ease-out);
+    }
+    .app.sidebar-collapsed {
+      grid-template-columns: 72px minmax(0, 1fr);
     }
     .sidebar {
       position: sticky;
@@ -698,7 +725,143 @@
       width: auto;
       transform: none;
       box-shadow: none;
-      transition: none;
+      transition: padding var(--duration-base) var(--ease-out);
+    }
+    .sidebar-collapse {
+      width: 24px;
+      height: 24px;
+      position: absolute;
+      z-index: 2;
+      top: 24px;
+      right: -12px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--color-rule-strong);
+      border-radius: 50%;
+      background: var(--color-paper-raised);
+      color: var(--color-muted);
+      box-shadow: var(--shadow-whisper);
+      cursor: pointer;
+      transition: border-color var(--duration-fast) var(--ease-out),
+        color var(--duration-fast) var(--ease-out),
+        transform var(--duration-fast) var(--ease-out);
+    }
+    .sidebar-collapse:hover {
+      border-color: var(--color-accent);
+      color: var(--color-accent);
+      transform: scale(1.06);
+    }
+    .sidebar-collapse:active {
+      transform: scale(0.96);
+    }
+    .sidebar-collapsed .sidebar {
+      padding-inline: var(--space-3);
+    }
+    .sidebar-collapsed .sidebar-top {
+      padding-inline: 10px;
+      justify-content: center;
+    }
+    .sidebar-collapsed .brand :global(.logo strong),
+    .sidebar-collapsed .nav-label,
+    .sidebar-collapsed .nav-group a > span,
+    .sidebar-collapsed .platform-version > span:nth-child(2),
+    .sidebar-collapsed .platform-version > i,
+    .sidebar-collapsed .identity-text,
+    .sidebar-collapsed .identity > :global(svg) {
+      display: none;
+    }
+    .sidebar-collapsed .sidebar nav {
+      gap: var(--space-2);
+      overflow: visible;
+    }
+    .sidebar-collapsed .nav-group {
+      gap: var(--space-1);
+    }
+    .sidebar-collapsed .nav-group + .nav-group {
+      padding-top: var(--space-2);
+      border-top: 1px solid var(--color-rule);
+    }
+    .sidebar-collapsed .nav-group a {
+      width: 40px;
+      height: 38px;
+      padding: 0;
+      position: relative;
+      justify-content: center;
+      border-radius: var(--radius-md);
+    }
+    .sidebar-collapsed .nav-group a.active::before {
+      content: '';
+      width: 3px;
+      height: 16px;
+      position: absolute;
+      left: -12px;
+      border-radius: 0 999px 999px 0;
+      background: var(--color-accent);
+    }
+    .sidebar-collapsed .sidebar-bottom {
+      display: grid;
+      justify-items: center;
+    }
+    .sidebar-collapsed .platform-version {
+      width: 40px;
+      min-height: 40px;
+      padding: 0;
+      grid-template-columns: 1fr;
+      place-items: center;
+    }
+    .sidebar-collapsed .version-mark {
+      width: 30px;
+      height: 30px;
+    }
+    .sidebar-collapsed .user-menu-wrap {
+      width: 40px;
+    }
+    .sidebar-collapsed .identity {
+      width: 40px;
+      min-height: 40px;
+      padding: 0;
+      grid-template-columns: 1fr;
+      place-items: center;
+    }
+    .sidebar-collapsed .avatar {
+      width: 30px;
+      height: 30px;
+    }
+    .sidebar-collapsed .user-menu-wrap .menu {
+      width: 220px;
+      right: auto;
+      bottom: 0;
+      left: calc(100% + 14px);
+    }
+    .sidebar-collapsed [data-sidebar-tip] {
+      position: relative;
+    }
+    .sidebar-collapsed [data-sidebar-tip]::after {
+      content: attr(data-sidebar-tip);
+      position: absolute;
+      z-index: 80;
+      top: 50%;
+      left: calc(100% + 10px);
+      padding: 5px 8px;
+      border: 1px solid var(--color-rule-strong);
+      border-radius: var(--radius-sm);
+      background: var(--color-paper-raised);
+      color: var(--color-ink);
+      box-shadow: var(--shadow-popover);
+      font-size: var(--text-xs);
+      font-weight: 500;
+      line-height: 1.2;
+      white-space: nowrap;
+      pointer-events: none;
+      opacity: 0;
+      transform: translate(3px, -50%);
+      transition: opacity var(--duration-fast) var(--ease-out),
+        transform var(--duration-fast) var(--ease-out);
+    }
+    .sidebar-collapsed [data-sidebar-tip]:hover::after,
+    .sidebar-collapsed [data-sidebar-tip]:focus-visible::after {
+      opacity: 1;
+      transform: translate(0, -50%);
     }
     .drawer-close,
     .drawer-scrim,
@@ -725,9 +888,13 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .app {
+      transition: none;
+    }
     .sidebar {
       transition: none;
     }
+    .sidebar-collapse,
     .nav-group a {
       transition: none;
     }

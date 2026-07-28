@@ -92,10 +92,14 @@ var routePermissions = map[string]authz.Permission{
 	"POST /api/integrations/registries/{id}/check":     authz.PermIntegrationWrite,
 	"DELETE /api/integrations/registries/{id}":         authz.PermIntegrationWrite,
 
-	"GET /api/caddy/config":    authz.PermIngressWrite,
-	"PUT /api/caddy/config":    authz.PermIngressWrite,
-	"POST /api/caddy/reset":    authz.PermIngressWrite,
-	"GET /api/registry/status": authz.PermProjectRead,
+	"GET /api/caddy/config":           authz.PermIngressWrite,
+	"PUT /api/caddy/config":           authz.PermIngressWrite,
+	"POST /api/caddy/reset":           authz.PermIngressWrite,
+	"GET /api/registry/status":        authz.PermProjectRead,
+	"GET /api/object-storage":         authz.PermRegistryWrite,
+	"POST /api/object-storage":        authz.PermRegistryWrite,
+	"PUT /api/object-storage/{id}":    authz.PermRegistryWrite,
+	"DELETE /api/object-storage/{id}": authz.PermRegistryWrite,
 
 	"GET /api/infrastructure/metrics":               authz.PermProjectRead,
 	"GET /api/infrastructure/control-plane/metrics": authz.PermProjectRead,

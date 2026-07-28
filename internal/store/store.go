@@ -166,6 +166,7 @@ type SMTPSettings struct {
 }
 type RegistrySettings struct {
 	Storage              string    `json:"storage"`
+	ObjectStorageID      string    `json:"objectStorageId,omitempty"`
 	S3Region             string    `json:"s3Region"`
 	S3Bucket             string    `json:"s3Bucket"`
 	S3AccessKey          string    `json:"s3AccessKey"`
@@ -176,6 +177,22 @@ type RegistrySettings struct {
 	CreatedBy            string    `json:"-"`
 	CreatedAt            time.Time `json:"createdAt"`
 	UpdatedAt            time.Time `json:"updatedAt"`
+}
+type ObjectStorageConnection struct {
+	ID                 string    `json:"id"`
+	Name               string    `json:"name"`
+	Provider           string    `json:"provider"`
+	Region             string    `json:"region"`
+	Bucket             string    `json:"bucket"`
+	Endpoint           string    `json:"endpoint"`
+	AccessKey          string    `json:"accessKey"`
+	SecretKeyEncrypted string    `json:"-"`
+	ForcePathStyle     bool      `json:"forcePathStyle"`
+	Secure             bool      `json:"secure"`
+	CreatedBy          string    `json:"-"`
+	CreatedAt          time.Time `json:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt"`
+	InUse              bool      `json:"inUse"`
 }
 type RegistryDomainSettings struct {
 	Domain       string    `json:"domain"`
@@ -649,9 +666,9 @@ func (s *Store) CreateSMTPSettingsIfMissing(ctx context.Context, settings SMTPSe
 
 func (s *Store) RegistrySettings(ctx context.Context) (RegistrySettings, error) {
 	var settings RegistrySettings
-	err := s.db.QueryRowContext(ctx, `SELECT storage,s3_region,s3_bucket,s3_access_key,s3_secret_key_encrypted,s3_endpoint,
+	err := s.db.QueryRowContext(ctx, `SELECT storage,COALESCE(object_storage_id,''),s3_region,s3_bucket,s3_access_key,s3_secret_key_encrypted,s3_endpoint,
 		s3_force_path_style,s3_secure,COALESCE(created_by,''),created_at,updated_at
-		FROM registry_settings WHERE singleton=TRUE`).Scan(&settings.Storage, &settings.S3Region, &settings.S3Bucket,
+		FROM registry_settings WHERE singleton=TRUE`).Scan(&settings.Storage, &settings.ObjectStorageID, &settings.S3Region, &settings.S3Bucket,
 		&settings.S3AccessKey, &settings.S3SecretKeyEncrypted, &settings.S3Endpoint,
 		&settings.S3ForcePathStyle, &settings.S3Secure, &settings.CreatedBy, &settings.CreatedAt, &settings.UpdatedAt)
 	return settings, err
@@ -662,14 +679,14 @@ func (s *Store) UpsertRegistrySettings(ctx context.Context, settings RegistrySet
 	if settings.CreatedBy != "" {
 		createdBy = settings.CreatedBy
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO registry_settings(singleton,storage,s3_region,s3_bucket,s3_access_key,s3_secret_key_encrypted,
+	_, err := s.db.ExecContext(ctx, `INSERT INTO registry_settings(singleton,storage,object_storage_id,s3_region,s3_bucket,s3_access_key,s3_secret_key_encrypted,
 		s3_endpoint,s3_force_path_style,s3_secure,created_by)
-		VALUES(TRUE,$1,$2,$3,$4,$5,$6,$7,$8,$9)
-		ON CONFLICT(singleton) DO UPDATE SET storage=EXCLUDED.storage,s3_region=EXCLUDED.s3_region,s3_bucket=EXCLUDED.s3_bucket,
+		VALUES(TRUE,$1,NULLIF($2,''),$3,$4,$5,$6,$7,$8,$9,$10)
+		ON CONFLICT(singleton) DO UPDATE SET storage=EXCLUDED.storage,object_storage_id=EXCLUDED.object_storage_id,s3_region=EXCLUDED.s3_region,s3_bucket=EXCLUDED.s3_bucket,
 		s3_access_key=EXCLUDED.s3_access_key,s3_secret_key_encrypted=EXCLUDED.s3_secret_key_encrypted,
 		s3_endpoint=EXCLUDED.s3_endpoint,s3_force_path_style=EXCLUDED.s3_force_path_style,s3_secure=EXCLUDED.s3_secure,
 		created_by=COALESCE(registry_settings.created_by,EXCLUDED.created_by),updated_at=NOW()`,
-		settings.Storage, settings.S3Region, settings.S3Bucket, settings.S3AccessKey, settings.S3SecretKeyEncrypted,
+		settings.Storage, settings.ObjectStorageID, settings.S3Region, settings.S3Bucket, settings.S3AccessKey, settings.S3SecretKeyEncrypted,
 		settings.S3Endpoint, settings.S3ForcePathStyle, settings.S3Secure, createdBy)
 	return err
 }
@@ -678,17 +695,99 @@ func (s *Store) UpsertRegistrySettings(ctx context.Context, settings RegistrySet
 // a first-start environment configuration is imported once and PostgreSQL is
 // the source of truth from that point onward.
 func (s *Store) CreateRegistrySettingsIfMissing(ctx context.Context, settings RegistrySettings) (bool, error) {
-	result, err := s.db.ExecContext(ctx, `INSERT INTO registry_settings(singleton,storage,s3_region,s3_bucket,s3_access_key,s3_secret_key_encrypted,
+	result, err := s.db.ExecContext(ctx, `INSERT INTO registry_settings(singleton,storage,object_storage_id,s3_region,s3_bucket,s3_access_key,s3_secret_key_encrypted,
 		s3_endpoint,s3_force_path_style,s3_secure)
-		VALUES(TRUE,$1,$2,$3,$4,$5,$6,$7,$8)
+		VALUES(TRUE,$1,NULLIF($2,''),$3,$4,$5,$6,$7,$8,$9)
 		ON CONFLICT(singleton) DO NOTHING`,
-		settings.Storage, settings.S3Region, settings.S3Bucket, settings.S3AccessKey, settings.S3SecretKeyEncrypted,
+		settings.Storage, settings.ObjectStorageID, settings.S3Region, settings.S3Bucket, settings.S3AccessKey, settings.S3SecretKeyEncrypted,
 		settings.S3Endpoint, settings.S3ForcePathStyle, settings.S3Secure)
 	if err != nil {
 		return false, err
 	}
 	rows, err := result.RowsAffected()
 	return rows == 1, err
+}
+
+func (s *Store) ObjectStorageConnections(ctx context.Context) ([]ObjectStorageConnection, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT o.id,o.name,o.provider,o.region,o.bucket,o.endpoint,o.access_key,
+		o.secret_key_encrypted,o.force_path_style,o.secure,COALESCE(o.created_by,''),o.created_at,o.updated_at,
+		EXISTS(SELECT 1 FROM registry_settings r WHERE r.object_storage_id=o.id)
+		FROM object_storage_connections o ORDER BY o.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ObjectStorageConnection{}
+	for rows.Next() {
+		var item ObjectStorageConnection
+		if err := rows.Scan(&item.ID, &item.Name, &item.Provider, &item.Region, &item.Bucket, &item.Endpoint,
+			&item.AccessKey, &item.SecretKeyEncrypted, &item.ForcePathStyle, &item.Secure, &item.CreatedBy,
+			&item.CreatedAt, &item.UpdatedAt, &item.InUse); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) ObjectStorageConnection(ctx context.Context, id string) (ObjectStorageConnection, error) {
+	var item ObjectStorageConnection
+	err := s.db.QueryRowContext(ctx, `SELECT o.id,o.name,o.provider,o.region,o.bucket,o.endpoint,o.access_key,
+		o.secret_key_encrypted,o.force_path_style,o.secure,COALESCE(o.created_by,''),o.created_at,o.updated_at,
+		EXISTS(SELECT 1 FROM registry_settings r WHERE r.object_storage_id=o.id)
+		FROM object_storage_connections o WHERE o.id=$1`, id).Scan(
+		&item.ID, &item.Name, &item.Provider, &item.Region, &item.Bucket, &item.Endpoint,
+		&item.AccessKey, &item.SecretKeyEncrypted, &item.ForcePathStyle, &item.Secure, &item.CreatedBy,
+		&item.CreatedAt, &item.UpdatedAt, &item.InUse)
+	return item, err
+}
+
+func (s *Store) CreateObjectStorageConnection(ctx context.Context, item ObjectStorageConnection) error {
+	var createdBy any
+	if item.CreatedBy != "" {
+		createdBy = item.CreatedBy
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO object_storage_connections(
+		id,name,provider,region,bucket,endpoint,access_key,secret_key_encrypted,force_path_style,secure,created_by
+	) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		item.ID, item.Name, item.Provider, item.Region, item.Bucket, item.Endpoint, item.AccessKey,
+		item.SecretKeyEncrypted, item.ForcePathStyle, item.Secure, createdBy)
+	return err
+}
+
+func (s *Store) UpdateObjectStorageConnection(ctx context.Context, item ObjectStorageConnection) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE object_storage_connections SET
+		name=$2,provider=$3,region=$4,bucket=$5,endpoint=$6,access_key=$7,secret_key_encrypted=$8,
+		force_path_style=$9,secure=$10,updated_at=NOW() WHERE id=$1`,
+		item.ID, item.Name, item.Provider, item.Region, item.Bucket, item.Endpoint, item.AccessKey,
+		item.SecretKeyEncrypted, item.ForcePathStyle, item.Secure)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) DeleteObjectStorageConnection(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM object_storage_connections o
+		WHERE o.id=$1 AND NOT EXISTS(SELECT 1 FROM registry_settings r WHERE r.object_storage_id=o.id)`, id)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) RegistryDomainSettings(ctx context.Context) (RegistryDomainSettings, error) {

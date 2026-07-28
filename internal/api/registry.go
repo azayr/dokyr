@@ -21,6 +21,7 @@ import (
 
 type registrySettingsInput struct {
 	Storage          string `json:"storage"`
+	ObjectStorageID  string `json:"objectStorageId"`
 	S3Region         string `json:"s3Region"`
 	S3Bucket         string `json:"s3Bucket"`
 	S3AccessKey      string `json:"s3AccessKey"`
@@ -43,6 +44,7 @@ func defaultRegistrySettings() store.RegistrySettings {
 func registrySettingsResponse(settings store.RegistrySettings) map[string]any {
 	return map[string]any{
 		"storage":          settings.Storage,
+		"objectStorageId":  settings.ObjectStorageID,
 		"s3Region":         settings.S3Region,
 		"s3Bucket":         settings.S3Bucket,
 		"s3AccessKey":      settings.S3AccessKey,
@@ -56,6 +58,7 @@ func registrySettingsResponse(settings store.RegistrySettings) map[string]any {
 
 func cleanRegistrySettings(in registrySettingsInput) (registrySettingsInput, error) {
 	in.Storage = strings.ToLower(strings.TrimSpace(in.Storage))
+	in.ObjectStorageID = strings.TrimSpace(in.ObjectStorageID)
 	in.S3Region = strings.TrimSpace(in.S3Region)
 	in.S3Bucket = strings.TrimSpace(in.S3Bucket)
 	in.S3AccessKey = strings.TrimSpace(in.S3AccessKey)
@@ -64,6 +67,12 @@ func cleanRegistrySettings(in registrySettingsInput) (registrySettingsInput, err
 		return in, errors.New("choose filesystem or S3 storage")
 	}
 	if in.Storage != "s3" {
+		return in, nil
+	}
+	if in.ObjectStorageID != "" {
+		if len(in.ObjectStorageID) > 100 || strings.ContainsAny(in.ObjectStorageID, " /\t\r\n") {
+			return in, errors.New("choose a valid object storage connection")
+		}
 		return in, nil
 	}
 	if in.S3Bucket == "" || len(in.S3Bucket) > 63 || strings.ContainsAny(in.S3Bucket, " /\t\r\n") {
@@ -111,8 +120,22 @@ func (a *API) BootstrapRegistrySettings(ctx context.Context, bootstrap config.Re
 			return false, err
 		}
 	}
+	objectStorageID := ""
+	if clean.Storage == "s3" {
+		objectStorageID = newID("obj")
+		if err := a.store.CreateObjectStorageConnection(ctx, store.ObjectStorageConnection{
+			ID: objectStorageID, Name: "Registry storage",
+			Provider: inferObjectStorageProvider(clean.S3Endpoint, clean.S3ForcePathStyle),
+			Region:   clean.S3Region, Bucket: clean.S3Bucket, Endpoint: clean.S3Endpoint,
+			AccessKey: clean.S3AccessKey, SecretKeyEncrypted: secretEncrypted,
+			ForcePathStyle: clean.S3ForcePathStyle, Secure: clean.S3Secure,
+		}); err != nil {
+			return false, err
+		}
+	}
 	return a.store.CreateRegistrySettingsIfMissing(ctx, store.RegistrySettings{
-		Storage: clean.Storage, S3Region: clean.S3Region, S3Bucket: clean.S3Bucket, S3AccessKey: clean.S3AccessKey,
+		Storage: clean.Storage, ObjectStorageID: objectStorageID,
+		S3Region: clean.S3Region, S3Bucket: clean.S3Bucket, S3AccessKey: clean.S3AccessKey,
 		S3SecretKeyEncrypted: secretEncrypted, S3Endpoint: clean.S3Endpoint,
 		S3ForcePathStyle: clean.S3ForcePathStyle, S3Secure: clean.S3Secure,
 	})
@@ -280,13 +303,33 @@ func (a *API) updateRegistrySettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	claims, _ := auth.FromContext(r.Context())
+	var selectedStorage store.ObjectStorageConnection
+	if clean.Storage == "s3" && clean.ObjectStorageID != "" {
+		selectedStorage, err = a.store.ObjectStorageConnection(r.Context(), clean.ObjectStorageID)
+		if store.NotFound(err) {
+			write(w, http.StatusBadRequest, map[string]string{"error": "the selected object storage connection no longer exists"})
+			return
+		}
+		if err != nil {
+			problem(w, err)
+			return
+		}
+		clean.S3Region = selectedStorage.Region
+		clean.S3Bucket = selectedStorage.Bucket
+		clean.S3AccessKey = selectedStorage.AccessKey
+		clean.S3Endpoint = selectedStorage.Endpoint
+		clean.S3ForcePathStyle = selectedStorage.ForcePathStyle
+		clean.S3Secure = selectedStorage.Secure
+	}
 	settings := store.RegistrySettings{
-		Storage: clean.Storage, S3Region: clean.S3Region, S3Bucket: clean.S3Bucket, S3AccessKey: clean.S3AccessKey,
+		Storage: clean.Storage, ObjectStorageID: clean.ObjectStorageID, S3Region: clean.S3Region, S3Bucket: clean.S3Bucket, S3AccessKey: clean.S3AccessKey,
 		S3Endpoint: clean.S3Endpoint, S3ForcePathStyle: clean.S3ForcePathStyle, S3Secure: clean.S3Secure,
 		CreatedBy: claims.Subject,
 	}
 	secretKey := clean.S3SecretKey
-	if secretKey == "" {
+	if selectedStorage.ID != "" {
+		settings.S3SecretKeyEncrypted = selectedStorage.SecretKeyEncrypted
+	} else if secretKey == "" {
 		existing, err := a.store.RegistrySettings(r.Context())
 		if err == nil && existing.S3SecretKeyEncrypted != "" {
 			settings.S3SecretKeyEncrypted = existing.S3SecretKeyEncrypted

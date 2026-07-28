@@ -895,6 +895,10 @@ Select at least one category and use the exact confirmation text. Volumes can co
 
 | Method | Path | Description |
 | --- | --- | --- |
+| `GET` | `/api/object-storage` | List reusable S3-compatible connections |
+| `POST` | `/api/object-storage` | Create an encrypted object storage connection |
+| `PUT` | `/api/object-storage/{id}` | Update a connection; omit the secret to keep it |
+| `DELETE` | `/api/object-storage/{id}` | Remove a connection that is not selected by Registry |
 | `GET` | `/api/registry/status` | Registry container and authenticated API health |
 | `GET` | `/api/registry/settings` | Read the storage configuration |
 | `PUT` | `/api/registry/settings` | Save storage settings and recreate the registry |
@@ -907,6 +911,28 @@ Select at least one category and use the exact confirmation text. Volumes can co
 | `DELETE` | `/api/registry/tags?name=…&tag=…` | Delete a manifest tag |
 | `POST` | `/api/registry/garbage-collection` | Run or preview garbage collection |
 | `GET` | `/api/registry/token` | Docker Distribution token exchange |
+
+Create an object storage connection with:
+
+```json
+{
+  "name": "Production R2",
+  "provider": "r2",
+  "region": "auto",
+  "bucket": "dokyr-registry",
+  "endpoint": "https://account-id.r2.cloudflarestorage.com",
+  "accessKey": "access-key-id",
+  "secretKey": "secret-access-key",
+  "forcePathStyle": true,
+  "secure": true
+}
+```
+
+`provider` is `aws`, `r2`, `minio`, `digitalocean`, or `custom`. The secret is
+encrypted before persistence and responses expose only `hasSecretKey`. Registry
+settings select a connection with `{ "storage": "s3", "objectStorageId":
+"obj_…" }`; the server resolves its current credentials before recreating the
+registry. A connection selected by Registry cannot be deleted.
 
 Create a personal registry credential with:
 
@@ -928,7 +954,7 @@ bearer token; clients should not call it directly.
 2. Send only documented request fields. The server intentionally rejects unknown properties.
 3. Treat deployment endpoints as async. Navigate to deployment detail or poll it after receiving `202`.
 4. Runtime logs are snapshots, not WebSockets. Poll `?lines=` as desired and preserve the user-selected line limit.
-5. Never persist SMTP passwords, database credentials, Git tokens, registry access-token secrets, TOTP secrets, or decoded environment secrets in local storage, analytics, or error reporting.
+5. Never persist SMTP passwords, object-storage secret keys, database credentials, Git tokens, registry access-token secrets, TOTP secrets, or decoded environment secrets in local storage, analytics, or error reporting.
 6. When rendering Caddy route editors, allow multiple domains and ordered path rules, including multiple paths pointing to one service.
 7. Do not automatically expose databases publicly. `publicEnabled` must remain an explicit user action.
 

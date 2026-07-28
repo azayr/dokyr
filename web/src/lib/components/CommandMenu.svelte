@@ -14,12 +14,14 @@
   let listEl;
 
   $: manageUsers = can($currentPermissions, 'user:manage');
+  $: manageRegistry = can($currentPermissions, 'registry:write');
   $: commands = [
     { group: 'Navigate', icon: 'grid', label: 'Overview', hint: '/', run: () => goto('/') },
     { group: 'Navigate', icon: 'box', label: 'Projects', hint: '/projects', run: () => goto('/projects') },
     { group: 'Navigate', icon: 'rocket', label: 'Deployments', hint: '/deployments', run: () => goto('/deployments') },
     { group: 'Navigate', icon: 'server', label: 'Servers', hint: '/servers', run: () => goto('/servers') },
     { group: 'Navigate', icon: 'globe', label: 'Domains', hint: '/domains', run: () => goto('/domains') },
+    ...(manageRegistry ? [{ group: 'Navigate', icon: 'cloud', label: 'Object storage', hint: '/object-storage', run: () => goto('/object-storage') }] : []),
     { group: 'Navigate', icon: 'layers', label: 'Registry', hint: '/registry', run: () => goto('/registry') },
     { group: 'Navigate', icon: 'git', label: 'Sources', hint: '/integrations', run: () => goto('/integrations') },
     ...(manageUsers ? [{ group: 'Navigate', icon: 'users', label: 'Users', hint: '/users', run: () => goto('/users') }] : []),
