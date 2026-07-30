@@ -166,6 +166,7 @@ func (a *API) registerProtectedRoutes(protected *guardedMux) {
 	protected.handle("GET /api/projects", authz.PermProjectRead, a.projects)
 	protected.handle("POST /api/projects", authz.PermProjectWrite, a.createProject)
 	protected.handle("GET /api/projects/{id}", authz.PermProjectRead, a.project)
+	protected.handle("POST /api/projects/{id}/clone", authz.PermProjectWrite, a.cloneProject)
 	protected.handle("PUT /api/projects/{id}", authz.PermProjectWrite, a.updateProject)
 	protected.handle("DELETE /api/projects/{id}", authz.PermProjectWrite, a.deleteProject)
 	// Assigning a domain rewrites Caddy's routing table, which can shadow the
@@ -196,6 +197,7 @@ func (a *API) registerProtectedRoutes(protected *guardedMux) {
 	protected.handle("GET /api/databases/{id}/credentials", authz.PermSecretRead, a.databaseCredentials)
 	// Exposure publishes the database on a host port, i.e. to the internet.
 	protected.handle("PUT /api/databases/{id}/exposure", authz.PermInfraWrite, a.updateDatabaseExposure)
+	protected.handle("POST /api/databases/{id}/deploy", authz.PermProjectDeploy, a.deployDatabaseService)
 	protected.handle("POST /api/databases/{id}/stop", authz.PermProjectDeploy, a.stopDatabaseService)
 	protected.handle("POST /api/databases/{id}/restart", authz.PermProjectDeploy, a.restartDatabaseService)
 	protected.handle("GET /api/databases/{id}/logs", authz.PermProjectRead, a.databaseLogs)
@@ -1381,6 +1383,247 @@ func (a *API) createProject(w http.ResponseWriter, r *http.Request) {
 	write(w, 201, created)
 }
 
+type cloneApplicationInput struct {
+	ID        string                      `json:"id"`
+	Variables *[]environmentVariableInput `json:"variables"`
+}
+
+type cloneProjectInput struct {
+	Name                string                      `json:"name"`
+	CloneLegacy         bool                        `json:"cloneLegacy"`
+	LegacyVariables     *[]environmentVariableInput `json:"legacyVariables"`
+	ApplicationServices []cloneApplicationInput     `json:"applicationServices"`
+	DatabaseServiceIDs  []string                    `json:"databaseServiceIds"`
+}
+
+func rewriteClonedDatabaseHosts(value string, replacements map[string]string) string {
+	for sourceID, targetID := range replacements {
+		value = strings.ReplaceAll(value, "selfhost-db-"+sourceID, "selfhost-db-"+targetID)
+	}
+	return value
+}
+
+func (a *API) cloneProject(w http.ResponseWriter, r *http.Request) {
+	var in cloneProjectInput
+	if !decode(w, r, &in) {
+		return
+	}
+
+	a.projectMu.Lock()
+	defer a.projectMu.Unlock()
+
+	sourceID := strings.TrimSpace(r.PathValue("id"))
+	source, err := a.store.Project(r.Context(), sourceID)
+	if store.NotFound(err) {
+		write(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+
+	in.Name = strings.TrimSpace(in.Name)
+	if in.Name == "" || len(in.Name) > 100 {
+		bad(w, "project name is required and must be at most 100 characters")
+		return
+	}
+	if strings.EqualFold(in.Name, source.Name) {
+		write(w, http.StatusConflict, map[string]string{"error": "the cloned project must use a different name"})
+		return
+	}
+	projects, err := a.store.Projects(r.Context())
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	for _, project := range projects {
+		if strings.EqualFold(project.Name, in.Name) {
+			write(w, http.StatusConflict, map[string]string{"error": "a project with this name already exists"})
+			return
+		}
+	}
+
+	sourceApplications, err := a.store.ApplicationServices(r.Context(), source.ID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	sourceDatabases, err := a.store.ProjectDatabaseServices(r.Context(), source.ID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+
+	target := store.Project{
+		ID:            newID("prj"),
+		Name:          in.Name,
+		Branch:        "main",
+		Status:        "created",
+		SourceType:    "empty",
+		ContainerPort: 80,
+	}
+	databasesByID := make(map[string]store.DatabaseService, len(sourceDatabases))
+	for _, service := range sourceDatabases {
+		databasesByID[service.ID] = service
+	}
+	seenDatabases := map[string]bool{}
+	databaseHostReplacements := map[string]string{}
+	clonedDatabases := make([]store.DatabaseService, 0, len(in.DatabaseServiceIDs))
+	for _, databaseID := range in.DatabaseServiceIDs {
+		databaseID = strings.TrimSpace(databaseID)
+		service, exists := databasesByID[databaseID]
+		if !exists {
+			bad(w, "a database service selection does not belong to this project")
+			return
+		}
+		if seenDatabases[databaseID] {
+			bad(w, "database service selections must be unique")
+			return
+		}
+		seenDatabases[databaseID] = true
+		sourceDatabaseID := service.ID
+		service.ID = newID("db")
+		service.ProjectID = target.ID
+		service.VolumeName = "selfhost-data-" + service.ID
+		service.PublicEnabled = false
+		service.PublicPort = 0
+		service.Status = "created"
+		service.Container = ""
+		databaseHostReplacements[sourceDatabaseID] = service.ID
+		clonedDatabases = append(clonedDatabases, service)
+	}
+
+	projectVariables := []store.ProjectEnvironmentVariable{}
+	if in.CloneLegacy {
+		if source.SourceType == "empty" {
+			bad(w, "this project does not have a main application to clone")
+			return
+		}
+		target.Repository = source.Repository
+		target.Branch = source.Branch
+		target.SourceType = source.SourceType
+		target.ConnectionID = source.ConnectionID
+		target.RegistryID = source.RegistryID
+		target.ImageURL = source.ImageURL
+		target.ContainerPort = source.ContainerPort
+		if in.LegacyVariables == nil {
+			projectVariables, err = a.store.ProjectEnvironmentVariables(r.Context(), source.ID)
+			if err != nil {
+				problem(w, err)
+				return
+			}
+			if len(databaseHostReplacements) > 0 {
+				for index := range projectVariables {
+					value, decryptErr := a.box.Decrypt(projectVariables[index].ValueEncrypted)
+					if decryptErr != nil {
+						problem(w, decryptErr)
+						return
+					}
+					encrypted, encryptErr := a.box.Encrypt(rewriteClonedDatabaseHosts(value, databaseHostReplacements))
+					if encryptErr != nil {
+						problem(w, encryptErr)
+						return
+					}
+					projectVariables[index].ValueEncrypted = encrypted
+				}
+			}
+		} else {
+			clean, _, _, cleanErr := cleanServiceEnvironment(*in.LegacyVariables)
+			if cleanErr != nil {
+				bad(w, cleanErr.Error())
+				return
+			}
+			for _, variable := range clean {
+				encrypted, encryptErr := a.box.Encrypt(rewriteClonedDatabaseHosts(variable.Value, databaseHostReplacements))
+				if encryptErr != nil {
+					problem(w, encryptErr)
+					return
+				}
+				projectVariables = append(projectVariables, store.ProjectEnvironmentVariable{
+					ProjectID: target.ID, Key: variable.Key, ValueEncrypted: encrypted, Secret: variable.Secret,
+				})
+			}
+		}
+	}
+
+	applicationsByID := make(map[string]store.ApplicationService, len(sourceApplications))
+	for _, service := range sourceApplications {
+		applicationsByID[service.ID] = service
+	}
+	seenApplications := map[string]bool{}
+	clonedApplications := make([]store.ApplicationService, 0, len(in.ApplicationServices))
+	for _, selection := range in.ApplicationServices {
+		selection.ID = strings.TrimSpace(selection.ID)
+		service, exists := applicationsByID[selection.ID]
+		if !exists {
+			bad(w, "an application service selection does not belong to this project")
+			return
+		}
+		if seenApplications[selection.ID] {
+			bad(w, "application service selections must be unique")
+			return
+		}
+		seenApplications[selection.ID] = true
+		service.ID = newID("svc")
+		service.ProjectID = target.ID
+		service.Status = "created"
+		service.LastError = ""
+		service.Container = ""
+		// A clone must never begin deploying from staging webhooks before the
+		// developer has reviewed the production definition.
+		service.AutoDeploy = false
+		service.RegistryWebhookSecret = ""
+		if selection.Variables != nil {
+			_, runtimeEnvironment, secretKeys, cleanErr := cleanServiceEnvironment(*selection.Variables)
+			if cleanErr != nil {
+				bad(w, cleanErr.Error())
+				return
+			}
+			for index := range runtimeEnvironment {
+				runtimeEnvironment[index] = rewriteClonedDatabaseHosts(runtimeEnvironment[index], databaseHostReplacements)
+			}
+			encrypted, encryptErr := a.box.Encrypt(strings.Join(runtimeEnvironment, "\n"))
+			if encryptErr != nil {
+				problem(w, encryptErr)
+				return
+			}
+			service.EnvironmentEncrypted = encrypted
+			service.EnvironmentSecretKeys = secretKeys
+		} else if len(databaseHostReplacements) > 0 && service.EnvironmentEncrypted != "" {
+			environment, decryptErr := a.box.Decrypt(service.EnvironmentEncrypted)
+			if decryptErr != nil {
+				problem(w, decryptErr)
+				return
+			}
+			encrypted, encryptErr := a.box.Encrypt(rewriteClonedDatabaseHosts(environment, databaseHostReplacements))
+			if encryptErr != nil {
+				problem(w, encryptErr)
+				return
+			}
+			service.EnvironmentEncrypted = encrypted
+		}
+		clonedApplications = append(clonedApplications, service)
+	}
+
+	if err := a.store.CloneProject(r.Context(), target, projectVariables, clonedApplications, clonedDatabases); err != nil {
+		problem(w, err)
+		return
+	}
+	created, err := a.store.Project(r.Context(), target.ID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	write(w, http.StatusCreated, map[string]any{
+		"project": created,
+		"cloned": map[string]int{
+			"applications": len(clonedApplications) + map[bool]int{true: 1, false: 0}[in.CloneLegacy],
+			"databases":    len(clonedDatabases),
+		},
+	})
+}
+
 func (a *API) updateProjectDomain(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Domain       string                     `json:"domain"`
@@ -2349,9 +2592,9 @@ func (a *API) databaseServices(ctx context.Context, projectID string) ([]store.D
 		return nil, err
 	}
 	for index := range services {
-		services[index].Container = "selfhost-db-" + services[index].ID
-		services[index].InternalAddress = services[index].Container + ":" + strconv.Itoa(services[index].InternalPort)
-		services[index].Status = "degraded"
+		services[index].Container = ""
+		services[index].InternalAddress = "selfhost-db-" + services[index].ID + ":" + strconv.Itoa(services[index].InternalPort)
+		services[index].Status = "created"
 		runtimeState, runtimeErr := a.docker.DatabaseRuntime(ctx, services[index].ID, services[index].InternalPort)
 		if runtimeErr == nil {
 			services[index].Status = runtimeState.Status
@@ -2540,6 +2783,39 @@ func (a *API) databaseLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, 200, map[string]any{"lines": lines, "count": len(lines), "limit": tail, "container": "selfhost-db-" + service.ID})
+}
+
+func (a *API) deployDatabaseService(w http.ResponseWriter, r *http.Request) {
+	a.databaseMu.Lock()
+	defer a.databaseMu.Unlock()
+
+	service, err := a.store.DatabaseService(r.Context(), strings.TrimSpace(r.PathValue("id")))
+	if store.NotFound(err) {
+		write(w, http.StatusNotFound, map[string]string{"error": "database service not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	password, err := a.box.Decrypt(service.PasswordEncrypted)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	report := func(stage, eventType, message string) {
+		a.recordDatabaseDeploymentEvent(r.Context(), service.ID, stage, eventType, message)
+	}
+	runtimeState, err := a.docker.DeployDatabase(r.Context(), databaseSpec(service, password), report)
+	if err != nil {
+		a.log.Error("deploy existing database", "database", service.ID, "error", err)
+		write(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	service.Container = runtimeState.Container
+	service.InternalAddress = service.Container + ":" + strconv.Itoa(service.InternalPort)
+	service.Status = runtimeState.Status
+	write(w, http.StatusAccepted, map[string]any{"service": service, "message": service.Name + " deployment started"})
 }
 
 func (a *API) stopDatabaseService(w http.ResponseWriter, r *http.Request) {

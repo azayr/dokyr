@@ -1236,6 +1236,63 @@ func (s *Store) CreateImportedServices(ctx context.Context, applications []Appli
 	return tx.Commit()
 }
 
+// CloneProject creates a project and all of its selected configuration in one
+// transaction. Runtime resources, deployment history, domain bindings, and
+// database contents live outside this configuration and are intentionally not
+// copied.
+func (s *Store) CloneProject(ctx context.Context, project Project, variables []ProjectEnvironmentVariable, applications []ApplicationService, databases []DatabaseService) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var connectionID, registryID any
+	if project.ConnectionID != "" {
+		connectionID = project.ConnectionID
+	}
+	if project.RegistryID != "" {
+		registryID = project.RegistryID
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO projects(id,name,repository,branch,status,domain,source_type,connection_id,registry_id,image_url,container_port,https_enabled)
+		VALUES($1,$2,$3,$4,$5,'',$6,$7,$8,$9,$10,FALSE)`,
+		project.ID, project.Name, project.Repository, project.Branch, project.Status, project.SourceType, connectionID, registryID, project.ImageURL, project.ContainerPort); err != nil {
+		return err
+	}
+
+	for position, variable := range variables {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO project_environment_variables(project_id,key,value_encrypted,is_secret,position)
+			VALUES($1,$2,$3,$4,$5)`, project.ID, variable.Key, variable.ValueEncrypted, variable.Secret, position); err != nil {
+			return err
+		}
+	}
+
+	for _, service := range applications {
+		var serviceRegistryID, serviceConnectionID any
+		if service.RegistryID != "" {
+			serviceRegistryID = service.RegistryID
+		}
+		if service.ConnectionID != "" {
+			serviceConnectionID = service.ConnectionID
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO application_services(id,project_id,name,source_type,image_url,registry_id,internal_registry,connection_id,repository,branch,dockerfile_path,build_context,build_strategy,auto_deploy,registry_webhook_secret_encrypted,registry_webhook_tag,container_port,command,health_check_type,health_check_path,health_check_command,health_check_timeout_seconds,environment,environment_secret_keys,status)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
+			service.ID, project.ID, service.Name, service.SourceType, service.ImageURL, serviceRegistryID, service.InternalRegistry, serviceConnectionID, service.Repository, service.Branch, service.DockerfilePath, service.BuildContext, service.BuildStrategy, service.AutoDeploy, service.RegistryWebhookSecret, service.RegistryWebhookTag, service.ContainerPort, service.Command, service.HealthCheckType, service.HealthCheckPath, service.HealthCheckCommand, service.HealthCheckTimeout, service.EnvironmentEncrypted, strings.Join(service.EnvironmentSecretKeys, "\n"), service.Status); err != nil {
+			return err
+		}
+	}
+
+	for _, service := range databases {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO database_services(id,project_id,name,engine,image,internal_port,public_enabled,public_port,volume_name,username,database_name,password_encrypted)
+			VALUES($1,$2,$3,$4,$5,$6,FALSE,NULL,$7,$8,$9,$10)`,
+			service.ID, project.ID, service.Name, service.Engine, service.Image, service.InternalPort, service.VolumeName, service.Username, service.DatabaseName, service.PasswordEncrypted); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
 func (s *Store) UpdateApplicationService(ctx context.Context, service ApplicationService) error {
 	var registryID any
 	if service.RegistryID != "" {

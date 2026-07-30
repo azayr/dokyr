@@ -225,7 +225,9 @@
         selectRuntimeSettingsService(runtimeServices[0]);
       }
       clearTimeout(projectPollTimer);
-      if ((payload.deployments || []).some((item) => ['deploying', 'building'].includes(item.status))) {
+      const runtimeBusy = [...(payload.applicationServices || []), ...(payload.databaseServices || [])]
+        .some((item) => ['deploying', 'building'].includes(item.status));
+      if (runtimeBusy || (payload.deployments || []).some((item) => ['deploying', 'building'].includes(item.status))) {
         projectPollTimer = setTimeout(() => loadProject(true), 1200);
       }
     } catch (cause) {
@@ -1223,7 +1225,8 @@
       const response = await api(endpoint, { method: 'POST' });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || `Could not ${action} ${item.name}`);
-      notice = payload.message || `${item.name} ${action === 'stop' ? 'stopped' : 'restarted'}.`;
+      const fallbackAction = action === 'stop' ? 'stopped' : action === 'deploy' ? 'deployment started' : 'restarted';
+      notice = payload.message || `${item.name} ${fallbackAction}.`;
       await loadProject(true);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : `Could not ${action} ${item.name}`;
@@ -1443,6 +1446,7 @@
     </div>
     <div class="hero-actions">
       <button onclick={() => selectTab('deployments')}>View activity</button>
+      <button onclick={() => goto(`/projects/${project.id}/clone`)}><Icon name="copy" size={14}/> Clone project</button>
       {#if project.sourceType !== 'empty'}<button class="deploy" onclick={deploy} disabled={deploying || loading || project.sourceType !== 'image'}><Icon name="rocket" size={14}/>{deploying ? 'Deploying…' : 'Deploy main'}</button>{:else}<button class="deploy" onclick={openServiceModal}><Icon name="plus" size={14}/> Add first service</button>{/if}
     </div>
   </section>
@@ -1483,9 +1487,13 @@
             <div class="database-state"><Status value={item.status} /><em class:public={item.publicEnabled}>{item.publicEnabled ? `Public · ${item.publicPort}` : 'Private'}</em></div>
             <div class="database-actions">
               <button onclick={() => showCredentials(item)}><Icon name="key" size={13}/> Credentials</button>
-              {#if item.status !== 'stopped'}<button class="lifecycle-stop" onclick={() => controlWorkload(item, 'database', 'stop')} disabled={!item.container || item.status === 'deploying' || lifecycleBusy !== ''}><Icon name="stop" size={12}/>{workloadActionBusy(item, 'database', 'stop') ? 'Stopping…' : 'Stop'}</button>{/if}
-              <button class="lifecycle-restart" onclick={() => controlWorkload(item, 'database', 'restart')} disabled={!item.container || item.status === 'deploying' || lifecycleBusy !== ''}><Icon name={item.status === 'stopped' ? 'play' : 'refresh'} size={13}/>{workloadActionBusy(item, 'database', 'restart') ? (item.status === 'stopped' ? 'Starting…' : 'Restarting…') : (item.status === 'stopped' ? 'Start' : 'Restart')}</button>
-              {#if item.publicEnabled}<button class="danger-text" onclick={() => makePrivate(item)} disabled={exposureSaving}><Icon name="network" size={13}/> Private</button>{:else}<button onclick={() => openExposure(item)}><Icon name="network" size={13}/> Expose</button>{/if}
+              {#if item.container}
+                {#if item.status !== 'stopped'}<button class="lifecycle-stop" onclick={() => controlWorkload(item, 'database', 'stop')} disabled={item.status === 'deploying' || lifecycleBusy !== ''}><Icon name="stop" size={12}/>{workloadActionBusy(item, 'database', 'stop') ? 'Stopping…' : 'Stop'}</button>{/if}
+                <button class="lifecycle-restart" onclick={() => controlWorkload(item, 'database', 'restart')} disabled={item.status === 'deploying' || lifecycleBusy !== ''}><Icon name={item.status === 'stopped' ? 'play' : 'refresh'} size={13}/>{workloadActionBusy(item, 'database', 'restart') ? (item.status === 'stopped' ? 'Starting…' : 'Restarting…') : (item.status === 'stopped' ? 'Start' : 'Restart')}</button>
+                {#if item.publicEnabled}<button class="danger-text" onclick={() => makePrivate(item)} disabled={exposureSaving}><Icon name="network" size={13}/> Private</button>{:else}<button onclick={() => openExposure(item)}><Icon name="network" size={13}/> Expose</button>{/if}
+              {:else}
+                <button class="database-deploy" onclick={() => controlWorkload(item, 'database', 'deploy')} disabled={lifecycleBusy !== ''}><Icon name="rocket" size={13}/>{workloadActionBusy(item, 'database', 'deploy') ? 'Deploying…' : 'Deploy'}</button>
+              {/if}
               <button class="danger-text icon-only" title="Remove database" aria-label={'Remove ' + item.name} onclick={() => openDatabaseDelete(item)}><Icon name="trash" size={14}/></button>
             </div>
           </article>
@@ -1567,12 +1575,16 @@
                 <div><dt>Persistent volume</dt><dd><code>{item.volumeName}</code></dd></div>
               </dl>
               <div class="database-card-actions">
-                <button onclick={() => openWorkloadLogs(item, 'database', 'runtime')}><Icon name="activity" size={14} /> Runtime logs</button>
+                <button onclick={() => openWorkloadLogs(item, 'database', 'runtime')} disabled={!item.container}><Icon name="activity" size={14} /> Runtime logs</button>
                 <button onclick={() => openWorkloadLogs(item, 'database', 'deployment')}><Icon name="rocket" size={14} /> Deployment logs</button>
-                {#if item.status !== 'stopped'}<button class="lifecycle-stop" onclick={() => controlWorkload(item, 'database', 'stop')} disabled={!item.container || item.status === 'deploying' || lifecycleBusy !== ''}><Icon name="stop" size={12}/>{workloadActionBusy(item, 'database', 'stop') ? 'Stopping…' : 'Stop'}</button>{/if}
-                <button class="lifecycle-restart" onclick={() => controlWorkload(item, 'database', 'restart')} disabled={!item.container || item.status === 'deploying' || lifecycleBusy !== ''}><Icon name={item.status === 'stopped' ? 'play' : 'refresh'} size={13}/>{workloadActionBusy(item, 'database', 'restart') ? (item.status === 'stopped' ? 'Starting…' : 'Restarting…') : (item.status === 'stopped' ? 'Start' : 'Restart')}</button>
+                {#if item.container}
+                  {#if item.status !== 'stopped'}<button class="lifecycle-stop" onclick={() => controlWorkload(item, 'database', 'stop')} disabled={item.status === 'deploying' || lifecycleBusy !== ''}><Icon name="stop" size={12}/>{workloadActionBusy(item, 'database', 'stop') ? 'Stopping…' : 'Stop'}</button>{/if}
+                  <button class="lifecycle-restart" onclick={() => controlWorkload(item, 'database', 'restart')} disabled={item.status === 'deploying' || lifecycleBusy !== ''}><Icon name={item.status === 'stopped' ? 'play' : 'refresh'} size={13}/>{workloadActionBusy(item, 'database', 'restart') ? (item.status === 'stopped' ? 'Starting…' : 'Restarting…') : (item.status === 'stopped' ? 'Start' : 'Restart')}</button>
+                {:else}
+                  <button class="database-deploy" onclick={() => controlWorkload(item, 'database', 'deploy')} disabled={lifecycleBusy !== ''}><Icon name="rocket" size={13}/>{workloadActionBusy(item, 'database', 'deploy') ? 'Deploying…' : 'Deploy database'}</button>
+                {/if}
                 <button onclick={() => showCredentials(item)}><Icon name="key" size={14}/> Credentials</button>
-                {#if item.publicEnabled}<button onclick={() => makePrivate(item)} disabled={exposureSaving}><Icon name="network" size={14}/> Make private</button>{:else}<button onclick={() => openExposure(item)}><Icon name="network" size={14}/> Networking</button>{/if}
+                {#if item.container}{#if item.publicEnabled}<button onclick={() => makePrivate(item)} disabled={exposureSaving}><Icon name="network" size={14}/> Make private</button>{:else}<button onclick={() => openExposure(item)}><Icon name="network" size={14}/> Networking</button>{/if}{/if}
                 <button class="delete-database" onclick={() => openDatabaseDelete(item)}><Icon name="trash" size={14}/> Delete database</button>
               </div>
             </article>
@@ -2328,6 +2340,7 @@
   .application-service-actions .danger-text, .database-actions .danger-text { color: var(--color-danger); }
   .application-service-actions .lifecycle-stop, .database-actions .lifecycle-stop, .database-card-actions .lifecycle-stop { border-color: color-mix(in srgb, var(--color-warning) 36%, var(--color-rule)); color: var(--color-warning); }
   .application-service-actions .lifecycle-restart, .database-actions .lifecycle-restart, .database-card-actions .lifecycle-restart { border-color: color-mix(in srgb, var(--color-info) 34%, var(--color-rule)); color: var(--color-info); }
+  .database-actions .database-deploy, .database-card-actions .database-deploy { border-color: var(--color-accent); background: var(--color-accent); color: var(--color-accent-ink); }
   .application-service-actions .terminal-action { border-color: color-mix(in srgb, var(--color-accent) 34%, var(--color-rule)); color: var(--color-accent); }
   .application-service-actions .icon-only, .database-actions .icon-only { width: 32px; padding: 0; }
   .database-state { justify-items: end; gap: var(--space-1) !important; }
@@ -2455,6 +2468,7 @@
   .database-card-actions { padding: var(--space-3) var(--space-4); display: flex; flex-wrap: wrap; gap: var(--space-2); }
   .database-card-actions button { min-height: 32px; padding: 0 var(--space-3); display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-xs); font-weight: 600; cursor: pointer; }
   .database-card-actions button:hover:not(:disabled) { background: var(--color-paper-subtle); }
+  .database-card-actions button:disabled { opacity: .5; cursor: not-allowed; }
   .database-card-actions .delete-database { margin-left: auto; border-color: color-mix(in srgb, var(--color-danger) 35%, var(--color-rule)); color: var(--color-danger); }
 
   /* ---------- Logs tab ---------- */
