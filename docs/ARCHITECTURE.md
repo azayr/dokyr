@@ -22,6 +22,8 @@ The current release can:
 - save encrypted environment variables and recreate the container without pulling or rebuilding its image;
 - create private-by-default MySQL, MariaDB, and PostgreSQL services with persistent volumes;
 - optionally publish a database on an explicitly selected host port.
+- queue on-demand or scheduled server backups to reusable S3-compatible
+  object storage and restore the resulting `.tar.gz` snapshots;
 - report its embedded release version and running image digest;
 - discover a newer immutable control-plane image through the Registry V2 API;
 - manually or automatically replace its own container through an external
@@ -126,6 +128,7 @@ By default, Caddy publishes HTTP on host port `8888` and HTTPS on `8443`, which 
 | `internal/caddy` | Domain validation, HTTP/HTTPS route rendering, health checks, and atomic configuration through the admin socket |
 | `internal/integration` | GitHub/GitLab OAuth, provider APIs, and private repository discovery |
 | `internal/secretbox` | AES-GCM encryption/decryption for stored secrets |
+| `internal/s3` | AWS Signature V4 upload and download client for server backup archives |
 | `web/src/routes` | SvelteKit screens; the browser application is client-rendered |
 | `web/src/lib` | Shared authentication client, shell, status, icons, and design tokens |
 | `Dockerfile` | Multi-stage frontend/API build and minimal Alpine runtime image |
@@ -133,6 +136,20 @@ By default, Caddy publishes HTTP on host port `8888` and HTTPS on `8443`, which 
 | `Caddyfile` | Bootstrap proxy configuration; runtime domain changes replace it through the admin API |
 
 The backend deliberately uses the Go standard `net/http` router. The Docker integration also talks directly to Docker's HTTP API instead of importing the full Docker SDK, keeping the binary and dependency graph small.
+
+### Server backups
+
+Backup and restore requests are persisted before entering a single background
+worker. A backup asks the bundled PostgreSQL container for a consistent
+plain-SQL dump, packages it with a versioned manifest as
+`dokyr-server-<timestamp>.tar.gz`, and uploads it to the selected reusable
+object-storage connection. Schedules use the same queue and worker.
+
+Restore downloads and validates the archive, stages the SQL inside PostgreSQL,
+and applies it with stop-on-error semantics in one transaction. Managed Caddy
+routes are then rebuilt from the restored database. Archives contain encrypted
+credentials but not the installation encryption key, so moving a backup to
+another server requires the same `SELFHOST_ENCRYPTION_KEY`.
 
 ## 5. Process startup
 

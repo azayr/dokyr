@@ -193,6 +193,8 @@ type ObjectStorageConnection struct {
 	CreatedAt          time.Time `json:"createdAt"`
 	UpdatedAt          time.Time `json:"updatedAt"`
 	InUse              bool      `json:"inUse"`
+	UsedByRegistry     bool      `json:"-"`
+	UsedByBackups      bool      `json:"-"`
 }
 type RegistryDomainSettings struct {
 	Domain       string    `json:"domain"`
@@ -711,7 +713,8 @@ func (s *Store) CreateRegistrySettingsIfMissing(ctx context.Context, settings Re
 func (s *Store) ObjectStorageConnections(ctx context.Context) ([]ObjectStorageConnection, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT o.id,o.name,o.provider,o.region,o.bucket,o.endpoint,o.access_key,
 		o.secret_key_encrypted,o.force_path_style,o.secure,COALESCE(o.created_by,''),o.created_at,o.updated_at,
-		EXISTS(SELECT 1 FROM registry_settings r WHERE r.object_storage_id=o.id)
+		EXISTS(SELECT 1 FROM registry_settings r WHERE r.object_storage_id=o.id),
+		EXISTS(SELECT 1 FROM server_backup_schedule b WHERE b.object_storage_id=o.id)
 		FROM object_storage_connections o ORDER BY o.name`)
 	if err != nil {
 		return nil, err
@@ -722,9 +725,10 @@ func (s *Store) ObjectStorageConnections(ctx context.Context) ([]ObjectStorageCo
 		var item ObjectStorageConnection
 		if err := rows.Scan(&item.ID, &item.Name, &item.Provider, &item.Region, &item.Bucket, &item.Endpoint,
 			&item.AccessKey, &item.SecretKeyEncrypted, &item.ForcePathStyle, &item.Secure, &item.CreatedBy,
-			&item.CreatedAt, &item.UpdatedAt, &item.InUse); err != nil {
+			&item.CreatedAt, &item.UpdatedAt, &item.UsedByRegistry, &item.UsedByBackups); err != nil {
 			return nil, err
 		}
+		item.InUse = item.UsedByRegistry || item.UsedByBackups
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -734,11 +738,13 @@ func (s *Store) ObjectStorageConnection(ctx context.Context, id string) (ObjectS
 	var item ObjectStorageConnection
 	err := s.db.QueryRowContext(ctx, `SELECT o.id,o.name,o.provider,o.region,o.bucket,o.endpoint,o.access_key,
 		o.secret_key_encrypted,o.force_path_style,o.secure,COALESCE(o.created_by,''),o.created_at,o.updated_at,
-		EXISTS(SELECT 1 FROM registry_settings r WHERE r.object_storage_id=o.id)
+		EXISTS(SELECT 1 FROM registry_settings r WHERE r.object_storage_id=o.id),
+		EXISTS(SELECT 1 FROM server_backup_schedule b WHERE b.object_storage_id=o.id)
 		FROM object_storage_connections o WHERE o.id=$1`, id).Scan(
 		&item.ID, &item.Name, &item.Provider, &item.Region, &item.Bucket, &item.Endpoint,
 		&item.AccessKey, &item.SecretKeyEncrypted, &item.ForcePathStyle, &item.Secure, &item.CreatedBy,
-		&item.CreatedAt, &item.UpdatedAt, &item.InUse)
+		&item.CreatedAt, &item.UpdatedAt, &item.UsedByRegistry, &item.UsedByBackups)
+	item.InUse = item.UsedByRegistry || item.UsedByBackups
 	return item, err
 }
 
@@ -776,7 +782,9 @@ func (s *Store) UpdateObjectStorageConnection(ctx context.Context, item ObjectSt
 
 func (s *Store) DeleteObjectStorageConnection(ctx context.Context, id string) error {
 	result, err := s.db.ExecContext(ctx, `DELETE FROM object_storage_connections o
-		WHERE o.id=$1 AND NOT EXISTS(SELECT 1 FROM registry_settings r WHERE r.object_storage_id=o.id)`, id)
+		WHERE o.id=$1
+		AND NOT EXISTS(SELECT 1 FROM registry_settings r WHERE r.object_storage_id=o.id)
+		AND NOT EXISTS(SELECT 1 FROM server_backup_schedule b WHERE b.object_storage_id=o.id)`, id)
 	if err != nil {
 		return err
 	}

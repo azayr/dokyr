@@ -110,6 +110,10 @@ var routePermissions = map[string]authz.Permission{
 	"POST /api/infrastructure/cleanup":              authz.PermInfraWrite,
 	"GET /api/infrastructure/cleanup/schedule":      authz.PermInfraWrite,
 	"PUT /api/infrastructure/cleanup/schedule":      authz.PermInfraWrite,
+	"GET /api/infrastructure/backups":               authz.PermPlatformWrite,
+	"POST /api/infrastructure/backups":              authz.PermPlatformWrite,
+	"PUT /api/infrastructure/backups/schedule":      authz.PermPlatformWrite,
+	"POST /api/infrastructure/backups/{id}/restore": authz.PermPlatformWrite,
 
 	"GET /api/registry/settings":              authz.PermRegistryWrite,
 	"PUT /api/registry/settings":              authz.PermRegistryWrite,

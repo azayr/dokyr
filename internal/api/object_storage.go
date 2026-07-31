@@ -68,6 +68,13 @@ func cleanObjectStorageInput(in objectStorageInput) (objectStorageInput, error) 
 }
 
 func objectStorageResponse(item store.ObjectStorageConnection) map[string]any {
+	usedBy := []string{}
+	if item.UsedByRegistry {
+		usedBy = append(usedBy, "Registry")
+	}
+	if item.UsedByBackups {
+		usedBy = append(usedBy, "Backups")
+	}
 	return map[string]any{
 		"id":             item.ID,
 		"name":           item.Name,
@@ -80,6 +87,7 @@ func objectStorageResponse(item store.ObjectStorageConnection) map[string]any {
 		"forcePathStyle": item.ForcePathStyle,
 		"secure":         item.Secure,
 		"inUse":          item.InUse,
+		"usedBy":         usedBy,
 		"createdAt":      item.CreatedAt,
 		"updatedAt":      item.UpdatedAt,
 	}
@@ -182,7 +190,7 @@ func (a *API) updateObjectStorageConnection(w http.ResponseWriter, r *http.Reque
 		Bucket: clean.Bucket, Endpoint: clean.Endpoint, AccessKey: clean.AccessKey,
 		SecretKeyEncrypted: sealed, ForcePathStyle: clean.ForcePathStyle, Secure: clean.Secure,
 		CreatedBy: existing.CreatedBy, CreatedAt: existing.CreatedAt, UpdatedAt: time.Now().UTC(),
-		InUse: existing.InUse,
+		InUse: existing.InUse, UsedByRegistry: existing.UsedByRegistry, UsedByBackups: existing.UsedByBackups,
 	}
 	if err := a.store.UpdateObjectStorageConnection(r.Context(), item); err != nil {
 		if store.NotFound(err) {
@@ -207,7 +215,7 @@ func (a *API) deleteObjectStorageConnection(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if item.InUse {
-		write(w, http.StatusConflict, map[string]string{"error": "this connection is selected by Registry; switch Registry to another backend before removing it"})
+		write(w, http.StatusConflict, map[string]string{"error": "this connection is in use by Registry or server backups; switch those services before removing it"})
 		return
 	}
 	if err := a.store.DeleteObjectStorageConnection(r.Context(), id); err != nil {

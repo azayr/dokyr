@@ -129,6 +129,7 @@ func main() {
 	defer stopScheduler()
 	apiHandler.StartCleanupScheduler(schedulerContext)
 	apiHandler.StartPlatformUpdateScheduler(schedulerContext)
+	apiHandler.StartServerBackupWorker(schedulerContext)
 	go func() {
 		for attempt := 1; attempt <= 10; attempt++ {
 			if err := apiHandler.SyncDomains(context.Background()); err == nil {

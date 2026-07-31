@@ -133,7 +133,7 @@
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Could not save object storage');
-      toast.success(form.id ? (form.inUse ? 'Storage updated. Save Registry to apply it.' : 'Object storage updated') : 'Object storage connected');
+      toast.success(form.id ? (form.inUse ? 'Storage updated. Services using it will pick up the saved connection.' : 'Object storage updated') : 'Object storage connected');
       editorOpen = false;
       await load();
     } catch (cause) {
@@ -223,7 +223,7 @@
   {:else}
     <div class="section-heading">
       <div><span class="eyebrow">Connections</span><h2>Available buckets</h2></div>
-      <p>Select any of these from Registry → Storage backend.</p>
+      <p>Select any of these from Registry or Servers → Backups.</p>
     </div>
     <div class="connection-grid">
       {#each connections as item}
@@ -235,7 +235,7 @@
               <h3>{item.name}</h3>
               <span>{provider.name}</span>
             </div>
-            {#if item.inUse}<span class="usage-badge"><i></i>Registry</span>{/if}
+            {#if item.inUse}<span class="usage-badge"><i></i>{item.usedBy?.join(' + ') || 'In use'}</span>{/if}
           </header>
           <div class="bucket-name"><Icon name="database" size={16} /><strong>{item.bucket}</strong></div>
           <dl class="connection-meta">
@@ -248,7 +248,7 @@
             <span><Icon name="lock" size={12} /> Secret stored encrypted</span>
             <div>
               <button class="btn btn-sm" type="button" onclick={() => openEdit(item)}>Edit</button>
-              <button class="btn btn-sm btn-danger" type="button" disabled={item.inUse} title={item.inUse ? 'Switch the Registry backend before removing this connection' : ''} onclick={() => { removeError = ''; removeTarget = item; }}>Remove</button>
+              <button class="btn btn-sm btn-danger" type="button" disabled={item.inUse} title={item.inUse ? 'Switch Registry and backup schedules before removing this connection' : ''} onclick={() => { removeError = ''; removeTarget = item; }}>Remove</button>
             </div>
           </footer>
         </article>

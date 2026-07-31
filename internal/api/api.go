@@ -62,6 +62,7 @@ type API struct {
 	updates                *platformupdate.Client
 	latestRelease          *platformupdate.Release
 	deploymentCancels      map[string]context.CancelFunc
+	backupQueue            chan string
 }
 
 type domainRuleInput struct {
@@ -102,6 +103,7 @@ func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integ
 		registryInternalSecret: registryInternalSecret,
 		log:                    log,
 		deploymentCancels:      make(map[string]context.CancelFunc),
+		backupQueue:            make(chan string, 100),
 	}
 }
 func (a *API) Handler() http.Handler {
@@ -228,6 +230,10 @@ func (a *API) registerProtectedRoutes(protected *guardedMux) {
 	protected.handle("POST /api/infrastructure/cleanup", authz.PermInfraWrite, a.dockerCleanup)
 	protected.handle("GET /api/infrastructure/cleanup/schedule", authz.PermInfraWrite, a.cleanupSchedule)
 	protected.handle("PUT /api/infrastructure/cleanup/schedule", authz.PermInfraWrite, a.updateCleanupSchedule)
+	protected.handle("GET /api/infrastructure/backups", authz.PermPlatformWrite, a.serverBackups)
+	protected.handle("POST /api/infrastructure/backups", authz.PermPlatformWrite, a.createServerBackup)
+	protected.handle("PUT /api/infrastructure/backups/schedule", authz.PermPlatformWrite, a.updateServerBackupSchedule)
+	protected.handle("POST /api/infrastructure/backups/{id}/restore", authz.PermPlatformWrite, a.restoreServerBackup)
 	protected.handle("GET /api/registry/status", authz.PermProjectRead, a.registryStatus)
 	protected.handle("GET /api/object-storage", authz.PermRegistryWrite, a.objectStorageConnections)
 	protected.handle("POST /api/object-storage", authz.PermRegistryWrite, a.createObjectStorageConnection)

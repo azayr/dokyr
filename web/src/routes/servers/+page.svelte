@@ -2,9 +2,10 @@
   import { onDestroy, onMount, tick } from 'svelte';
   import Shell from '$lib/components/Shell.svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import { api } from '$lib/auth.js';
 
-  const infrastructureViews = ['monitoring', 'cleanup'];
+  const infrastructureViews = ['monitoring', 'backups', 'cleanup'];
   const controlServices = [
     { key: 'dokyr', name: 'Dokyr', role: 'Control plane', icon: 'box' },
     { key: 'postgres', name: 'PostgreSQL', role: 'State database', icon: 'database' },
@@ -24,6 +25,18 @@
     images: true,
     buildCache: true,
     networks: true,
+    lastStatus: 'never'
+  };
+  const defaultBackupSchedule = {
+    configured: false,
+    enabled: false,
+    objectStorageId: '',
+    objectStorageName: '',
+    frequency: 'daily',
+    weekday: 0,
+    hour: 2,
+    minute: 0,
+    timezone: 'UTC',
     lastStatus: 'never'
   };
 
@@ -64,12 +77,28 @@
   let controlLogViewport;
   let controlLogsCopied = false;
   let controlLogsRequest = 0;
+  let backupJobs = [];
+  let backupDestinations = [];
+  let backupSchedule = { ...defaultBackupSchedule };
+  let backupScheduleTime = '02:00';
+  let backupLoading = false;
+  let backupLoaded = false;
+  let backupError = '';
+  let backupScheduleSaving = false;
+  let backupScheduleSaved = false;
+  let backupCreating = false;
+  let selectedBackupStorage = '';
+  let restoreTarget = null;
+  let restoreRunning = false;
+  let restoreError = '';
 
   $: selectedBytes = ['containers', 'images', 'buildCache', 'networks', 'volumes'].reduce((total, key) => total + (cleanupSelection[key] ? cleanup[key]?.bytes || 0 : 0), 0);
   $: selectedItems = ['containers', 'images', 'buildCache', 'networks', 'volumes'].reduce((total, key) => total + (cleanupSelection[key] ? cleanup[key]?.count || 0 : 0), 0);
   $: hostDiskAvailable = (metrics.global.disk?.total || 0) > 0;
   $: automaticResourceCount = ['containers', 'images', 'buildCache', 'networks'].filter((key) => cleanupSchedule[key]).length;
   $: selectedControlContainer = controlPlane.containers?.find((container) => container.controlPlaneService === selectedControlService);
+  $: activeBackupJobs = backupJobs.filter((job) => job.status === 'queued' || job.status === 'running');
+  $: successfulBackups = backupJobs.filter((job) => job.kind === 'backup' && job.status === 'succeeded');
 
   onMount(async () => {
     hashListener = syncViewFromURL;
@@ -78,10 +107,13 @@
 
     await loadMetrics();
     pollTimer = setInterval(() => {
-      if (activeView !== 'monitoring') return;
-      if (!metricsRefreshing) loadMetrics(true);
-      if (!controlPlaneRefreshing) loadControlPlane(true);
-      if (controlLogsAutoRefresh && !controlLogsLoading) loadControlLogs(true);
+      if (activeView === 'monitoring') {
+        if (!metricsRefreshing) loadMetrics(true);
+        if (!controlPlaneRefreshing) loadControlPlane(true);
+        if (controlLogsAutoRefresh && !controlLogsLoading) loadControlLogs(true);
+      } else if (activeView === 'backups' && activeBackupJobs.length && !backupLoading) {
+        loadBackups(true);
+      }
     }, 5000);
   });
 
@@ -202,6 +234,104 @@
     }
   }
 
+  async function loadBackups(silent = false) {
+    if (!silent) backupLoading = true;
+    backupError = '';
+    try {
+      const response = await api('/api/infrastructure/backups');
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not load server backups');
+      backupJobs = payload.jobs || [];
+      backupDestinations = payload.destinations || [];
+      const nextSchedule = { ...defaultBackupSchedule, ...(payload.schedule || {}) };
+      if (!nextSchedule.configured) {
+        nextSchedule.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      }
+      backupSchedule = nextSchedule;
+      backupScheduleTime = `${String(backupSchedule.hour).padStart(2, '0')}:${String(backupSchedule.minute).padStart(2, '0')}`;
+      if (!selectedBackupStorage || !backupDestinations.some((item) => item.id === selectedBackupStorage)) {
+        selectedBackupStorage = backupSchedule.objectStorageId || backupDestinations[0]?.id || '';
+      }
+      backupLoaded = true;
+    } catch (cause) {
+      backupError = cause instanceof Error ? cause.message : 'Could not load server backups';
+    } finally {
+      backupLoading = false;
+    }
+  }
+
+  async function createBackup() {
+    if (!selectedBackupStorage) return;
+    backupCreating = true;
+    backupError = '';
+    try {
+      const response = await api('/api/infrastructure/backups', {
+        method: 'POST',
+        body: JSON.stringify({ objectStorageId: selectedBackupStorage })
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not queue the server backup');
+      backupJobs = [payload.job, ...backupJobs];
+      setTimeout(() => loadBackups(true), 700);
+    } catch (cause) {
+      backupError = cause instanceof Error ? cause.message : 'Could not queue the server backup';
+    } finally {
+      backupCreating = false;
+    }
+  }
+
+  async function saveBackupSchedule() {
+    backupScheduleSaving = true;
+    backupScheduleSaved = false;
+    backupError = '';
+    const [hour, minute] = backupScheduleTime.split(':').map(Number);
+    try {
+      const response = await api('/api/infrastructure/backups/schedule', {
+        method: 'PUT',
+        body: JSON.stringify({
+          enabled: backupSchedule.enabled,
+          objectStorageId: backupSchedule.objectStorageId,
+          frequency: backupSchedule.frequency,
+          weekday: Number(backupSchedule.weekday),
+          hour,
+          minute,
+          timezone: backupSchedule.timezone
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not save the backup schedule');
+      backupSchedule = { ...defaultBackupSchedule, ...payload };
+      backupScheduleTime = `${String(backupSchedule.hour).padStart(2, '0')}:${String(backupSchedule.minute).padStart(2, '0')}`;
+      selectedBackupStorage = backupSchedule.objectStorageId;
+      backupScheduleSaved = true;
+    } catch (cause) {
+      backupError = cause instanceof Error ? cause.message : 'Could not save the backup schedule';
+    } finally {
+      backupScheduleSaving = false;
+    }
+  }
+
+  async function restoreBackup() {
+    if (!restoreTarget) return;
+    restoreRunning = true;
+    restoreError = '';
+    try {
+      const response = await api(`/api/infrastructure/backups/${encodeURIComponent(restoreTarget.id)}/restore`, {
+        method: 'POST',
+        body: JSON.stringify({ confirmation: 'RESTORE SERVER' })
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not queue the restore');
+      backupJobs = [payload.job, ...backupJobs];
+      restoreTarget = null;
+      setTimeout(() => loadBackups(true), 700);
+    } catch (cause) {
+      restoreError = cause instanceof Error ? cause.message : 'Could not queue the restore';
+    } finally {
+      restoreRunning = false;
+    }
+  }
+
   function activateView(view) {
     activeView = view;
     if (view === 'monitoring') {
@@ -210,6 +340,8 @@
     } else if (view === 'cleanup') {
       if (!cleanupLoaded && !cleanupLoading) loadCleanup();
       if (!cleanupScheduleLoaded && !cleanupScheduleLoading) loadCleanupSchedule();
+    } else if (view === 'backups') {
+      if (!backupLoaded && !backupLoading) loadBackups();
     }
   }
 
@@ -304,6 +436,19 @@
     }
   }
 
+  function formatBackupDate(value, withTime = true) {
+    if (!value) return 'Not yet';
+    try {
+      return new Date(value).toLocaleString([], {
+        dateStyle: 'medium',
+        ...(withTime ? { timeStyle: 'short' } : {}),
+        timeZone: backupSchedule.timezone
+      });
+    } catch {
+      return new Date(value).toLocaleString();
+    }
+  }
+
   function formatBytes(value = 0) {
     if (!Number.isFinite(value) || value <= 0) return '0 B';
     const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -325,6 +470,9 @@
   <div slot="actions" class="view-switch" role="tablist" aria-label="Infrastructure view">
     <button role="tab" aria-selected={activeView === 'monitoring'} class:active={activeView === 'monitoring'} onclick={() => showView('monitoring')}>
       <Icon name="activity" size={14} /> Monitoring
+    </button>
+    <button role="tab" aria-selected={activeView === 'backups'} class:active={activeView === 'backups'} onclick={() => showView('backups')}>
+      <Icon name="hard-drive" size={14} /> Backups
     </button>
     <button role="tab" aria-selected={activeView === 'cleanup'} class:active={activeView === 'cleanup'} onclick={() => showView('cleanup')}>
       <Icon name="trash" size={14} /> Cleanup
@@ -504,7 +652,7 @@
         </footer>
       </section>
     {/if}
-  {:else}
+  {:else if activeView === 'cleanup'}
     <section class="cleanup-intro panel">
       <div>
         <span class="eyebrow accent-eyebrow">Storage maintenance</span>
@@ -680,8 +828,210 @@
         </form>
       </div>
     </section>
+  {:else}
+    <section class="backup-hero panel">
+      <div class="backup-hero-copy">
+        <span class="backup-vault"><Icon name="hard-drive" size={22} /></span>
+        <div>
+          <span class="eyebrow accent-eyebrow">Server recovery</span>
+          <h2>Portable control-plane snapshots</h2>
+          <p>Project configuration, Dokyr settings, and the complete PostgreSQL database travel together in one restorable <code>.tar.gz</code>.</p>
+        </div>
+      </div>
+      <dl>
+        <div><dt>Available</dt><dd>{successfulBackups.length}</dd><small>restorable archives</small></div>
+        <div><dt>Automation</dt><dd class:online={backupSchedule.enabled}>{backupSchedule.enabled ? 'On' : 'Off'}</dd><small>{backupSchedule.enabled ? formatBackupDate(backupSchedule.nextRunAt) : 'schedule paused'}</small></div>
+      </dl>
+    </section>
+
+    {#if backupError}
+      <div class="alert alert-error backup-alert">
+        <Icon name="x-circle" size={15} />
+        <div><strong>Backups unavailable</strong><span>{backupError}</span></div>
+        <button class="btn btn-sm alert-action" type="button" onclick={() => loadBackups()}>Retry</button>
+      </div>
+    {:else if backupScheduleSaved}
+      <div class="alert alert-success backup-alert">
+        <Icon name="check-circle" size={15} />
+        <div><strong>Backup schedule saved</strong><span>{backupSchedule.enabled ? `Next backup is ${formatBackupDate(backupSchedule.nextRunAt)}.` : 'Automatic backups are paused.'}</span></div>
+      </div>
+    {/if}
+
+    {#if backupLoading && !backupLoaded}
+      <section class="panel loading-state">
+        <span class="spinner"></span>
+        <div><strong>Opening the backup vault</strong><span>Loading destinations, schedule, and archive history…</span></div>
+      </section>
+    {:else if backupDestinations.length === 0}
+      <section class="panel backup-empty">
+        <span><Icon name="cloud" size={27} /></span>
+        <div>
+          <span class="eyebrow">Destination required</span>
+          <h2>Connect an external S3 bucket first</h2>
+          <p>Backups only use reusable object storage connections. Add Amazon S3, Cloudflare R2, MinIO, DigitalOcean Spaces, or another S3-compatible bucket.</p>
+        </div>
+        <a class="btn btn-primary" href="/object-storage"><Icon name="plus" size={14} /> Add object storage</a>
+      </section>
+    {:else}
+      <div class="backup-command-grid">
+        <section class="panel backup-now-card">
+          <header>
+            <div>
+              <span class="eyebrow">On demand</span>
+              <h2>Backup this server now</h2>
+              <p>The job runs in the background. You can leave this page after it enters the queue.</p>
+            </div>
+            <span class="queue-mark" class:busy={activeBackupJobs.length > 0}>
+              {#if activeBackupJobs.length}<i class="spinner small"></i>{:else}<i></i>{/if}
+              {activeBackupJobs.length ? `${activeBackupJobs.length} active` : 'Queue ready'}
+            </span>
+          </header>
+          <div class="backup-destination-row">
+            <label class="field">
+              <span>Upload destination</span>
+              <select class="select" bind:value={selectedBackupStorage}>
+                {#each backupDestinations as destination}
+                  <option value={destination.id}>{destination.name} · {destination.bucket}</option>
+                {/each}
+              </select>
+            </label>
+            <button class="btn btn-primary backup-now-button" type="button" onclick={createBackup} disabled={backupCreating || !selectedBackupStorage}>
+              <Icon name="hard-drive" size={15} /> {backupCreating ? 'Adding to queue…' : 'Backup now'}
+            </button>
+          </div>
+          <footer><Icon name="lock" size={13} /> Credentials remain encrypted; only the background worker can decrypt the selected connection.</footer>
+        </section>
+
+        <aside class="panel backup-contents">
+          <header><span class="eyebrow">Every archive</span><strong>Recovery set</strong></header>
+          <ul>
+            <li><i><Icon name="folder" size={15} /></i><span><strong>Project configuration</strong><small>Services, domains, environment, and deployment settings</small></span><b><Icon name="check" size={13} /></b></li>
+            <li><i><Icon name="settings" size={15} /></i><span><strong>Dokyr configuration</strong><small>Users, integrations, Registry, SMTP, and platform policy</small></span><b><Icon name="check" size={13} /></b></li>
+            <li><i><Icon name="database" size={15} /></i><span><strong>PostgreSQL database</strong><small>Consistent plain-SQL dump for transactional restore</small></span><b><Icon name="check" size={13} /></b></li>
+          </ul>
+          <footer><code>dokyr-server-YYYYMMDDTHHMMSSZ.tar.gz</code></footer>
+        </aside>
+      </div>
+
+      <section class="panel backup-schedule-card">
+        <header class="schedule-header">
+          <div class="schedule-heading">
+            <span class="schedule-icon"><Icon name="clock" size={18} /></span>
+            <div>
+              <span class="eyebrow">Automation</span>
+              <h2>Scheduled server backups</h2>
+              <p>Create the same complete archive on a daily or weekly cadence.</p>
+            </div>
+          </div>
+          <span class:enabled={backupSchedule.enabled} class="schedule-state"><i></i>{backupSchedule.enabled ? 'Active' : 'Paused'}</span>
+        </header>
+        <form class="backup-schedule-form" onsubmit={(event) => { event.preventDefault(); saveBackupSchedule(); }}>
+          <label class="automation-toggle">
+            <span><strong>Enable automatic backups</strong><small>Queued by Dokyr even when no one is signed in.</small></span>
+            <input type="checkbox" bind:checked={backupSchedule.enabled} />
+            <i></i>
+          </label>
+          <div class="backup-schedule-fields">
+            <label class="field destination-field">
+              <span>Object storage</span>
+              <select class="select" bind:value={backupSchedule.objectStorageId} required>
+                <option value="" disabled>Select a bucket</option>
+                {#each backupDestinations as destination}
+                  <option value={destination.id}>{destination.name} · {destination.bucket}</option>
+                {/each}
+              </select>
+            </label>
+            <label class="field">
+              <span>Frequency</span>
+              <select class="select" bind:value={backupSchedule.frequency}>
+                <option value="daily">Every day</option>
+                <option value="weekly">Every week</option>
+              </select>
+            </label>
+            {#if backupSchedule.frequency === 'weekly'}
+              <label class="field">
+                <span>Day</span>
+                <select class="select" bind:value={backupSchedule.weekday}>
+                  {#each weekdays as day, index}<option value={index}>{day}</option>{/each}
+                </select>
+              </label>
+            {/if}
+            <label class="field">
+              <span>Run at</span>
+              <input class="input input-mono" type="time" bind:value={backupScheduleTime} />
+            </label>
+          </div>
+          <div class="backup-schedule-foot">
+            <span><Icon name="globe" size={13} /> {backupSchedule.timezone} · Last run {formatBackupDate(backupSchedule.lastRunAt)}</span>
+            <button class="btn btn-primary" type="submit" disabled={backupScheduleSaving || !backupSchedule.objectStorageId}>
+              {backupScheduleSaving ? 'Saving schedule…' : 'Save schedule'}
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel backup-history">
+        <header class="panel-header">
+          <div><span class="eyebrow">Archive ledger</span><h2>Backup and restore history</h2></div>
+          <button class="btn btn-sm" type="button" onclick={() => loadBackups()} disabled={backupLoading}><Icon name="refresh" size={13} /> Refresh</button>
+        </header>
+        {#if backupJobs.length === 0}
+          <div class="backup-history-empty">
+            <Icon name="hard-drive" size={22} />
+            <strong>No backups yet</strong>
+            <span>Run the first backup or enable the schedule above.</span>
+          </div>
+        {:else}
+          <div class="backup-job-list">
+            {#each backupJobs as job}
+              <article class="backup-job" class:restore={job.kind === 'restore'}>
+                <span class="job-kind"><Icon name={job.kind === 'restore' ? 'refresh' : 'hard-drive'} size={16} /></span>
+                <div class="job-main">
+                  <strong>{job.kind === 'restore' ? `Restore from ${job.filename || 'server backup'}` : job.filename || 'Server backup'}</strong>
+                  <span>{job.objectStorageName} · {job.trigger === 'scheduled' ? 'Scheduled' : job.kind === 'restore' ? 'Recovery' : 'Manual'} · {formatBackupDate(job.createdAt)}</span>
+                  {#if job.status === 'failed' && job.message}<small>{job.message}</small>{/if}
+                </div>
+                <div class="job-size">
+                  <strong>{job.sizeBytes ? formatBytes(job.sizeBytes) : '—'}</strong>
+                  <span>.tar.gz</span>
+                </div>
+                <span class="job-status {job.status}">
+                  {#if job.status === 'queued' || job.status === 'running'}<i class="spinner small"></i>{:else}<i></i>{/if}
+                  {job.status}
+                </span>
+                <div class="job-action">
+                  {#if job.kind === 'backup' && job.status === 'succeeded'}
+                    <button class="btn btn-sm" type="button" onclick={() => { restoreError = ''; restoreTarget = job; }}>Restore</button>
+                  {:else}
+                    <span>{job.finishedAt ? formatBackupDate(job.finishedAt, false) : 'Background job'}</span>
+                  {/if}
+                </div>
+              </article>
+            {/each}
+          </div>
+        {/if}
+      </section>
+
+      <div class="backup-recovery-note">
+        <Icon name="shield" size={15} />
+        <p><strong>Keep the installation encryption key.</strong> The archive contains encrypted credentials. Restoring on another server requires the same <code>SELFHOST_ENCRYPTION_KEY</code>.</p>
+      </div>
+    {/if}
   {/if}
 </Shell>
+
+{#if restoreTarget}
+  <ConfirmDialog
+    title="Restore this server backup?"
+    message={`Dokyr will replace its project configuration, platform settings, and PostgreSQL database with ${restoreTarget.filename}. The database restore is transactional, but changes made after the backup will be lost.`}
+    confirmLabel="Queue server restore"
+    requireText="RESTORE SERVER"
+    busy={restoreRunning}
+    error={restoreError}
+    onConfirm={restoreBackup}
+    onClose={() => { if (!restoreRunning) restoreTarget = null; }}
+  />
+{/if}
 
 <style>
   .node-signal {
@@ -1723,6 +2073,473 @@
     font-size: var(--text-xs);
   }
 
+  .backup-hero {
+    min-height: 146px;
+    padding: var(--space-5);
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-6);
+    overflow: hidden;
+    border-color: color-mix(in srgb, var(--color-accent) 24%, var(--color-rule));
+    background:
+      linear-gradient(115deg, color-mix(in srgb, var(--color-accent) 9%, var(--color-paper-raised)), var(--color-paper-raised) 58%),
+      var(--color-paper-raised);
+  }
+  .backup-hero::after {
+    content: '';
+    width: 260px;
+    height: 260px;
+    position: absolute;
+    right: 12%;
+    top: -210px;
+    border: 1px solid color-mix(in srgb, var(--color-accent) 16%, transparent);
+    border-radius: 50%;
+    box-shadow: 0 0 0 38px color-mix(in srgb, var(--color-accent) 3%, transparent), 0 0 0 76px color-mix(in srgb, var(--color-accent) 2%, transparent);
+    pointer-events: none;
+  }
+  .backup-hero-copy {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+  }
+  .backup-hero-copy > div {
+    display: grid;
+    gap: 4px;
+  }
+  .backup-vault {
+    width: 52px;
+    height: 52px;
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-rule));
+    border-radius: var(--radius-md);
+    background: var(--color-paper-raised);
+    color: var(--color-accent);
+    box-shadow: var(--shadow-whisper);
+  }
+  .backup-hero h2,
+  .backup-hero p {
+    margin: 0;
+  }
+  .backup-hero h2 {
+    font-size: var(--text-xl);
+    letter-spacing: -.02em;
+  }
+  .backup-hero p {
+    max-width: 680px;
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+  }
+  .backup-hero code,
+  .backup-recovery-note code {
+    color: var(--color-ink-secondary);
+    font-family: var(--font-mono);
+    font-size: .92em;
+  }
+  .backup-hero dl {
+    margin: 0;
+    position: relative;
+    z-index: 1;
+    display: flex;
+  }
+  .backup-hero dl div {
+    min-width: 124px;
+    padding: 0 var(--space-4);
+    display: grid;
+    gap: 1px;
+    border-left: 1px solid var(--color-rule);
+  }
+  .backup-hero dt {
+    color: var(--color-muted);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .backup-hero dd {
+    margin: 0;
+    font-size: var(--text-xl);
+    font-weight: 680;
+    line-height: 1.2;
+  }
+  .backup-hero dd.online {
+    color: var(--color-success);
+  }
+  .backup-hero dl small {
+    color: var(--color-muted);
+    font-size: var(--text-2xs);
+    white-space: nowrap;
+  }
+  .backup-alert {
+    margin-top: var(--space-4);
+  }
+  .backup-empty {
+    min-height: 250px;
+    display: grid;
+    grid-template-columns: 54px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-4);
+    padding: var(--space-6);
+  }
+  .backup-empty > span {
+    width: 54px;
+    height: 54px;
+    display: grid;
+    place-items: center;
+    border: 1px dashed color-mix(in srgb, var(--color-accent) 35%, var(--color-rule));
+    border-radius: var(--radius-md);
+    background: var(--color-accent-softer);
+    color: var(--color-accent);
+  }
+  .backup-empty > div {
+    display: grid;
+    gap: 3px;
+  }
+  .backup-empty h2,
+  .backup-empty p {
+    margin: 0;
+  }
+  .backup-empty h2 {
+    font-size: var(--text-lg);
+  }
+  .backup-empty p {
+    max-width: 660px;
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+  }
+  .backup-command-grid {
+    margin-top: var(--space-4);
+    display: grid;
+    grid-template-columns: minmax(0, 1.55fr) minmax(300px, .75fr);
+    gap: var(--space-4);
+  }
+  .backup-now-card {
+    min-width: 0;
+    padding: var(--space-5);
+    display: grid;
+    gap: var(--space-5);
+  }
+  .backup-now-card > header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+  .backup-now-card > header > div {
+    display: grid;
+    gap: 3px;
+  }
+  .backup-now-card h2,
+  .backup-now-card p {
+    margin: 0;
+  }
+  .backup-now-card h2 {
+    font-size: var(--text-lg);
+  }
+  .backup-now-card p {
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .queue-mark {
+    min-height: 25px;
+    padding: 0 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid color-mix(in srgb, var(--color-success) 25%, var(--color-rule));
+    border-radius: 999px;
+    background: var(--color-success-soft);
+    color: var(--color-success);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .queue-mark > i:not(.spinner) {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .queue-mark.busy {
+    border-color: color-mix(in srgb, var(--color-accent) 28%, var(--color-rule));
+    background: var(--color-accent-softer);
+    color: var(--color-accent);
+  }
+  .backup-destination-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: var(--space-3);
+  }
+  .backup-now-button {
+    min-height: 38px;
+    padding-inline: var(--space-4);
+  }
+  .backup-now-card > footer {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--color-muted);
+    font-size: var(--text-2xs);
+  }
+  .backup-contents {
+    min-width: 0;
+    overflow: hidden;
+  }
+  .backup-contents > header {
+    padding: var(--space-4);
+    display: grid;
+    gap: 2px;
+    border-bottom: 1px solid var(--color-rule);
+  }
+  .backup-contents > header strong {
+    font-size: var(--text-md);
+  }
+  .backup-contents ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .backup-contents li {
+    min-height: 64px;
+    padding: var(--space-3) var(--space-4);
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr) 20px;
+    align-items: center;
+    gap: var(--space-2);
+    border-bottom: 1px solid var(--color-rule);
+  }
+  .backup-contents li > i {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--radius-sm);
+    background: var(--color-paper-subtle);
+    color: var(--color-ink-secondary);
+  }
+  .backup-contents li > span {
+    min-width: 0;
+    display: grid;
+    gap: 1px;
+  }
+  .backup-contents li strong {
+    font-size: var(--text-xs);
+  }
+  .backup-contents li small {
+    overflow: hidden;
+    color: var(--color-muted);
+    font-size: var(--text-2xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .backup-contents li > b {
+    color: var(--color-success);
+  }
+  .backup-contents > footer {
+    min-height: 43px;
+    padding: 0 var(--space-4);
+    display: flex;
+    align-items: center;
+    background: var(--color-paper-subtle);
+  }
+  .backup-contents > footer code {
+    color: var(--color-muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+  }
+  .backup-schedule-card {
+    margin-top: var(--space-4);
+    overflow: hidden;
+  }
+  .backup-schedule-form {
+    padding: var(--space-4) var(--space-5) var(--space-5);
+    display: grid;
+    gap: var(--space-4);
+  }
+  .backup-schedule-fields {
+    display: grid;
+    grid-template-columns: minmax(230px, 1.4fr) repeat(3, minmax(130px, .65fr));
+    gap: var(--space-3);
+  }
+  .backup-schedule-fields .destination-field {
+    grid-column: auto;
+  }
+  .backup-schedule-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+  .backup-schedule-foot > span {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+  .backup-history {
+    margin-top: var(--space-4);
+    overflow: hidden;
+  }
+  .backup-history > .panel-header {
+    min-height: 76px;
+    padding: var(--space-4) var(--space-5);
+    border-bottom: 1px solid var(--color-rule);
+  }
+  .backup-history-empty {
+    min-height: 170px;
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: var(--space-1);
+    color: var(--color-muted);
+  }
+  .backup-history-empty strong {
+    color: var(--color-ink-secondary);
+    font-size: var(--text-sm);
+  }
+  .backup-history-empty span {
+    font-size: var(--text-xs);
+  }
+  .backup-job-list {
+    display: grid;
+  }
+  .backup-job {
+    min-height: 76px;
+    padding: var(--space-3) var(--space-5);
+    display: grid;
+    grid-template-columns: 38px minmax(240px, 1fr) 90px 112px 110px;
+    align-items: center;
+    gap: var(--space-3);
+    border-bottom: 1px solid var(--color-rule);
+    transition: background var(--duration-fast) var(--ease-out);
+  }
+  .backup-job:last-child {
+    border-bottom: 0;
+  }
+  .backup-job:hover {
+    background: var(--color-paper-subtle);
+  }
+  .job-kind {
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-sm);
+    background: var(--color-paper-subtle);
+    color: var(--color-accent);
+  }
+  .backup-job.restore .job-kind {
+    color: var(--color-warning);
+  }
+  .job-main {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+  .job-main > strong {
+    overflow: hidden;
+    font-size: var(--text-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .job-main > span,
+  .job-main > small {
+    overflow: hidden;
+    color: var(--color-muted);
+    font-size: var(--text-2xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .job-main > small {
+    color: var(--color-danger);
+  }
+  .job-size {
+    display: grid;
+    justify-items: end;
+    gap: 1px;
+  }
+  .job-size strong {
+    font: 600 var(--text-xs) var(--font-mono);
+  }
+  .job-size span {
+    color: var(--color-muted);
+    font-size: var(--text-2xs);
+  }
+  .job-status {
+    min-height: 24px;
+    padding: 0 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border: 1px solid var(--color-rule);
+    border-radius: 999px;
+    background: var(--color-paper-subtle);
+    color: var(--color-muted);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    text-transform: capitalize;
+  }
+  .job-status.succeeded {
+    border-color: color-mix(in srgb, var(--color-success) 28%, var(--color-rule));
+    background: var(--color-success-soft);
+    color: var(--color-success);
+  }
+  .job-status.failed {
+    border-color: color-mix(in srgb, var(--color-danger) 28%, var(--color-rule));
+    background: color-mix(in srgb, var(--color-danger) 7%, var(--color-paper-raised));
+    color: var(--color-danger);
+  }
+  .job-status.running,
+  .job-status.queued {
+    border-color: color-mix(in srgb, var(--color-accent) 25%, var(--color-rule));
+    background: var(--color-accent-softer);
+    color: var(--color-accent);
+  }
+  .job-status > i:not(.spinner) {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .job-action {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .job-action > span {
+    color: var(--color-muted);
+    font-size: var(--text-2xs);
+    text-align: right;
+  }
+  .backup-recovery-note {
+    margin-top: var(--space-4);
+    padding: var(--space-3) var(--space-4);
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    border: 1px solid color-mix(in srgb, var(--color-warning) 24%, var(--color-rule));
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--color-warning) 5%, var(--color-paper-raised));
+    color: var(--color-warning);
+  }
+  .backup-recovery-note p {
+    margin: 0;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+  }
+  .backup-recovery-note strong {
+    color: var(--color-ink-secondary);
+  }
+
   @media (max-width: 76rem) {
     .metric-grid {
       grid-template-columns: repeat(3, 1fr);
@@ -1732,6 +2549,15 @@
     }
     .metric-card:nth-child(-n + 3) {
       border-bottom: 1px solid var(--color-rule);
+    }
+    .backup-command-grid {
+      grid-template-columns: 1fr;
+    }
+    .backup-schedule-fields {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .backup-schedule-fields .destination-field {
+      grid-column: 1 / -1;
     }
   }
   @media (max-width: 58rem) {
@@ -1759,6 +2585,26 @@
     .schedule-summary {
       border-right: 0;
       border-bottom: 1px solid var(--color-rule);
+    }
+    .backup-hero {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .backup-hero dl {
+      width: 100%;
+    }
+    .backup-hero dl div:first-child {
+      padding-left: 0;
+      border-left: 0;
+    }
+    .backup-job {
+      grid-template-columns: 38px minmax(0, 1fr) 105px;
+    }
+    .job-size {
+      display: none;
+    }
+    .job-action {
+      grid-column: 3;
     }
   }
   @media (max-width: 40rem) {
@@ -1851,6 +2697,65 @@
     }
     .schedule-form footer button {
       width: 100%;
+    }
+    .view-switch button {
+      padding-inline: var(--space-2);
+      font-size: var(--text-xs);
+    }
+    .backup-hero-copy {
+      align-items: flex-start;
+    }
+    .backup-vault {
+      width: 42px;
+      height: 42px;
+    }
+    .backup-hero dl {
+      flex-direction: column;
+      gap: var(--space-3);
+    }
+    .backup-hero dl div,
+    .backup-hero dl div:first-child {
+      padding: 0;
+      border: 0;
+    }
+    .backup-empty {
+      grid-template-columns: 1fr;
+    }
+    .backup-empty .btn {
+      width: 100%;
+    }
+    .backup-now-card > header,
+    .backup-destination-row,
+    .backup-schedule-foot {
+      align-items: stretch;
+      grid-template-columns: 1fr;
+      flex-direction: column;
+    }
+    .backup-destination-row {
+      display: grid;
+    }
+    .backup-now-button,
+    .backup-schedule-foot .btn {
+      width: 100%;
+    }
+    .backup-schedule-fields {
+      grid-template-columns: 1fr;
+    }
+    .backup-schedule-fields .destination-field {
+      grid-column: auto;
+    }
+    .backup-job {
+      padding-inline: var(--space-3);
+      grid-template-columns: 34px minmax(0, 1fr);
+      gap: var(--space-2);
+    }
+    .job-status,
+    .job-action {
+      grid-column: 2;
+      justify-self: start;
+    }
+    .job-action {
+      justify-content: flex-start;
     }
   }
 </style>
