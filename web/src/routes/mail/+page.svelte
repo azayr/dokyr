@@ -4,7 +4,7 @@
   import Icon from '$lib/components/Icon.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-  import { api, can, currentPermissions } from '$lib/auth.js';
+  import { api, can, currentPermissions, readAPIJSON } from '$lib/auth.js';
   import { toast } from '$lib/toast.js';
 
   let loading = true;
@@ -38,7 +38,7 @@
     error = '';
     try {
       const response = await api('/api/mail');
-      const payload = await response.json();
+      const payload = await readAPIJSON(response);
       if (!response.ok) throw new Error(payload.error || 'Could not load mail');
       domains = payload.domains || [];
       apiKeys = payload.apiKeys || [];
@@ -59,7 +59,7 @@
       const response = await api('/api/mail/domains', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newDomain })
       });
-      const payload = await response.json();
+      const payload = await readAPIJSON(response);
       if (!response.ok) throw new Error(payload.error || 'Could not add domain');
       domains = [payload.domain, ...domains];
       selectedId = payload.domain.id;
@@ -78,7 +78,7 @@
     error = '';
     try {
       const response = await api(`/api/mail/domains/${domain.id}/verify`, { method: 'POST' });
-      const payload = await response.json();
+      const payload = await readAPIJSON(response);
       if (!response.ok) throw new Error(payload.error || 'Could not verify DNS');
       domains = domains.map((item) => item.id === domain.id ? payload.domain : item);
       toast.success(payload.domain.status === 'verified' ? 'Domain verified and ready to send.' : 'DNS check completed.');
@@ -96,7 +96,7 @@
     deleteError = '';
     try {
       const response = await api(`/api/mail/domains/${deleteTarget.id}`, { method: 'DELETE' });
-      const payload = await response.json();
+      const payload = await readAPIJSON(response);
       if (!response.ok) throw new Error(payload.error || 'Could not remove domain');
       domains = domains.filter((item) => item.id !== deleteTarget.id);
       apiKeys = apiKeys.filter((key) => key.domainId !== deleteTarget.id);
@@ -123,7 +123,7 @@
       const response = await api('/api/mail/api-keys', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(keyDraft)
       });
-      const payload = await response.json();
+      const payload = await readAPIJSON(response);
       if (!response.ok) throw new Error(payload.error || 'Could not create API key');
       apiKeys = [payload.apiKey, ...apiKeys];
       revealedSecret = payload.secret;
@@ -137,7 +137,7 @@
 
   async function revokeKey(key) {
     const response = await api(`/api/mail/api-keys/${key.id}`, { method: 'DELETE' });
-    const payload = await response.json();
+    const payload = await readAPIJSON(response);
     if (!response.ok) { toast.error(payload.error || 'Could not revoke key'); return; }
     apiKeys = apiKeys.filter((item) => item.id !== key.id);
     toast.success('API key revoked.');

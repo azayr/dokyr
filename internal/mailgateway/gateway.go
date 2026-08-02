@@ -273,7 +273,7 @@ func (g *Gateway) ProvisionDomain(ctx context.Context, name string) (string, []s
 	create := map[string]any{
 		"methodCalls": []any{[]any{"x:Domain/set", map[string]any{"create": map[string]any{"dokyr": map[string]any{
 			"name":                  name,
-			"aliases":               []string{},
+			"aliases":               map[string]bool{},
 			"certificateManagement": map[string]any{"@type": "Manual"},
 			"dkimManagement":        map[string]any{"@type": "Automatic"},
 			"dnsManagement":         map[string]any{"@type": "Manual"},
@@ -350,6 +350,9 @@ func (g *Gateway) DeleteDomain(ctx context.Context, id string) error {
 	if !g.Configured() || strings.TrimSpace(id) == "" {
 		return nil
 	}
+	if err := g.deleteDomainDKIMSignatures(ctx, id); err != nil {
+		return err
+	}
 	request := map[string]any{
 		"methodCalls": []any{[]any{"x:Domain/set", map[string]any{"destroy": []string{id}}, "delete"}},
 		"using":       []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
@@ -372,6 +375,58 @@ func (g *Gateway) DeleteDomain(ctx context.Context, id string) error {
 		if detail, exists := result.NotDestroyed[id]; exists {
 			return fmt.Errorf("Stalwart could not remove the domain: %s", jmapError(detail))
 		}
+	}
+	return nil
+}
+
+func (g *Gateway) deleteDomainDKIMSignatures(ctx context.Context, domainID string) error {
+	response, err := g.call(ctx, map[string]any{
+		"methodCalls": []any{[]any{"x:DkimSignature/query", map[string]any{
+			"filter": map[string]any{"domainId": domainID},
+		}, "query-dkim"}},
+		"using": []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+	})
+	if err != nil {
+		return err
+	}
+	args, method, err := firstMethodResponse(response)
+	if err != nil {
+		return err
+	}
+	if method == "error" {
+		return fmt.Errorf("Stalwart could not query the domain's DKIM keys: %s", jmapError(args))
+	}
+	var found struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(args, &found); err != nil {
+		return fmt.Errorf("decode Stalwart DKIM query: %w", err)
+	}
+	if len(found.IDs) == 0 {
+		return nil
+	}
+	response, err = g.call(ctx, map[string]any{
+		"methodCalls": []any{[]any{"x:DkimSignature/set", map[string]any{"destroy": found.IDs}, "delete-dkim"}},
+		"using":       []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+	})
+	if err != nil {
+		return err
+	}
+	args, method, err = firstMethodResponse(response)
+	if err != nil {
+		return err
+	}
+	if method == "error" {
+		return fmt.Errorf("Stalwart could not remove the domain's DKIM keys: %s", jmapError(args))
+	}
+	var result struct {
+		NotDestroyed map[string]json.RawMessage `json:"notDestroyed"`
+	}
+	if err := json.Unmarshal(args, &result); err != nil {
+		return fmt.Errorf("decode Stalwart DKIM deletion: %w", err)
+	}
+	for _, detail := range result.NotDestroyed {
+		return fmt.Errorf("Stalwart could not remove the domain's DKIM keys: %s", jmapError(detail))
 	}
 	return nil
 }

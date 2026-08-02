@@ -31,3 +31,13 @@ export async function api(path, options = {}) {
   if (response.status === 401) { currentUser.set(null); location.href = '/login'; throw new Error('Authentication required'); }
   return response;
 }
+
+export async function readAPIJSON(response) {
+  const body = await response.text();
+  try {
+    return JSON.parse(body);
+  } catch {
+    const status = response.status ? ` (HTTP ${response.status})` : '';
+    throw new Error(`Dokyr returned an unexpected response${status}. Check the control-plane logs and try again.`);
+  }
+}

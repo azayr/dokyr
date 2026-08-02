@@ -79,6 +79,17 @@ func TestProvisionDomainCreatesThenFetchesDNSZone(t *testing.T) {
 		var body string
 		switch method {
 		case "x:Domain/set":
+			var arguments struct {
+				Create map[string]struct {
+					Aliases map[string]bool `json:"aliases"`
+				} `json:"create"`
+			}
+			if err := json.Unmarshal(payload.MethodCalls[0][1], &arguments); err != nil {
+				t.Fatalf("decode domain create arguments: %v", err)
+			}
+			if arguments.Create["dokyr"].Aliases == nil {
+				t.Fatal("domain aliases must be encoded as a Stalwart set object")
+			}
 			body = `{"methodResponses":[["x:Domain/set",{"created":{"dokyr":{"id":"dom1"}}},"create"]]}`
 		case "x:Domain/get":
 			body = `{"methodResponses":[["x:Domain/get",{"list":[{"dnsZoneFile":"$ORIGIN example.com.\n@ IN MX 10 mail.example.net.\n@ IN TXT \"v=spf1 mx -all\""}]},"get"]]}`
@@ -93,6 +104,49 @@ func TestProvisionDomainCreatesThenFetchesDNSZone(t *testing.T) {
 	}
 	if id != "dom1" || calls != 2 || len(records) != 2 {
 		t.Fatalf("id=%q calls=%d records=%#v", id, calls, records)
+	}
+}
+
+func TestDeleteDomainRemovesGeneratedDKIMKeysFirst(t *testing.T) {
+	methods := []string{}
+	gateway, err := New(Config{StalwartURL: "https://mail.example", StalwartAPIKey: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var payload struct {
+			MethodCalls [][]json.RawMessage `json:"methodCalls"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		var method string
+		_ = json.Unmarshal(payload.MethodCalls[0][0], &method)
+		methods = append(methods, method)
+		var body string
+		switch method {
+		case "x:DkimSignature/query":
+			body = `{"methodResponses":[["x:DkimSignature/query",{"ids":["key1","key2"]},"query-dkim"]]}`
+		case "x:DkimSignature/set":
+			body = `{"methodResponses":[["x:DkimSignature/set",{"destroyed":["key1","key2"]},"delete-dkim"]]}`
+		case "x:Domain/set":
+			body = `{"methodResponses":[["x:Domain/set",{"destroyed":["domain1"]},"delete"]]}`
+		default:
+			t.Fatalf("unexpected method %q", method)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewBufferString(body))}, nil
+	})}
+	if err := gateway.DeleteDomain(t.Context(), "domain1"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"x:DkimSignature/query", "x:DkimSignature/set", "x:Domain/set"}
+	if len(methods) != len(want) {
+		t.Fatalf("methods = %v, want %v", methods, want)
+	}
+	for index := range want {
+		if methods[index] != want[index] {
+			t.Fatalf("methods = %v, want %v", methods, want)
+		}
 	}
 }
 
