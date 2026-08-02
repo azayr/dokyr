@@ -174,6 +174,19 @@ func TestConfigureSMTPSubmissionPolicyScopesSenderDomain(t *testing.T) {
 				t.Fatalf("SMTP sender policy does not contain %q: %s", expected, encoded)
 			}
 		}
+		var arguments struct {
+			Update map[string]struct {
+				MustMatchSender struct {
+					Match map[string]json.RawMessage `json:"match"`
+				} `json:"mustMatchSender"`
+			} `json:"update"`
+		}
+		if err := json.Unmarshal(payload.MethodCalls[0][1], &arguments); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := arguments.Update["singleton"].MustMatchSender.Match["0"]; !ok {
+			t.Fatalf("SMTP sender policy must use Stalwart 0.16 keyed match shape: %s", encoded)
+		}
 		body := `{"methodResponses":[["x:MtaStageAuth/set",{"updated":{"singleton":null}},"configure-smtp-senders"]]}`
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewBufferString(body))}, nil
 	})}

@@ -240,7 +240,9 @@ func (g *Gateway) ConfigureSMTPSubmissionPolicy(ctx context.Context) error {
 	response, err := g.call(ctx, map[string]any{
 		"methodCalls": []any{[]any{"x:MtaStageAuth/set", map[string]any{"update": map[string]any{
 			"singleton": map[string]any{"mustMatchSender": map[string]any{
-				"match": []any{map[string]any{
+				// Stalwart 0.16 represents ordered expression matches as a
+				// numeric-keyed object. It rejects the newer array wire shape.
+				"match": map[string]any{"0": map[string]any{
 					"if":   "!is_empty(authenticated_as) && email_part(authenticated_as, 'domain') == sender_domain",
 					"then": "false",
 				}},
