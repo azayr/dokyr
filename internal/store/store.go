@@ -1843,6 +1843,34 @@ func (s *Store) Deployments(ctx context.Context, projectID string) ([]Deployment
 	}
 	return items, rows.Err()
 }
+
+// DashboardDeployments returns current service state rather than deployment
+// history. The history endpoints continue to use Deployments.
+func (s *Store) DashboardDeployments(ctx context.Context) ([]Deployment, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id,project_id,COALESCE(service_id,''),service_name,commit_sha,message,status,duration,created_at
+		FROM (
+			SELECT DISTINCT ON (project_id, COALESCE(service_id, service_name))
+				id,project_id,service_id,service_name,commit_sha,message,status,duration,created_at
+			FROM deployments
+			ORDER BY project_id, COALESCE(service_id, service_name), created_at DESC, id DESC
+		) latest
+		ORDER BY created_at DESC, id DESC
+		LIMIT 20`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Deployment{}
+	for rows.Next() {
+		var d Deployment
+		if err := rows.Scan(&d.ID, &d.ProjectID, &d.ServiceID, &d.ServiceName, &d.Commit, &d.Message, &d.Status, &d.Duration, &d.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, d)
+	}
+	return items, rows.Err()
+}
 func (s *Store) Deployment(ctx context.Context, id string) (Deployment, error) {
 	var d Deployment
 	err := s.db.QueryRowContext(ctx, "SELECT id,project_id,COALESCE(service_id,''),service_name,commit_sha,message,status,duration,created_at FROM deployments WHERE id=$1", id).Scan(&d.ID, &d.ProjectID, &d.ServiceID, &d.ServiceName, &d.Commit, &d.Message, &d.Status, &d.Duration, &d.CreatedAt)

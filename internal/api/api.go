@@ -1172,12 +1172,34 @@ func (a *API) dashboard(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
-	deployments, err := a.store.Deployments(r.Context(), "")
+	deployments, err := a.store.DashboardDeployments(r.Context())
 	if err != nil {
 		problem(w, err)
 		return
 	}
+	deployments = latestServiceDeployments(deployments)
 	write(w, 200, map[string]any{"projects": projects, "deployments": deployments, "docker": a.docker.Health(r.Context())})
+}
+
+// latestServiceDeployments keeps the dashboard focused on current service
+// state. Deployment history remains available from /api/deployments.
+func latestServiceDeployments(deployments []store.Deployment) []store.Deployment {
+	latest := make([]store.Deployment, 0, len(deployments))
+	seen := make(map[string]struct{}, len(deployments))
+	for _, deployment := range deployments {
+		serviceKey := deployment.ServiceID
+		if serviceKey == "" {
+			// Older deployments may predate service IDs. A service name is unique
+			// within its project, so it provides a stable compatibility key.
+			serviceKey = deployment.ProjectID + "\x00" + deployment.ServiceName
+		}
+		if _, exists := seen[serviceKey]; exists {
+			continue
+		}
+		seen[serviceKey] = struct{}{}
+		latest = append(latest, deployment)
+	}
+	return latest
 }
 func (a *API) projects(w http.ResponseWriter, r *http.Request) {
 	items, err := a.store.Projects(r.Context())

@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import QRCode from 'qrcode';
   import Shell from '$lib/components/Shell.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import { api, currentUser, currentPermissions, can, logout } from '$lib/auth.js';
@@ -25,6 +26,7 @@
 
   let setupSecret = '';
   let setupURI = '';
+  let setupQRCode = '';
   let confirmCode = '';
   let twoFactorBusy = false;
   let showDisableTwoFactor = false;
@@ -269,7 +271,13 @@
       const data = await request('/api/account/2fa/setup', { method: 'POST', body: '{}' });
       setupSecret = data.secret;
       setupURI = data.uri;
-      notice = 'Authenticator secret created. Verify one code to finish setup.';
+      setupQRCode = await QRCode.toDataURL(data.uri, {
+        width: 220,
+        margin: 2,
+        errorCorrectionLevel: 'M',
+        color: { dark: '#101828', light: '#ffffff' }
+      });
+      notice = 'Authenticator setup is ready. Scan the QR code, then verify one code to finish.';
     } catch (cause) {
       error = cause.message;
     } finally {
@@ -287,6 +295,7 @@
       confirmCode = '';
       setupSecret = '';
       setupURI = '';
+      setupQRCode = '';
       notice = data.message;
       toast.success('Two-factor authentication enabled');
       await loadSecurity();
@@ -434,9 +443,20 @@
               {/if}
             {:else if setupSecret}
               <div class="panel-body setup-flow">
-                <div class="step-copy"><span>1</span><div><b>Add Dokyr to your authenticator</b><p>Choose “enter a setup key,” then use the account email and secret below.</p></div></div>
-                <div class="secret-row"><code>{setupSecret}</code><button class="icon-copy" aria-label="Copy authenticator secret" onclick={() => copy(setupSecret, 'Authenticator secret')}><Icon name="copy" size={15} /></button></div>
-                <details><summary>Advanced: copy provisioning URI</summary><div class="secret-row uri"><code>{setupURI}</code><button class="icon-copy" aria-label="Copy provisioning URI" onclick={() => copy(setupURI, 'Provisioning URI')}><Icon name="copy" size={15} /></button></div></details>
+                <div class="step-copy"><span>1</span><div><b>Scan with your authenticator</b><p>In Google Authenticator or another TOTP app, tap the add button and choose “Scan a QR code.”</p></div></div>
+                <div class="authenticator-setup">
+                  <div class="qr-card">
+                    {#if setupQRCode}
+                      <img src={setupQRCode} alt="QR code for adding Dokyr to an authenticator app" width="220" height="220" />
+                    {/if}
+                  </div>
+                  <div class="manual-setup">
+                    <b>Can’t scan it?</b>
+                    <p>Enter this setup key manually. Keep it private—it can generate codes for your account.</p>
+                    <div class="secret-row"><code>{setupSecret}</code><button class="icon-copy" aria-label="Copy authenticator secret" onclick={() => copy(setupSecret, 'Authenticator secret')}><Icon name="copy" size={15} /></button></div>
+                    <details><summary>Advanced: copy provisioning URI</summary><div class="secret-row uri"><code>{setupURI}</code><button class="icon-copy" aria-label="Copy provisioning URI" onclick={() => copy(setupURI, 'Provisioning URI')}><Icon name="copy" size={15} /></button></div></details>
+                  </div>
+                </div>
                 <div class="step-copy"><span>2</span><div><b>Verify the connection</b><p>Enter the six-digit code currently shown by your authenticator.</p></div></div>
                 <form class="verify-row" onsubmit={(event) => { event.preventDefault(); confirmTwoFactor(); }}>
                   <label class="field"><span>Authentication code</span><input class="input input-mono" bind:value={confirmCode} inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" required /></label>
@@ -863,6 +883,44 @@
     font-size: var(--text-sm);
     line-height: 1.5;
   }
+  .authenticator-setup {
+    display: grid;
+    grid-template-columns: 244px minmax(0, 1fr);
+    gap: var(--space-5);
+    align-items: center;
+    padding: var(--space-4);
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--color-paper-raised) 94%, var(--color-accent) 6%);
+  }
+  .qr-card {
+    width: 244px;
+    height: 244px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-md);
+    background: #fff;
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--color-ink) 8%, transparent);
+  }
+  .qr-card img {
+    display: block;
+    image-rendering: pixelated;
+  }
+  .manual-setup {
+    min-width: 0;
+    display: grid;
+    gap: var(--space-3);
+  }
+  .manual-setup > b {
+    font-size: var(--text-sm);
+  }
+  .manual-setup > p {
+    margin: calc(-1 * var(--space-2)) 0 0;
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+  }
   .secret-row {
     padding: var(--space-3);
     display: grid;
@@ -1211,6 +1269,19 @@
     .verify-row,
     .smtp-test {
       grid-template-columns: 1fr;
+    }
+    .authenticator-setup {
+      grid-template-columns: 1fr;
+    }
+    .qr-card {
+      width: min(244px, 100%);
+      height: auto;
+      aspect-ratio: 1;
+      justify-self: center;
+    }
+    .qr-card img {
+      width: min(220px, calc(100% - 24px));
+      height: auto;
     }
   }
 </style>
