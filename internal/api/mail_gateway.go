@@ -21,7 +21,7 @@ import (
 func (a *API) mailOverview(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.FromContext(r.Context())
 	mailSettings, settingsErr := a.store.MailServerSettings(r.Context())
-	mailSetup := settingsErr == nil
+	mailSetup := settingsErr == nil && mailSettings.Hostname != "" && mailSettings.ACMEProviderID != "" && mailSettings.StalwartDomainID != ""
 	if settingsErr != nil && !store.NotFound(settingsErr) {
 		problem(w, settingsErr)
 		return
@@ -55,20 +55,28 @@ func (a *API) mailOverview(w http.ResponseWriter, r *http.Request) {
 		"stalwartConnected":  stalwartConnected,
 		"deliveryConfigured": (stalwartConnected && a.mailGateway.ManagedDelivery()) || (smtpErr == nil && smtpSettings.Enabled && smtpConfigured(smtpSettings)),
 		"mailSetup":          mailSetup,
+		"mailServerDomain":   mailSettings.DomainName,
 		"mailServerHostname": mailSettings.Hostname,
+		"smtpPort":           465,
+		"smtpEncryption":     "TLS",
 	})
 }
 
 func (a *API) updateMailSetup(w http.ResponseWriter, r *http.Request) {
 	var input struct {
+		Domain   string `json:"domain"`
 		Hostname string `json:"hostname"`
 	}
 	if !decode(w, r, &input) {
 		return
 	}
-	hostname := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(input.Hostname), "."))
-	if !mailgateway.ValidPublicHostname(hostname) {
-		bad(w, "enter a public mail server hostname such as mail.example.com")
+	domainName := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(input.Domain), "."))
+	if domainName == "" && strings.TrimSpace(input.Hostname) != "" {
+		domainName = mailgateway.DomainForServerHostname(input.Hostname)
+	}
+	hostname, hostnameErr := mailgateway.ServerHostnameForDomain(domainName)
+	if hostnameErr != nil {
+		bad(w, hostnameErr.Error())
 		return
 	}
 	if a.mailGateway == nil || !a.mailGateway.Configured() {
@@ -77,6 +85,19 @@ func (a *API) updateMailSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mailMu.Lock()
 	defer a.mailMu.Unlock()
+	currentSettings, currentErr := a.store.MailServerSettings(r.Context())
+	if currentErr != nil && !store.NotFound(currentErr) {
+		problem(w, currentErr)
+		return
+	}
+	if err := a.caddy.SetMailHostname(hostname); err != nil {
+		write(w, http.StatusBadGateway, map[string]string{"error": "mail hostname routing failed: " + err.Error()})
+		return
+	}
+	if err := a.SyncDomains(r.Context()); err != nil {
+		write(w, http.StatusBadGateway, map[string]string{"error": "mail hostname routing failed: " + err.Error()})
+		return
+	}
 	setupContext, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	restart, err := a.mailGateway.ConfigureServer(setupContext, hostname)
 	cancel()
@@ -97,8 +118,29 @@ func (a *API) updateMailSetup(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart was configured but did not become ready: " + err.Error()})
 		return
 	}
+	policyContext, policyCancel := context.WithTimeout(r.Context(), 15*time.Second)
+	policyErr := a.mailGateway.ConfigureSMTPSubmissionPolicy(policyContext)
+	policyCancel()
+	if policyErr != nil {
+		write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart SMTP policy setup failed: " + policyErr.Error()})
+		return
+	}
 	claims, _ := auth.FromContext(r.Context())
-	settings := store.MailServerSettings{Hostname: hostname, CreatedBy: claims.Subject}
+	owner, ownerErr := a.store.User(r.Context(), claims.Subject)
+	if ownerErr != nil {
+		problem(w, ownerErr)
+		return
+	}
+	tlsContext, tlsCancel := context.WithTimeout(r.Context(), 30*time.Second)
+	acmeProviderID, stalwartDomainID, tlsErr := a.mailGateway.ConfigurePublicTLS(tlsContext, hostname, owner.Email,
+		currentSettings.ACMEProviderID, currentSettings.StalwartDomainID)
+	tlsCancel()
+	if tlsErr != nil {
+		write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart TLS setup failed: " + tlsErr.Error()})
+		return
+	}
+	settings := store.MailServerSettings{DomainName: domainName, Hostname: hostname, ACMEProviderID: acmeProviderID,
+		StalwartDomainID: stalwartDomainID, CreatedBy: claims.Subject}
 	if err := a.store.UpsertMailServerSettings(r.Context(), settings); err != nil {
 		problem(w, err)
 		return
@@ -213,6 +255,20 @@ func (a *API) verifyMailDomain(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
+	if domain.StalwartID != "" && !mailRecordsIncludeDKIM(domain.Records) && a.mailGateway != nil && a.mailGateway.Configured() {
+		records, recordErr := a.mailGateway.DomainRecords(r.Context(), domain.StalwartID, domain.Name)
+		if recordErr == nil && mailRecordsIncludeDKIM(records) {
+			if err := a.store.ReplaceMailDNSRecords(r.Context(), domain.ID, records); err != nil {
+				problem(w, err)
+				return
+			}
+			domain, err = a.store.MailDomain(r.Context(), domain.ID, claims.Subject)
+			if err != nil {
+				problem(w, err)
+				return
+			}
+		}
+	}
 
 	ownershipVerified := false
 	for _, record := range domain.Records {
@@ -311,6 +367,15 @@ func (a *API) deleteMailDomain(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 
+func mailRecordsIncludeDKIM(records []store.MailDNSRecord) bool {
+	for _, record := range records {
+		if record.Purpose == "DKIM" {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *API) createMailAPIKey(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Name     string `json:"name"`
@@ -345,9 +410,22 @@ func (a *API) createMailAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	secret = "dkr_mail_" + secret
 	sum := sha256.Sum256([]byte(secret))
-	key := store.MailAPIKey{ID: newID("mak"), UserID: claims.Subject, DomainID: domain.ID, DomainName: domain.Name,
-		Name: input.Name, TokenHash: hex.EncodeToString(sum[:]), TokenPrefix: secret[:16], CreatedAt: time.Now().UTC()}
+	keyID := newID("mak")
+	smtpUsername := "smtp-" + strings.TrimPrefix(keyID, "mak_") + "@" + domain.Name
+	if a.mailGateway == nil || !a.mailGateway.Configured() || domain.StalwartID == "" {
+		write(w, http.StatusServiceUnavailable, map[string]string{"error": "Stalwart is not ready to issue SMTP credentials"})
+		return
+	}
+	accountID, err := a.mailGateway.ProvisionSMTPKey(r.Context(), domain.StalwartID, smtpUsername, secret)
+	if err != nil {
+		write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart could not create the SMTP credential: " + err.Error()})
+		return
+	}
+	key := store.MailAPIKey{ID: keyID, UserID: claims.Subject, DomainID: domain.ID, DomainName: domain.Name,
+		Name: input.Name, TokenHash: hex.EncodeToString(sum[:]), TokenPrefix: secret[:16], SMTPUsername: smtpUsername,
+		StalwartAccountID: accountID, CreatedAt: time.Now().UTC()}
 	if err := a.store.CreateMailAPIKey(r.Context(), key); err != nil {
+		_ = a.mailGateway.DeleteAccount(context.Background(), accountID)
 		problem(w, err)
 		return
 	}
@@ -356,10 +434,21 @@ func (a *API) createMailAPIKey(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) deleteMailAPIKey(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.FromContext(r.Context())
-	if err := a.store.DeleteMailAPIKey(r.Context(), strings.TrimSpace(r.PathValue("id")), claims.Subject); store.NotFound(err) {
+	key, err := a.store.MailAPIKey(r.Context(), strings.TrimSpace(r.PathValue("id")), claims.Subject)
+	if store.NotFound(err) {
 		write(w, http.StatusNotFound, map[string]string{"error": "mail API key not found"})
 		return
 	} else if err != nil {
+		problem(w, err)
+		return
+	}
+	if key.StalwartAccountID != "" && a.mailGateway != nil {
+		if err := a.mailGateway.DeleteAccount(r.Context(), key.StalwartAccountID); err != nil {
+			write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart could not revoke the SMTP credential: " + err.Error()})
+			return
+		}
+	}
+	if err := a.store.DeleteMailAPIKey(r.Context(), key.ID, claims.Subject); err != nil {
 		problem(w, err)
 		return
 	}
@@ -458,11 +547,11 @@ func (a *API) sendDeveloperEmail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := a.store.CompleteMailMessage(r.Context(), message.ID, "sent", ""); err != nil {
+	if err := a.store.CompleteMailMessage(r.Context(), message.ID, "queued", ""); err != nil {
 		problem(w, err)
 		return
 	}
-	write(w, http.StatusCreated, map[string]any{"id": message.ID, "status": "sent"})
+	write(w, http.StatusCreated, map[string]any{"id": message.ID, "status": "queued"})
 }
 
 func randomMailSecret(size int) (string, error) {

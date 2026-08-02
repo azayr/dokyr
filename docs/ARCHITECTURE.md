@@ -19,7 +19,7 @@ The current release can:
 - assign a domain to an application through Caddy;
 - configure each application's private container port and choose HTTP-only or automatic HTTPS ingress;
 - manage domains and service routes, and safely validate/apply or reset runtime Caddyfile overrides from the Domains screen;
-- verify developer-owned mail domains, provision them in bundled Stalwart, issue domain-scoped API keys, and submit transactional email;
+- configure a public `mail.{domain}` Stalwart endpoint, verify developer-owned sending domains, and issue domain-scoped credentials that work as both SMTP passwords and HTTP API tokens;
 - save encrypted environment variables and recreate the container without pulling or rebuilding its image;
 - create private-by-default MySQL, MariaDB, and PostgreSQL services with persistent volumes;
 - optionally publish a database on an explicitly selected host port.

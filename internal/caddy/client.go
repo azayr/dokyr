@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -32,10 +33,12 @@ type PathRoute struct {
 }
 
 type Client struct {
+	mu              sync.RWMutex
 	adminURL        string
 	controlUpstream string
 	controlHosts    []string
 	registryHosts   []string
+	mailHostname    string
 	http            *http.Client
 }
 
@@ -176,7 +179,27 @@ func (c *Client) Apply(ctx context.Context, routes []Route) error {
 }
 
 func (c *Client) Render(routes []Route) string {
-	return render(routes, c.controlHosts, c.registryHosts, c.controlUpstream)
+	c.mu.RLock()
+	mailHostname := c.mailHostname
+	c.mu.RUnlock()
+	return render(routes, c.controlHosts, c.registryHosts, c.controlUpstream, mailHostname)
+}
+
+// SetMailHostname reserves the public mail hostname and exposes only
+// Stalwart's HTTP-01 ACME challenge path through Caddy's port 80 listener.
+func (c *Client) SetMailHostname(hostname string) error {
+	hostname = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(hostname)), ".")
+	if hostname != "" {
+		var err error
+		hostname, err = NormalizeDomain(hostname)
+		if err != nil {
+			return fmt.Errorf("mail hostname: %w", err)
+		}
+	}
+	c.mu.Lock()
+	c.mailHostname = hostname
+	c.mu.Unlock()
+	return nil
 }
 
 func (c *Client) ControlUpstream() string {
@@ -204,6 +227,12 @@ func (c *Client) IsControlHost(domain string) bool {
 		if strings.TrimSuffix(strings.ToLower(host), ".") == domain {
 			return true
 		}
+	}
+	c.mu.RLock()
+	mailHostname := c.mailHostname
+	c.mu.RUnlock()
+	if mailHostname != "" && mailHostname == domain {
+		return true
 	}
 	return false
 }
@@ -253,7 +282,7 @@ func (c *Client) ApplyRaw(ctx context.Context, body string) error {
 	return fmt.Errorf("Caddy rejected configuration (%s): %s", res.Status, strings.TrimSpace(string(message)))
 }
 
-func render(routes []Route, controlHosts []string, registryHosts []string, controlUpstream string) string {
+func render(routes []Route, controlHosts []string, registryHosts []string, controlUpstream, mailHostname string) string {
 	sorted := append([]Route(nil), routes...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Domain < sorted[j].Domain })
 	// Drop any route that claims a control hostname. Callers reject these when
@@ -263,6 +292,9 @@ func render(routes []Route, controlHosts []string, registryHosts []string, contr
 	control := make(map[string]bool, len(controlHosts))
 	for _, host := range controlHosts {
 		control[strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")] = true
+	}
+	if mailHostname != "" {
+		control[strings.TrimSuffix(strings.ToLower(strings.TrimSpace(mailHostname)), ".")] = true
 	}
 	kept := sorted[:0]
 	for _, route := range sorted {
@@ -286,6 +318,9 @@ func render(routes []Route, controlHosts []string, registryHosts []string, contr
 	// even if a project somehow holds one of its hostnames.
 	fmt.Fprintf(&body, "\t@controlIP header_regexp Host \"^(?:[0-9]{1,3}[.]){3}[0-9]{1,3}(?::[0-9]+)?$\"\n\thandle @controlIP {\n\t\treverse_proxy %s\n\t}\n", controlUpstream)
 	fmt.Fprintf(&body, "\t@control host %s\n\thandle @control {\n\t\treverse_proxy %s\n\t}\n", strings.Join(controlHosts, " "), controlUpstream)
+	if mailHostname != "" {
+		fmt.Fprintf(&body, "\t@mailAcme host %s\n\thandle @mailAcme {\n\t\thandle /.well-known/acme-challenge/* {\n\t\t\treverse_proxy stalwart:8080\n\t\t}\n\t\thandle {\n\t\t\trespond \"Not Found\" 404\n\t\t}\n\t}\n", mailHostname)
+	}
 	for index, route := range sorted {
 		fmt.Fprintf(&body, "\t@project%d host %s\n\thandle @project%d {\n", index, route.Domain, index)
 		if route.HTTPS {

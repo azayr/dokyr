@@ -118,7 +118,9 @@ func main() {
 		log.Error("read mail server settings", "error", settingsErr)
 		os.Exit(1)
 	} else if mailgateway.ValidPublicHostname(cfg.MailStalwartHostname) {
-		_, createErr := db.CreateMailServerSettingsIfMissing(context.Background(), store.MailServerSettings{Hostname: cfg.MailStalwartHostname})
+		_, createErr := db.CreateMailServerSettingsIfMissing(context.Background(), store.MailServerSettings{
+			DomainName: mailgateway.DomainForServerHostname(cfg.MailStalwartHostname), Hostname: cfg.MailStalwartHostname,
+		})
 		if createErr != nil {
 			log.Error("import mail server hostname", "error", createErr)
 			os.Exit(1)
@@ -128,6 +130,12 @@ func main() {
 	} else {
 		cfg.MailStalwartHostname = ""
 		cfg.MailStalwartDefaultDomain = ""
+	}
+	if mailSetup {
+		if err := caddyClient.SetMailHostname(cfg.MailStalwartHostname); err != nil {
+			log.Error("configure mail hostname route", "error", err)
+			os.Exit(1)
+		}
 	}
 	mailGateway, err := mailgateway.New(mailgateway.Config{
 		StalwartURL: cfg.MailStalwartURL, StalwartAPIKey: cfg.MailStalwartAPIKey,

@@ -38,15 +38,17 @@ type MailDNSRecord struct {
 }
 
 type MailAPIKey struct {
-	ID          string     `json:"id"`
-	UserID      string     `json:"-"`
-	DomainID    string     `json:"domainId"`
-	DomainName  string     `json:"domainName,omitempty"`
-	Name        string     `json:"name"`
-	TokenHash   string     `json:"-"`
-	TokenPrefix string     `json:"prefix"`
-	LastUsedAt  *time.Time `json:"lastUsedAt"`
-	CreatedAt   time.Time  `json:"createdAt"`
+	ID                string     `json:"id"`
+	UserID            string     `json:"-"`
+	DomainID          string     `json:"domainId"`
+	DomainName        string     `json:"domainName,omitempty"`
+	Name              string     `json:"name"`
+	TokenHash         string     `json:"-"`
+	TokenPrefix       string     `json:"prefix"`
+	SMTPUsername      string     `json:"smtpUsername,omitempty"`
+	StalwartAccountID string     `json:"-"`
+	LastUsedAt        *time.Time `json:"lastUsedAt"`
+	CreatedAt         time.Time  `json:"createdAt"`
 }
 
 type MailMessage struct {
@@ -64,16 +66,21 @@ type MailMessage struct {
 }
 
 type MailServerSettings struct {
-	Hostname  string    `json:"hostname"`
-	CreatedBy string    `json:"-"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	DomainName       string    `json:"domain"`
+	Hostname         string    `json:"hostname"`
+	ACMEProviderID   string    `json:"-"`
+	StalwartDomainID string    `json:"-"`
+	CreatedBy        string    `json:"-"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 func (s *Store) MailServerSettings(ctx context.Context) (MailServerSettings, error) {
 	var settings MailServerSettings
-	err := s.db.QueryRowContext(ctx, `SELECT hostname,COALESCE(created_by,''),created_at,updated_at
-		FROM mail_server_settings WHERE singleton=TRUE`).Scan(&settings.Hostname, &settings.CreatedBy, &settings.CreatedAt, &settings.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT domain_name,hostname,acme_provider_id,stalwart_domain_id,
+		COALESCE(created_by,''),created_at,updated_at FROM mail_server_settings WHERE singleton=TRUE`).
+		Scan(&settings.DomainName, &settings.Hostname, &settings.ACMEProviderID, &settings.StalwartDomainID,
+			&settings.CreatedBy, &settings.CreatedAt, &settings.UpdatedAt)
 	return settings, err
 }
 
@@ -82,9 +89,11 @@ func (s *Store) UpsertMailServerSettings(ctx context.Context, settings MailServe
 	if settings.CreatedBy != "" {
 		createdBy = settings.CreatedBy
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO mail_server_settings(singleton,hostname,created_by)
-		VALUES(TRUE,LOWER($1),$2) ON CONFLICT(singleton) DO UPDATE SET hostname=EXCLUDED.hostname,
-		created_by=COALESCE(mail_server_settings.created_by,EXCLUDED.created_by),updated_at=NOW()`, settings.Hostname, createdBy)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO mail_server_settings(singleton,domain_name,hostname,acme_provider_id,stalwart_domain_id,created_by)
+		VALUES(TRUE,LOWER($1),LOWER($2),$3,$4,$5) ON CONFLICT(singleton) DO UPDATE SET domain_name=EXCLUDED.domain_name,
+		hostname=EXCLUDED.hostname,acme_provider_id=EXCLUDED.acme_provider_id,stalwart_domain_id=EXCLUDED.stalwart_domain_id,
+		created_by=COALESCE(mail_server_settings.created_by,EXCLUDED.created_by),updated_at=NOW()`, settings.DomainName,
+		settings.Hostname, settings.ACMEProviderID, settings.StalwartDomainID, createdBy)
 	return err
 }
 
@@ -96,8 +105,8 @@ func (s *Store) CreateMailServerSettingsIfMissing(ctx context.Context, settings 
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO mail_server_settings(singleton,hostname) VALUES(TRUE,LOWER($1))
-		ON CONFLICT(singleton) DO NOTHING`, settings.Hostname)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO mail_server_settings(singleton,domain_name,hostname) VALUES(TRUE,LOWER($1),LOWER($2))
+		ON CONFLICT(singleton) DO NOTHING`, settings.DomainName, settings.Hostname)
 	if err != nil {
 		return false, err
 	}
@@ -270,7 +279,8 @@ func (s *Store) DeleteMailDomain(ctx context.Context, id, userID string) error {
 }
 
 func (s *Store) MailAPIKeys(ctx context.Context, userID string) ([]MailAPIKey, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT key.id,key.user_id,key.domain_id,domain.name,key.name,key.token_prefix,key.last_used_at,key.created_at
+	rows, err := s.db.QueryContext(ctx, `SELECT key.id,key.user_id,key.domain_id,domain.name,key.name,key.token_prefix,
+		key.smtp_username,key.stalwart_account_id,key.last_used_at,key.created_at
 		FROM mail_api_keys key JOIN mail_domains domain ON domain.id=key.domain_id WHERE key.user_id=$1 ORDER BY key.created_at DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -279,7 +289,8 @@ func (s *Store) MailAPIKeys(ctx context.Context, userID string) ([]MailAPIKey, e
 	keys := []MailAPIKey{}
 	for rows.Next() {
 		var key MailAPIKey
-		if err := rows.Scan(&key.ID, &key.UserID, &key.DomainID, &key.DomainName, &key.Name, &key.TokenPrefix, &key.LastUsedAt, &key.CreatedAt); err != nil {
+		if err := rows.Scan(&key.ID, &key.UserID, &key.DomainID, &key.DomainName, &key.Name, &key.TokenPrefix,
+			&key.SMTPUsername, &key.StalwartAccountID, &key.LastUsedAt, &key.CreatedAt); err != nil {
 			return nil, err
 		}
 		keys = append(keys, key)
@@ -288,9 +299,20 @@ func (s *Store) MailAPIKeys(ctx context.Context, userID string) ([]MailAPIKey, e
 }
 
 func (s *Store) CreateMailAPIKey(ctx context.Context, key MailAPIKey) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO mail_api_keys(id,user_id,domain_id,name,token_hash,token_prefix) VALUES($1,$2,$3,$4,$5,$6)`,
-		key.ID, key.UserID, key.DomainID, key.Name, key.TokenHash, key.TokenPrefix)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO mail_api_keys(id,user_id,domain_id,name,token_hash,token_prefix,smtp_username,stalwart_account_id)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, key.ID, key.UserID, key.DomainID, key.Name, key.TokenHash, key.TokenPrefix,
+		key.SMTPUsername, key.StalwartAccountID)
 	return err
+}
+
+func (s *Store) MailAPIKey(ctx context.Context, id, userID string) (MailAPIKey, error) {
+	var key MailAPIKey
+	err := s.db.QueryRowContext(ctx, `SELECT key.id,key.user_id,key.domain_id,domain.name,key.name,key.token_hash,key.token_prefix,
+		key.smtp_username,key.stalwart_account_id,key.last_used_at,key.created_at FROM mail_api_keys key
+		JOIN mail_domains domain ON domain.id=key.domain_id WHERE key.id=$1 AND key.user_id=$2`, id, userID).
+		Scan(&key.ID, &key.UserID, &key.DomainID, &key.DomainName, &key.Name, &key.TokenHash, &key.TokenPrefix,
+			&key.SMTPUsername, &key.StalwartAccountID, &key.LastUsedAt, &key.CreatedAt)
+	return key, err
 }
 
 func (s *Store) DeleteMailAPIKey(ctx context.Context, id, userID string) error {
@@ -313,10 +335,12 @@ func (s *Store) MailDomainByAPIKey(ctx context.Context, tokenHash string) (MailA
 	var domain MailDomain
 	err := s.db.QueryRowContext(ctx, `UPDATE mail_api_keys AS key SET last_used_at=NOW()
 		FROM mail_domains AS domain WHERE key.token_hash=$1 AND key.domain_id=domain.id
-		RETURNING key.id,key.user_id,key.domain_id,key.name,key.token_hash,key.token_prefix,key.last_used_at,key.created_at,
+		RETURNING key.id,key.user_id,key.domain_id,key.name,key.token_hash,key.token_prefix,key.smtp_username,
+			key.stalwart_account_id,key.last_used_at,key.created_at,
 			domain.id,domain.user_id,domain.name,domain.status,domain.ownership_token,domain.stalwart_id,domain.last_error,
 			domain.last_checked_at,domain.verified_at,domain.created_at,domain.updated_at`, tokenHash).
-		Scan(&key.ID, &key.UserID, &key.DomainID, &key.Name, &key.TokenHash, &key.TokenPrefix, &key.LastUsedAt, &key.CreatedAt,
+		Scan(&key.ID, &key.UserID, &key.DomainID, &key.Name, &key.TokenHash, &key.TokenPrefix, &key.SMTPUsername,
+			&key.StalwartAccountID, &key.LastUsedAt, &key.CreatedAt,
 			&domain.ID, &domain.UserID, &domain.Name, &domain.Status, &domain.OwnershipToken, &domain.StalwartID,
 			&domain.LastError, &domain.LastCheckedAt, &domain.VerifiedAt, &domain.CreatedAt, &domain.UpdatedAt)
 	return key, domain, err
@@ -334,7 +358,8 @@ func (s *Store) CreateMailMessage(ctx context.Context, message MailMessage) erro
 }
 
 func (s *Store) CompleteMailMessage(ctx context.Context, id, status, messageError string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE mail_messages SET status=$2,error=$3,sent_at=CASE WHEN $2='sent' THEN NOW() ELSE NULL END WHERE id=$1`, id, status, messageError)
+	_, err := s.db.ExecContext(ctx, `UPDATE mail_messages SET status=$2,error=$3,
+		sent_at=CASE WHEN $2 IN ('queued','delivered') THEN NOW() ELSE NULL END WHERE id=$1`, id, status, messageError)
 	return err
 }
 

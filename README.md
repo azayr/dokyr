@@ -179,20 +179,64 @@ Use a dedicated sending subdomain such as `updates.example.com` for the first
 release. Stalwart generates DNS for the exact domain it manages, so using the
 apex domain can overlap with an existing mailbox provider's MX and SPF records.
 
-After every required record is verified, the developer can create a one-time,
-domain-scoped API key and send with `POST /v1/emails`. The key may send only
-from its verified domain. Dokyr creates the corresponding Stalwart sender
-identity on first use and submits over the private container network; neither
-the management nor relay credential is exposed to developers. **Settings →
-SMTP** remains separate and controls Dokyr's own deployment notifications.
+On the first visit to **Infrastructure → Mail**, the platform owner enters the
+Dokyr installation domain, for example `example.com`. Dokyr uses
+`mail.example.com` as the public Stalwart hostname and enables an HTTP-01 Let's
+Encrypt certificate for its mail listeners. Add a DNS-only A/AAAA record for
+that hostname before setup and configure matching PTR (reverse DNS) with the
+VPS provider.
 
-For production, configure a hostname such as `mail.example.com` from
-**Infrastructure → Mail**, point its A/AAAA records at the VPS, configure matching PTR
-(reverse DNS) with the provider, and allow inbound TCP ports 25, 465, 993, 995,
-and 4190. Some VPS providers block port 25 by default. Caddy already owns host
-port 443, so Stalwart starts with automatic certificate requests disabled; add
-a trusted certificate in Stalwart before exposing IMAPS or submission to mail
-clients. Server-to-server SMTP on port 25 continues to use opportunistic TLS.
+After every required sending record is verified, the developer creates a
+one-time, domain-scoped mail credential. Dokyr provisions a unique Stalwart
+SMTP username and uses the `dkr_mail_…` secret as both its SMTP password and the
+bearer token for `POST /v1/emails`. The credential may send only from its
+verified domain. Credentials created by an older Dokyr release remain HTTP-only
+and must be recreated to enable SMTP. **Settings → SMTP** remains separate and
+controls Dokyr's own deployment notifications.
+
+The API-key secret is shown only once. Save it when the key is created, then
+send a first message by replacing the Dokyr URL, key, sender domain, and
+recipient below:
+
+```bash
+curl -X POST 'https://console.example.com/v1/emails' \
+  -H 'Authorization: Bearer dkr_mail_YOUR_FULL_API_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "from": "Dokyr Test <hello@updates.example.com>",
+    "to": ["developer@example.com"],
+    "subject": "Hello from Dokyr",
+    "html": "<strong>Your first Dokyr email works.</strong>",
+    "text": "Your first Dokyr email works."
+  }'
+```
+
+A successful request returns `{"id":"mail_…","status":"queued"}` and appears
+under **Infrastructure → Mail → Activity**. Queued means Stalwart accepted the
+message; it does not prove that the recipient provider delivered it. The sender
+address must use the verified domain attached to the credential.
+
+Applications can instead submit directly over SMTP using the values shown when
+the credential is created:
+
+```dotenv
+SMTP_HOST=mail.example.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USERNAME=smtp-generated-id@updates.example.com
+SMTP_PASSWORD=dkr_mail_YOUR_FULL_API_KEY
+SMTP_FROM=hello@updates.example.com
+```
+
+Port 465 uses implicit TLS. Do not use the Dokyr login email as the SMTP
+username; use the generated username shown beside the credential.
+
+For production, allow inbound TCP ports 25 and 465 (plus 993, 995, and 4190
+only when exposing mailbox protocols). Port 80 must be reachable for ACME
+HTTP-01; Caddy forwards only the mail hostname's challenge path to Stalwart.
+Some VPS providers block port 25 by default. The mail A/AAAA record must not be
+HTTP-proxied by a DNS provider. Server-to-server SMTP on port 25 continues to
+use opportunistic TLS.
 
 An external Stalwart installation remains supported by overriding
 `MAIL_STALWART_URL` and `MAIL_STALWART_API_KEY`, clearing the bundled Basic

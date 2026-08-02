@@ -356,15 +356,32 @@ Authenticated workspace endpoints:
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/mail` | Current user's domains, keys, recent messages, and connection readiness |
+| `GET` | `/api/mail` | Current user's domains, credentials, recent messages, and connection readiness |
+| `PUT` | `/api/mail/setup` | One-time setup with `{ "domain": "example.com" }`; configures `mail.example.com` |
 | `POST` | `/api/mail/domains` | Add `{ "name": "example.com" }` and generate an ownership record |
 | `POST` | `/api/mail/domains/{id}/verify` | Check public DNS and provision the owned domain in Stalwart |
 | `DELETE` | `/api/mail/domains/{id}` | Remove the domain, its scoped keys, and Stalwart domain |
 | `POST` | `/api/mail/api-keys` | Create `{ "name": "Production", "domainId": "mdom_…" }` |
 | `DELETE` | `/api/mail/api-keys/{id}` | Revoke a sending key |
 
-The API-key secret is returned only by the create response. Send email through
-the public developer endpoint with that secret as a bearer token:
+The secret and generated `smtpUsername` are returned only by the create
+response. The same secret works as an HTTP bearer token and as the SMTP
+password. Send through the public developer endpoint with:
+
+```bash
+curl -X POST 'https://console.example.com/v1/emails' \
+  -H 'Authorization: Bearer dkr_mail_YOUR_FULL_API_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "from": "Dokyr Test <hello@updates.example.com>",
+    "to": ["developer@example.com"],
+    "subject": "Hello from Dokyr",
+    "html": "<strong>Your first Dokyr email works.</strong>",
+    "text": "Your first Dokyr email works."
+  }'
+```
+
+The same request without a shell wrapper is:
 
 ```http
 POST /v1/emails
@@ -384,9 +401,26 @@ Content-Type: application/json
 ```
 
 The `from` address must belong to the verified domain attached to the key. A
-request accepts 1–50 recipients and at least one of `html` or `text`. The MVP
-sends synchronously and returns `{ "id": "mail_…", "status": "sent" }` after
-SMTP accepts every recipient.
+request accepts 1–50 recipients and at least one of `html` or `text`. Dokyr
+returns `{ "id": "mail_…", "status": "queued" }` after Stalwart accepts every
+recipient. Queued is not confirmation of final recipient delivery.
+
+For SMTP submission, use the public mail hostname configured during first-time
+setup, implicit TLS on port 465, the returned `smtpUsername`, and the same
+one-time secret as the password:
+
+```dotenv
+SMTP_HOST=mail.example.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USERNAME=smtp-generated-id@updates.example.com
+SMTP_PASSWORD=dkr_mail_YOUR_FULL_API_KEY
+SMTP_FROM=hello@updates.example.com
+```
+
+An SMTP credential is scoped to its verified domain. Credentials created
+before SMTP credential provisioning was introduced have no `smtpUsername` and
+must be recreated for SMTP use.
 
 ## Dashboard, projects, and domains
 

@@ -117,6 +117,22 @@ func ValidPublicHostname(value string) bool {
 	return true
 }
 
+func ServerHostnameForDomain(domain string) (string, error) {
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if !ValidPublicHostname(domain) {
+		return "", errors.New("enter a public domain such as example.com")
+	}
+	return "mail." + domain, nil
+}
+
+func DomainForServerHostname(hostname string) string {
+	hostname = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hostname), "."))
+	if strings.HasPrefix(hostname, "mail.") && len(hostname) > len("mail.") {
+		return strings.TrimPrefix(hostname, "mail.")
+	}
+	return hostname
+}
+
 func (g *Gateway) ConfigureServer(ctx context.Context, hostname string) (bool, error) {
 	hostname = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hostname), "."))
 	if !ValidPublicHostname(hostname) {
@@ -160,6 +176,223 @@ func (g *Gateway) ConfigureServer(ctx context.Context, hostname string) (bool, e
 		return false, errors.New("Stalwart did not confirm its hostname")
 	}
 	return false, nil
+}
+
+// ConfigureSMTPSubmissionPolicy allows a domain-scoped credential to use any
+// sender local-part within its own domain. Stalwart still rejects cross-domain
+// spoofing because the authenticated identity's domain must match MAIL FROM.
+func (g *Gateway) ConfigureSMTPSubmissionPolicy(ctx context.Context) error {
+	response, err := g.call(ctx, map[string]any{
+		"methodCalls": []any{[]any{"x:MtaStageAuth/set", map[string]any{"update": map[string]any{
+			"singleton": map[string]any{"mustMatchSender": map[string]any{
+				"match": []any{map[string]any{
+					"if":   "!is_empty(authenticated_as) && email_part(authenticated_as, 'domain') == sender_domain",
+					"then": "false",
+				}},
+				"else": "true",
+			}},
+		}}, "configure-smtp-senders"}},
+		"using": []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+	})
+	if err != nil {
+		return err
+	}
+	args, method, err := firstMethodResponse(response)
+	if err != nil {
+		return err
+	}
+	if method == "error" {
+		return fmt.Errorf("Stalwart could not configure SMTP sender authorization: %s", jmapError(args))
+	}
+	var result struct {
+		Updated    map[string]json.RawMessage `json:"updated"`
+		NotUpdated map[string]json.RawMessage `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(args, &result); err != nil {
+		return fmt.Errorf("decode Stalwart SMTP sender authorization response: %w", err)
+	}
+	if detail, failed := result.NotUpdated["singleton"]; failed {
+		return fmt.Errorf("Stalwart could not configure SMTP sender authorization: %s", jmapError(detail))
+	}
+	if _, updated := result.Updated["singleton"]; !updated {
+		return errors.New("Stalwart did not confirm SMTP sender authorization")
+	}
+	return nil
+}
+
+// ConfigurePublicTLS attaches an HTTP-01 Let's Encrypt provider to the
+// infrastructure hostname used by SMTP clients. Caddy forwards only the ACME
+// challenge path to Stalwart, while Stalwart owns and renews the certificate
+// presented by its mail protocol listeners.
+func (g *Gateway) ConfigurePublicTLS(ctx context.Context, hostname, contact, acmeProviderID, domainID string) (string, string, error) {
+	hostname = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hostname), "."))
+	contact = strings.ToLower(strings.TrimSpace(contact))
+	if !ValidPublicHostname(hostname) {
+		return "", "", errors.New("mail server hostname must be public before TLS can be configured")
+	}
+	if contact == "" || !strings.Contains(contact, "@") {
+		return "", "", errors.New("an email address is required for TLS certificate notifications")
+	}
+	if strings.TrimSpace(acmeProviderID) == "" {
+		response, err := g.call(ctx, map[string]any{
+			"methodCalls": []any{[]any{"x:AcmeProvider/set", map[string]any{"create": map[string]any{"dokyr-http": map[string]any{
+				"directory": "https://acme-v02.api.letsencrypt.org/directory", "challengeType": "Http01",
+				"contact": map[string]bool{contact: true}, "maxRetries": 10, "renewBefore": "R23", "reuseKey": true,
+			}}}, "create-acme"}},
+			"using": []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+		})
+		if err != nil {
+			return "", "", err
+		}
+		args, method, err := firstMethodResponse(response)
+		if err != nil {
+			return "", "", err
+		}
+		if method == "error" {
+			return "", "", fmt.Errorf("Stalwart could not configure Let's Encrypt: %s", jmapError(args))
+		}
+		var created struct {
+			Created map[string]struct {
+				ID string `json:"id"`
+			} `json:"created"`
+			NotCreated map[string]json.RawMessage `json:"notCreated"`
+		}
+		if err := json.Unmarshal(args, &created); err != nil {
+			return "", "", fmt.Errorf("decode Stalwart ACME response: %w", err)
+		}
+		if detail, failed := created.NotCreated["dokyr-http"]; failed {
+			return "", "", fmt.Errorf("Stalwart could not configure Let's Encrypt: %s", jmapError(detail))
+		}
+		acmeProviderID = created.Created["dokyr-http"].ID
+		if acmeProviderID == "" {
+			return "", "", errors.New("Stalwart did not confirm the Let's Encrypt provider")
+		}
+	}
+
+	if strings.TrimSpace(domainID) == "" {
+		response, err := g.call(ctx, map[string]any{
+			"methodCalls": []any{[]any{"x:Domain/query", map[string]any{"filter": map[string]any{"name": hostname}, "limit": 1}, "find-tls-domain"}},
+			"using":       []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+		})
+		if err != nil {
+			return "", "", err
+		}
+		args, method, err := firstMethodResponse(response)
+		if err != nil {
+			return "", "", err
+		}
+		if method == "error" {
+			return "", "", fmt.Errorf("Stalwart could not find its TLS domain: %s", jmapError(args))
+		}
+		var found struct {
+			IDs []string `json:"ids"`
+		}
+		if err := json.Unmarshal(args, &found); err != nil {
+			return "", "", fmt.Errorf("decode Stalwart TLS domain query: %w", err)
+		}
+		if len(found.IDs) > 0 {
+			domainID = found.IDs[0]
+		} else {
+			response, err = g.call(ctx, map[string]any{
+				"methodCalls": []any{[]any{"x:Domain/set", map[string]any{"create": map[string]any{"mail-host": map[string]any{
+					"name": hostname, "aliases": map[string]bool{},
+					"certificateManagement": map[string]any{"@type": "Manual"},
+					"dkimManagement":        map[string]any{"@type": "Manual"}, "dnsManagement": map[string]any{"@type": "Manual"},
+					"subAddressing": map[string]any{"@type": "Enabled"},
+				}}}, "create-tls-domain"}},
+				"using": []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+			})
+			if err != nil {
+				return "", "", err
+			}
+			args, method, err = firstMethodResponse(response)
+			if err != nil {
+				return "", "", err
+			}
+			if method == "error" {
+				return "", "", fmt.Errorf("Stalwart could not create its TLS domain: %s", jmapError(args))
+			}
+			var created struct {
+				Created map[string]struct {
+					ID string `json:"id"`
+				} `json:"created"`
+				NotCreated map[string]json.RawMessage `json:"notCreated"`
+			}
+			if err := json.Unmarshal(args, &created); err != nil {
+				return "", "", fmt.Errorf("decode Stalwart TLS domain response: %w", err)
+			}
+			if detail, failed := created.NotCreated["mail-host"]; failed {
+				return "", "", fmt.Errorf("Stalwart could not create its TLS domain: %s", jmapError(detail))
+			}
+			domainID = created.Created["mail-host"].ID
+			if domainID == "" {
+				return "", "", errors.New("Stalwart did not confirm its TLS domain")
+			}
+		}
+	}
+
+	response, err := g.call(ctx, map[string]any{
+		"methodCalls": []any{[]any{"x:Domain/set", map[string]any{"update": map[string]any{
+			domainID: map[string]any{"certificateManagement": map[string]any{
+				"@type": "Automatic", "acmeProviderId": acmeProviderID, "subjectAlternativeNames": map[string]bool{},
+			}},
+		}}, "enable-tls"}},
+		"using": []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+	})
+	if err != nil {
+		return "", "", err
+	}
+	args, method, err := firstMethodResponse(response)
+	if err != nil {
+		return "", "", err
+	}
+	if method == "error" {
+		return "", "", fmt.Errorf("Stalwart could not enable automatic TLS: %s", jmapError(args))
+	}
+	var updated struct {
+		Updated    map[string]json.RawMessage `json:"updated"`
+		NotUpdated map[string]json.RawMessage `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(args, &updated); err != nil {
+		return "", "", fmt.Errorf("decode Stalwart TLS update: %w", err)
+	}
+	if detail, failed := updated.NotUpdated[domainID]; failed {
+		return "", "", fmt.Errorf("Stalwart could not enable automatic TLS: %s", jmapError(detail))
+	}
+	if _, ok := updated.Updated[domainID]; !ok {
+		return "", "", errors.New("Stalwart did not confirm automatic TLS")
+	}
+
+	taskResponse, taskErr := g.call(ctx, map[string]any{
+		"methodCalls": []any{[]any{"x:Task/set", map[string]any{"create": map[string]any{"renew-tls": map[string]any{
+			"@type": "AcmeRenewal", "domainId": domainID,
+		}}}, "renew-tls"}},
+		"using": []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+	})
+	if taskErr != nil {
+		return "", "", taskErr
+	}
+	taskArgs, taskMethod, err := firstMethodResponse(taskResponse)
+	if err != nil {
+		return "", "", err
+	}
+	if taskMethod == "error" {
+		return "", "", fmt.Errorf("Stalwart could not request a TLS certificate: %s", jmapError(taskArgs))
+	}
+	var task struct {
+		Created    map[string]json.RawMessage `json:"created"`
+		NotCreated map[string]json.RawMessage `json:"notCreated"`
+	}
+	if err := json.Unmarshal(taskArgs, &task); err != nil {
+		return "", "", fmt.Errorf("decode Stalwart TLS task: %w", err)
+	}
+	if detail, failed := task.NotCreated["renew-tls"]; failed {
+		return "", "", fmt.Errorf("Stalwart could not request a TLS certificate: %s", jmapError(detail))
+	}
+	if _, ok := task.Created["renew-tls"]; !ok {
+		return "", "", errors.New("Stalwart did not confirm the TLS certificate request")
+	}
+	return acmeProviderID, domainID, nil
 }
 
 // EnsureBootstrap completes the one-time setup for the bundled Stalwart
@@ -339,6 +572,99 @@ func (g *Gateway) PrepareSender(ctx context.Context, domainID, address string) (
 	return RelayConfig{Host: g.relayHost, Port: g.relayPort, Username: address, Password: g.relayPassword, InsecureSkipVerify: true}, nil
 }
 
+// ProvisionSMTPKey creates a dedicated Stalwart submission identity. Dokyr's
+// domain-scoped API token is installed as this account's password, allowing the
+// same secret to authenticate both the HTTP API and SMTP submission.
+func (g *Gateway) ProvisionSMTPKey(ctx context.Context, domainID, username, secret string) (string, error) {
+	if !g.Configured() {
+		return "", errors.New("Stalwart is not connected")
+	}
+	username = strings.ToLower(strings.TrimSpace(username))
+	separator := strings.LastIndexByte(username, '@')
+	if separator < 1 || separator == len(username)-1 || strings.TrimSpace(domainID) == "" {
+		return "", errors.New("SMTP username is invalid")
+	}
+	if !strings.HasPrefix(secret, "dkr_mail_") || len(secret) < 32 {
+		return "", errors.New("SMTP credential is invalid")
+	}
+	account := map[string]any{
+		"@type": "User", "name": username[:separator], "domainId": domainID,
+		"credentials":    map[string]any{"0": map[string]any{"@type": "Password", "secret": secret}},
+		"memberGroupIds": map[string]any{}, "roles": map[string]any{"@type": "User"},
+		"permissions": map[string]any{"@type": "Inherit"}, "quotas": map[string]any{},
+		"aliases": map[string]any{}, "encryptionAtRest": map[string]any{"@type": "Disabled"},
+		"description": "Dokyr SMTP credential",
+	}
+	response, err := g.call(ctx, map[string]any{
+		"methodCalls": []any{[]any{"x:Account/set", map[string]any{"create": map[string]any{"smtp-key": account}}, "create-smtp-key"}},
+		"using":       []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+	})
+	if err != nil {
+		return "", err
+	}
+	args, method, err := firstMethodResponse(response)
+	if err != nil {
+		return "", err
+	}
+	if method == "error" {
+		return "", fmt.Errorf("Stalwart could not create the SMTP credential: %s", jmapError(args))
+	}
+	var created struct {
+		Created map[string]struct {
+			ID string `json:"id"`
+		} `json:"created"`
+		NotCreated map[string]json.RawMessage `json:"notCreated"`
+	}
+	if err := json.Unmarshal(args, &created); err != nil {
+		return "", fmt.Errorf("decode Stalwart SMTP credential response: %w", err)
+	}
+	if detail, failed := created.NotCreated["smtp-key"]; failed {
+		return "", fmt.Errorf("Stalwart could not create the SMTP credential: %s", jmapError(detail))
+	}
+	id := created.Created["smtp-key"].ID
+	if id == "" {
+		return "", errors.New("Stalwart did not confirm the SMTP credential")
+	}
+	return id, nil
+}
+
+func (g *Gateway) DeleteAccount(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	response, err := g.call(ctx, map[string]any{
+		"methodCalls": []any{[]any{"x:Account/set", map[string]any{"destroy": []string{id}}, "delete-account"}},
+		"using":       []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+	})
+	if err != nil {
+		return err
+	}
+	args, method, err := firstMethodResponse(response)
+	if err != nil {
+		return err
+	}
+	if method == "error" {
+		return fmt.Errorf("Stalwart could not revoke the SMTP credential: %s", jmapError(args))
+	}
+	var result struct {
+		Destroyed    []string                   `json:"destroyed"`
+		NotDestroyed map[string]json.RawMessage `json:"notDestroyed"`
+	}
+	if err := json.Unmarshal(args, &result); err != nil {
+		return fmt.Errorf("decode Stalwart SMTP revocation response: %w", err)
+	}
+	if detail, failed := result.NotDestroyed[id]; failed {
+		return fmt.Errorf("Stalwart could not revoke the SMTP credential: %s", jmapError(detail))
+	}
+	for _, destroyed := range result.Destroyed {
+		if destroyed == id {
+			return nil
+		}
+	}
+	return errors.New("Stalwart did not confirm SMTP credential revocation")
+}
+
 func (g *Gateway) ProvisionDomain(ctx context.Context, name string) (string, []store.MailDNSRecord, error) {
 	if !g.Configured() {
 		return "", nil, errors.New("Stalwart is not connected")
@@ -381,12 +707,39 @@ func (g *Gateway) ProvisionDomain(ctx context.Context, name string) (string, []s
 		}
 		return "", nil, errors.New("Stalwart did not return the new domain identifier")
 	}
-	zone, err := g.domainZone(ctx, id)
-	if err != nil {
-		_ = g.DeleteDomain(context.Background(), id)
-		return "", nil, err
+	deadline := time.Now().Add(12 * time.Second)
+	var records []store.MailDNSRecord
+	for {
+		zone, zoneErr := g.domainZone(ctx, id)
+		if zoneErr != nil {
+			_ = g.DeleteDomain(context.Background(), id)
+			return "", nil, zoneErr
+		}
+		records = ParseZoneFile(zone, name)
+		if hasCoreSendingRecords(records) {
+			return id, records, nil
+		}
+		if time.Now().After(deadline) {
+			_ = g.DeleteDomain(context.Background(), id)
+			return "", nil, errors.New("Stalwart did not finish generating DKIM, SPF, and MX records for the domain")
+		}
+		select {
+		case <-ctx.Done():
+			_ = g.DeleteDomain(context.Background(), id)
+			return "", nil, ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
-	return id, ParseZoneFile(zone, name), nil
+}
+
+func hasCoreSendingRecords(records []store.MailDNSRecord) bool {
+	found := map[string]bool{}
+	for _, record := range records {
+		if record.Purpose == "DKIM" || record.Purpose == "SPF" || record.Purpose == "Return path" {
+			found[record.Purpose] = true
+		}
+	}
+	return found["DKIM"] && found["SPF"] && found["Return path"]
 }
 
 func (g *Gateway) domainZone(ctx context.Context, id string) (string, error) {
@@ -431,6 +784,9 @@ func (g *Gateway) DeleteDomain(ctx context.Context, id string) error {
 	if !g.Configured() || strings.TrimSpace(id) == "" {
 		return nil
 	}
+	if err := g.deleteDomainAccounts(ctx, id); err != nil {
+		return err
+	}
 	if err := g.deleteDomainDKIMSignatures(ctx, id); err != nil {
 		return err
 	}
@@ -455,6 +811,60 @@ func (g *Gateway) DeleteDomain(ctx context.Context, id string) error {
 	if json.Unmarshal(args, &result) == nil {
 		if detail, exists := result.NotDestroyed[id]; exists {
 			return fmt.Errorf("Stalwart could not remove the domain: %s", jmapError(detail))
+		}
+	}
+	return nil
+}
+
+func (g *Gateway) deleteDomainAccounts(ctx context.Context, domainID string) error {
+	response, err := g.call(ctx, map[string]any{
+		"methodCalls": []any{[]any{"x:Account/query", map[string]any{
+			"filter": map[string]any{"domainId": domainID},
+		}, "query-accounts"}},
+		"using": []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+	})
+	if err != nil {
+		return err
+	}
+	args, method, err := firstMethodResponse(response)
+	if err != nil {
+		return err
+	}
+	if method == "error" {
+		return fmt.Errorf("Stalwart could not query the domain's accounts: %s", jmapError(args))
+	}
+	var found struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(args, &found); err != nil {
+		return fmt.Errorf("decode Stalwart account query: %w", err)
+	}
+	if len(found.IDs) == 0 {
+		return nil
+	}
+	response, err = g.call(ctx, map[string]any{
+		"methodCalls": []any{[]any{"x:Account/set", map[string]any{"destroy": found.IDs}, "delete-accounts"}},
+		"using":       []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+	})
+	if err != nil {
+		return err
+	}
+	args, method, err = firstMethodResponse(response)
+	if err != nil {
+		return err
+	}
+	if method == "error" {
+		return fmt.Errorf("Stalwart could not remove the domain's accounts: %s", jmapError(args))
+	}
+	var result struct {
+		NotDestroyed map[string]json.RawMessage `json:"notDestroyed"`
+	}
+	if err := json.Unmarshal(args, &result); err != nil {
+		return fmt.Errorf("decode Stalwart account deletion: %w", err)
+	}
+	for _, id := range found.IDs {
+		if detail, failed := result.NotDestroyed[id]; failed {
+			return fmt.Errorf("Stalwart could not remove the domain's account: %s", jmapError(detail))
 		}
 	}
 	return nil

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -108,6 +109,79 @@ func TestValidPublicHostnameRejectsDevelopmentDefaults(t *testing.T) {
 	}
 }
 
+func TestServerHostnameForDomainUsesMailSubdomain(t *testing.T) {
+	hostname, err := ServerHostnameForDomain(" Example.COM. ")
+	if err != nil || hostname != "mail.example.com" {
+		t.Fatalf("ServerHostnameForDomain = %q, %v", hostname, err)
+	}
+	if domain := DomainForServerHostname(hostname); domain != "example.com" {
+		t.Fatalf("DomainForServerHostname = %q", domain)
+	}
+}
+
+func TestProvisionSMTPKeyCreatesDomainAccount(t *testing.T) {
+	gateway, err := New(Config{StalwartURL: "https://mail.example", StalwartAPIKey: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var payload struct {
+			MethodCalls [][]json.RawMessage `json:"methodCalls"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		var arguments struct {
+			Create map[string]struct {
+				Name        string `json:"name"`
+				DomainID    string `json:"domainId"`
+				Credentials map[string]struct {
+					Secret string `json:"secret"`
+				} `json:"credentials"`
+			} `json:"create"`
+		}
+		if err := json.Unmarshal(payload.MethodCalls[0][1], &arguments); err != nil {
+			t.Fatal(err)
+		}
+		account := arguments.Create["smtp-key"]
+		if account.Name != "smtp-demo" || account.DomainID != "domain1" || account.Credentials["0"].Secret != "dkr_mail_12345678901234567890123456789012" {
+			t.Fatalf("unexpected account payload: %#v", account)
+		}
+		body := `{"methodResponses":[["x:Account/set",{"created":{"smtp-key":{"id":"account1"}}},"create-smtp-key"]]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewBufferString(body))}, nil
+	})}
+	id, err := gateway.ProvisionSMTPKey(t.Context(), "domain1", "smtp-demo@example.com", "dkr_mail_12345678901234567890123456789012")
+	if err != nil || id != "account1" {
+		t.Fatalf("ProvisionSMTPKey = %q, %v", id, err)
+	}
+}
+
+func TestConfigureSMTPSubmissionPolicyScopesSenderDomain(t *testing.T) {
+	gateway, err := New(Config{StalwartURL: "https://mail.example", StalwartAPIKey: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var payload struct {
+			MethodCalls [][]json.RawMessage `json:"methodCalls"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		encoded := string(payload.MethodCalls[0][1])
+		for _, expected := range []string{"mustMatchSender", "authenticated_as", "sender_domain", "email_part"} {
+			if !strings.Contains(encoded, expected) {
+				t.Fatalf("SMTP sender policy does not contain %q: %s", expected, encoded)
+			}
+		}
+		body := `{"methodResponses":[["x:MtaStageAuth/set",{"updated":{"singleton":null}},"configure-smtp-senders"]]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewBufferString(body))}, nil
+	})}
+	if err := gateway.ConfigureSMTPSubmissionPolicy(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProvisionDomainCreatesThenFetchesDNSZone(t *testing.T) {
 	calls := 0
 	gateway, err := New(Config{StalwartURL: "https://mail.example", StalwartAPIKey: "secret"})
@@ -146,7 +220,7 @@ func TestProvisionDomainCreatesThenFetchesDNSZone(t *testing.T) {
 			}
 			body = `{"methodResponses":[["x:Domain/set",{"created":{"dokyr":{"id":"dom1"}}},"create"]]}`
 		case "x:Domain/get":
-			body = `{"methodResponses":[["x:Domain/get",{"list":[{"dnsZoneFile":"$ORIGIN example.com.\n@ IN MX 10 mail.example.net.\n@ IN TXT \"v=spf1 mx -all\""}]},"get"]]}`
+			body = `{"methodResponses":[["x:Domain/get",{"list":[{"dnsZoneFile":"$ORIGIN example.com.\n@ IN MX 10 mail.example.net.\n@ IN TXT \"v=spf1 mx -all\"\nv1._domainkey IN TXT \"v=DKIM1; k=ed25519; p=abc123\""}]},"get"]]}`
 		default:
 			t.Fatalf("unexpected method %q", method)
 		}
@@ -156,7 +230,7 @@ func TestProvisionDomainCreatesThenFetchesDNSZone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id != "dom1" || calls != 2 || len(records) != 2 {
+	if id != "dom1" || calls != 2 || len(records) != 3 {
 		t.Fatalf("id=%q calls=%d records=%#v", id, calls, records)
 	}
 }
@@ -179,6 +253,8 @@ func TestDeleteDomainRemovesGeneratedDKIMKeysFirst(t *testing.T) {
 		methods = append(methods, method)
 		var body string
 		switch method {
+		case "x:Account/query":
+			body = `{"methodResponses":[["x:Account/query",{"ids":[]},"query-domain-accounts"]]}`
 		case "x:DkimSignature/query":
 			body = `{"methodResponses":[["x:DkimSignature/query",{"ids":["key1","key2"]},"query-dkim"]]}`
 		case "x:DkimSignature/set":
@@ -193,7 +269,7 @@ func TestDeleteDomainRemovesGeneratedDKIMKeysFirst(t *testing.T) {
 	if err := gateway.DeleteDomain(t.Context(), "domain1"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"x:DkimSignature/query", "x:DkimSignature/set", "x:Domain/set"}
+	want := []string{"x:Account/query", "x:DkimSignature/query", "x:DkimSignature/set", "x:Domain/set"}
 	if len(methods) != len(want) {
 		t.Fatalf("methods = %v, want %v", methods, want)
 	}

@@ -17,8 +17,11 @@
   let stalwartConnected = false;
   let deliveryConfigured = false;
   let mailSetup = false;
+  let mailServerDomain = '';
   let mailServerHostname = '';
-  let setupHostname = '';
+  let setupDomain = '';
+  let smtpPort = 465;
+  let smtpEncryption = 'TLS';
   let tab = 'domains';
   let selectedId = '';
   let domainDialog = false;
@@ -28,14 +31,27 @@
   let newDomain = '';
   let keyDraft = { name: '', domainId: '' };
   let revealedSecret = '';
+  let revealedKey = null;
+  let apiBaseURL = '';
+  let sendTransport = 'smtp';
+  let exampleLanguage = 'curl';
 
   $: selected = domains.find((domain) => domain.id === selectedId) || domains[0] || null;
   $: verifiedDomains = domains.filter((domain) => domain.status === 'verified');
   $: canWrite = can($currentPermissions, 'project:write');
   $: canWriteSecrets = can($currentPermissions, 'secret:write');
   $: canSetupMail = can($currentPermissions, 'platform:write');
+  $: exampleDomain = verifiedDomains[0]?.name || 'example.com';
+  $: smtpKey = apiKeys.find((key) => key.smtpUsername) || null;
+  $: sendExample = sendTransport === 'smtp'
+    ? smtpExample(smtpKey?.smtpUsername, mailServerHostname, smtpPort, exampleDomain)
+    : exampleLanguage === 'node' ? nodeExample(exampleDomain, apiBaseURL) : curlExample(exampleDomain, apiBaseURL);
+  $: setupMailHostname = setupDomain.trim() ? `mail.${setupDomain.trim().replace(/^mail\./i, '').replace(/\.$/, '')}` : 'mail.example.com';
 
-  onMount(load);
+  onMount(() => {
+    apiBaseURL = window.location.origin;
+    load();
+  });
 
   async function load() {
     loading = true;
@@ -50,8 +66,11 @@
       stalwartConnected = Boolean(payload.stalwartConnected);
       deliveryConfigured = Boolean(payload.deliveryConfigured);
       mailSetup = Boolean(payload.mailSetup);
+      mailServerDomain = payload.mailServerDomain || '';
       mailServerHostname = payload.mailServerHostname || '';
-      if (!setupHostname) setupHostname = mailServerHostname;
+      smtpPort = payload.smtpPort || 465;
+      smtpEncryption = payload.smtpEncryption || 'TLS';
+      if (!setupDomain) setupDomain = mailServerDomain;
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not load mail';
     } finally {
@@ -64,7 +83,7 @@
     error = '';
     try {
       const response = await api('/api/mail/setup', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hostname: setupHostname })
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ domain: setupDomain })
       });
       const payload = await readAPIJSON(response);
       if (!response.ok) throw new Error(payload.error || 'Could not set up the mail server');
@@ -138,6 +157,7 @@
   function openKeyDialog() {
     keyDraft = { name: '', domainId: verifiedDomains[0]?.id || '' };
     revealedSecret = '';
+    revealedKey = null;
     keyDialog = true;
   }
 
@@ -152,7 +172,8 @@
       if (!response.ok) throw new Error(payload.error || 'Could not create API key');
       apiKeys = [payload.apiKey, ...apiKeys];
       revealedSecret = payload.secret;
-      toast.success('API key created. Copy it now.');
+      revealedKey = payload.apiKey;
+      toast.success('Mail credential created. Copy its password now.');
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not create API key';
     } finally {
@@ -187,11 +208,52 @@
     if (!value) return 'Never';
     return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
   }
+
+  function curlExample(domain, baseURL) {
+    const endpoint = `${baseURL || 'https://your-dokyr.example.com'}/v1/emails`;
+    return `curl -X POST '${endpoint}' \\
+  -H 'Authorization: Bearer dkr_mail_your_api_key' \\
+  -H 'Content-Type: application/json' \\
+  -d '{
+    "from": "Dokyr <hello@${domain}>",
+    "to": ["you@example.com"],
+    "subject": "Hello from Dokyr",
+    "html": "<strong>Your first email works.</strong>"
+  }'`;
+  }
+
+  function nodeExample(domain, baseURL) {
+    const endpoint = `${baseURL || 'https://your-dokyr.example.com'}/v1/emails`;
+    return `const response = await fetch('${endpoint}', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer dkr_mail_your_api_key',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    from: 'Dokyr <hello@${domain}>',
+    to: ['you@example.com'],
+    subject: 'Hello from Dokyr',
+    html: '<strong>Your first email works.</strong>'
+  })
+});
+
+console.log(await response.json());`;
+  }
+
+  function smtpExample(username, hostname, port, domain) {
+    return `SMTP_HOST=${hostname || 'mail.example.com'}
+SMTP_PORT=${port}
+SMTP_SECURE=true
+SMTP_USERNAME=${username || 'smtp-your-key-id@example.com'}
+SMTP_PASSWORD=dkr_mail_your_api_key
+SMTP_FROM=hello@${domain}`;
+  }
 </script>
 
 <svelte:head><title>Mail · Dokyr</title></svelte:head>
 
-<Shell eyebrow="Infrastructure" title="Mail" subtitle="Verify sending domains and issue scoped API keys for your applications.">
+<Shell eyebrow="Infrastructure" title="Mail" subtitle="Verify sending domains and issue credentials for SMTP or the HTTP API.">
   <div slot="actions">{#if mailSetup && canWrite}<button class="btn btn-primary" type="button" onclick={() => (domainDialog = true)}><Icon name="plus" size={14} /> Add domain</button>{/if}</div>
 
   {#if error}<div class="alert alert-error page-alert"><Icon name="x-circle" size={15} /><div><strong>Mail action failed</strong><span>{error}</span></div></div>{/if}
@@ -201,7 +263,7 @@
     <div class="readiness-copy">
       <span class="eyebrow">Developer email gateway</span>
       <strong>{!mailSetup ? 'Set up your mail server' : verifiedDomains.length > 0 ? `${verifiedDomains.length} verified sending domain${verifiedDomains.length === 1 ? '' : 's'}` : 'Connect your first sending domain'}</strong>
-      <p>{mailSetup ? 'Dokyr proves ownership first, then checks every DKIM, SPF, and return-path record before enabling delivery.' : 'Choose one public hostname for SMTP identity and MX records. Developer domains can be added afterward.'}</p>
+      <p>{mailSetup ? 'Verify domains once, then send through SMTP or the HTTP API with the same credential.' : 'Enter the domain used by this Dokyr installation. The mail server will use mail.{domain}.'}</p>
     </div>
     <div class="readiness-checks">
       <span class:ready={stalwartConnected}><i></i>Stalwart {stalwartConnected ? 'connected' : 'not connected'}</span>
@@ -211,11 +273,11 @@
 
   {#if !loading && !mailSetup}
     <section class="panel setup-panel">
-      <div class="setup-copy"><span class="setup-icon"><Icon name="settings" size={20} /></span><div><span class="eyebrow">One-time platform setup</span><h2>Choose the server developers will send through</h2><p>This is your infrastructure hostname, not a developer’s sending domain. Every verified domain will point its MX and discovery records here.</p></div></div>
+      <div class="setup-copy"><span class="setup-icon"><Icon name="settings" size={20} /></span><div><span class="eyebrow">One-time platform setup</span><h2>Set up the VPS mail server</h2><p>Enter the domain for this Dokyr installation. Dokyr configures Stalwart at <code>{setupMailHostname}</code>; developers can add their own sending domains afterward.</p></div></div>
       {#if canSetupMail}
         <form onsubmit={(event) => { event.preventDefault(); setupMailServer(); }}>
-          <label class="field"><span>Mail server hostname</span><input class="input input-mono" bind:value={setupHostname} placeholder="mail.example.com" autocomplete="off" spellcheck="false" required /><small>Create an A record pointing this hostname to the Dokyr server and configure matching reverse DNS.</small></label>
-          <button class="btn btn-primary" type="submit" disabled={saving || !setupHostname.trim()}>{saving ? 'Setting up…' : 'Set up mail server'}</button>
+          <label class="field"><span>Dokyr domain</span><input class="input input-mono" bind:value={setupDomain} placeholder="example.com" autocomplete="off" spellcheck="false" required /><small>Create a DNS-only A record for <code>{setupMailHostname}</code> pointing to this VPS. Port 80 must be reachable while Stalwart obtains TLS.</small></label>
+          <button class="btn btn-primary" type="submit" disabled={saving || !setupDomain.trim()}>{saving ? 'Setting up…' : `Set up ${setupMailHostname}`}</button>
         </form>
       {:else}
         <div class="safe-note warning"><Icon name="alert" size={15} /><span>Ask the platform owner to complete Mail setup before adding sending domains.</span></div>
@@ -224,7 +286,7 @@
   {:else}
   <nav class="mail-tabs" aria-label="Mail sections">
     <button class:active={tab === 'domains'} type="button" onclick={() => (tab = 'domains')}><Icon name="globe" size={14} /> Domains <span>{domains.length}</span></button>
-    <button class:active={tab === 'keys'} type="button" onclick={() => (tab = 'keys')}><Icon name="key" size={14} /> API keys <span>{apiKeys.length}</span></button>
+    <button class:active={tab === 'keys'} type="button" onclick={() => (tab = 'keys')}><Icon name="key" size={14} /> Credentials <span>{apiKeys.length}</span></button>
     <button class:active={tab === 'activity'} type="button" onclick={() => (tab = 'activity')}><Icon name="logs" size={14} /> Activity <span>{messages.length}</span></button>
   </nav>
 
@@ -260,7 +322,7 @@
               <div>
                 <span class="status-pill {selectedMeta.tone}"><Icon name={selectedMeta.icon} size={12} />{selectedMeta.label}</span>
                 <h2>{selected.name}</h2>
-                <p>{selected.status === 'verified' ? 'This domain can send through the Dokyr API.' : 'Publish the records below, then ask Dokyr to check public DNS.'}</p>
+                <p>{selected.status === 'verified' ? 'This domain can send through SMTP and the Dokyr HTTP API.' : 'Publish the records below, then ask Dokyr to check public DNS.'}</p>
               </div>
               <div class="domain-actions">
                 {#if canWrite}<button class="btn" type="button" disabled={verifying === selected.id} onclick={() => verifyDomain(selected)}><Icon name="refresh" size={13} />{verifying === selected.id ? 'Checking…' : 'Verify DNS'}</button>{/if}
@@ -319,26 +381,52 @@
     {/if}
   {:else if tab === 'keys'}
     <section class="panel keys-panel">
-      <header class="section-head"><div><h2>Sending API keys</h2><p>Every key is locked to one verified domain.</p></div>{#if canWriteSecrets}<button class="btn btn-primary" type="button" disabled={verifiedDomains.length === 0} onclick={openKeyDialog}><Icon name="plus" size={13} /> Create API key</button>{/if}</header>
+      <header class="section-head"><div><h2>Mail credentials</h2><p>Every credential is locked to one verified domain and works with SMTP and the HTTP API.</p></div>{#if canWriteSecrets}<button class="btn btn-primary" type="button" disabled={verifiedDomains.length === 0} onclick={openKeyDialog}><Icon name="plus" size={13} /> Create credential</button>{/if}</header>
       {#if apiKeys.length === 0}
-        <EmptyState icon="key" title="No mail API keys" description={verifiedDomains.length ? 'Create a key for an application that needs to send.' : 'Verify a domain before creating a sending key.'} />
+        <EmptyState icon="key" title="No mail credentials" description={verifiedDomains.length ? 'Create a credential for an application that needs to send.' : 'Verify a domain before creating a mail credential.'} />
       {:else}
         <div class="key-list">
           {#each apiKeys as key}
-            <article><span class="key-icon"><Icon name="key" size={15} /></span><div><strong>{key.name}</strong><small>{key.domainName} · <code>{key.prefix}••••</code></small></div><span class="key-time">Last used<br><b>{formatDate(key.lastUsedAt)}</b></span>{#if canWriteSecrets}<button class="icon-danger" type="button" aria-label="Revoke API key" onclick={() => revokeKey(key)}><Icon name="trash" size={13} /></button>{/if}</article>
+            <article><span class="key-icon"><Icon name="key" size={15} /></span><div><strong>{key.name}</strong><small>{key.domainName} · {#if key.smtpUsername}<code>{key.smtpUsername}</code>{:else}<span class="legacy-key">HTTP only — recreate for SMTP</span>{/if}</small></div><span class="key-time">Last used<br><b>{formatDate(key.lastUsedAt)}</b></span>{#if canWriteSecrets}<button class="icon-danger" type="button" aria-label="Revoke mail credential" onclick={() => revokeKey(key)}><Icon name="trash" size={13} /></button>{/if}</article>
           {/each}
         </div>
       {/if}
+
+      <section class="send-guide" aria-labelledby="send-guide-title">
+        <header>
+          <div><span class="eyebrow">Quick start</span><h3 id="send-guide-title">Send your first email</h3><p>The same secret is your SMTP password and HTTP bearer token.</p></div>
+          <button class="btn" type="button" onclick={() => copy(sendExample, `${sendTransport === 'smtp' ? 'SMTP configuration' : exampleLanguage === 'node' ? 'Node.js example' : 'cURL example'}`)}><Icon name="copy" size={13} /> Copy example</button>
+        </header>
+        <div class="send-guide-body">
+          <ol>
+            <li><b>1</b><span><strong>Create a credential</strong><small>Save the secret when shown; it becomes both the SMTP password and API token.</small></span></li>
+            <li><b>2</b><span><strong>Choose a sender</strong><small>The address after @ must be <code>{exampleDomain}</code>.</small></span></li>
+            <li><b>3</b><span><strong>Submit the message</strong><small>SMTP or the API queues it in Stalwart. Queued does not guarantee recipient delivery.</small></span></li>
+          </ol>
+          <div class="api-example">
+            <div class="api-example-head">
+              <span><small>{sendTransport === 'smtp' ? `${smtpEncryption} submission` : 'Endpoint'}</small><code>{sendTransport === 'smtp' ? `${mailServerHostname || 'mail.example.com'}:${smtpPort}` : `${apiBaseURL || 'https://your-dokyr.example.com'}/v1/emails`}</code></span>
+              <button type="button" aria-label="Copy server address" title="Copy server address" onclick={() => copy(sendTransport === 'smtp' ? mailServerHostname : `${apiBaseURL}/v1/emails`, sendTransport === 'smtp' ? 'SMTP host' : 'API endpoint')}><Icon name="copy" size={13} /></button>
+            </div>
+            <div class="code-tabs" role="tablist" aria-label="Code example language">
+              <button class:active={sendTransport === 'smtp'} type="button" role="tab" aria-selected={sendTransport === 'smtp'} onclick={() => (sendTransport = 'smtp')}>SMTP</button>
+              <button class:active={sendTransport === 'api' && exampleLanguage === 'curl'} type="button" role="tab" aria-selected={sendTransport === 'api' && exampleLanguage === 'curl'} onclick={() => { sendTransport = 'api'; exampleLanguage = 'curl'; }}>HTTP · cURL</button>
+              <button class:active={sendTransport === 'api' && exampleLanguage === 'node'} type="button" role="tab" aria-selected={sendTransport === 'api' && exampleLanguage === 'node'} onclick={() => { sendTransport = 'api'; exampleLanguage = 'node'; }}>HTTP · Node.js</button>
+            </div>
+            <pre><code>{sendExample}</code></pre>
+          </div>
+        </div>
+      </section>
     </section>
   {:else}
     <section class="panel activity-panel">
-      <header class="section-head"><div><h2>Recent delivery activity</h2><p>The first 25 messages accepted by this Dokyr server.</p></div></header>
+      <header class="section-head"><div><h2>Recent delivery activity</h2><p>The latest 25 API messages accepted by this Dokyr server. SMTP submissions are tracked by Stalwart.</p></div></header>
       {#if messages.length === 0}
         <EmptyState icon="logs" title="No messages yet" description="Messages sent through POST /v1/emails will appear here." />
       {:else}
         <div class="message-list">
           {#each messages as message}
-            <article><span class="delivery-mark {message.status}"><Icon name={message.status === 'sent' ? 'check' : message.status === 'failed' ? 'x' : 'clock'} size={13} /></span><div><strong>{message.subject}</strong><small>{message.from} → {message.to.join(', ')}</small></div><span><b class={message.status}>{message.status}</b><small>{formatDate(message.createdAt)}</small></span></article>
+            <article><span class="delivery-mark {message.status}"><Icon name={message.status === 'delivered' ? 'check' : message.status === 'failed' ? 'x' : 'clock'} size={13} /></span><div><strong>{message.subject}</strong><small>{message.from} → {message.to.join(', ')}</small></div><span><b class={message.status}>{message.status}</b><small>{formatDate(message.createdAt)}</small></span></article>
           {/each}
         </div>
       {/if}
@@ -362,19 +450,27 @@
 {#if keyDialog}
   <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget && !saving) keyDialog = false; }}>
     <div class="modal mail-modal" role="dialog" aria-modal="true" aria-labelledby="key-title">
-      <header><div><span class="eyebrow">Developer access</span><h2 id="key-title">{revealedSecret ? 'Copy your API key' : 'Create a sending key'}</h2></div><button type="button" onclick={() => (keyDialog = false)} disabled={saving}>×</button></header>
+      <header><div><span class="eyebrow">Developer access</span><h2 id="key-title">{revealedSecret ? 'Save your mail credential' : 'Create a mail credential'}</h2></div><button type="button" onclick={() => (keyDialog = false)} disabled={saving}>×</button></header>
       {#if revealedSecret}
-        <div class="modal-body"><div class="secret-box"><code>{revealedSecret}</code><button type="button" onclick={() => copy(revealedSecret, 'API key')}><Icon name="copy" size={14} /> Copy</button></div><div class="safe-note warning"><Icon name="alert" size={15} /><span>This secret is shown once. Dokyr stores only its hash.</span></div></div>
-        <footer><button class="btn btn-primary" type="button" onclick={() => (keyDialog = false)}>I saved the key</button></footer>
+        <div class="modal-body">
+          <div class="credential-grid">
+            <div><small>SMTP host</small><span><code>{mailServerHostname}</code><button type="button" onclick={() => copy(mailServerHostname, 'SMTP host')}><Icon name="copy" size={13} /></button></span></div>
+            <div><small>Port / encryption</small><span><code>{smtpPort} / {smtpEncryption}</code></span></div>
+            <div><small>SMTP username</small><span><code>{revealedKey?.smtpUsername}</code><button type="button" onclick={() => copy(revealedKey?.smtpUsername, 'SMTP username')}><Icon name="copy" size={13} /></button></span></div>
+          </div>
+          <label class="credential-secret"><span>SMTP password / HTTP API token</span><div class="secret-box"><code>{revealedSecret}</code><button type="button" onclick={() => copy(revealedSecret, 'Mail secret')}><Icon name="copy" size={14} /> Copy</button></div></label>
+          <div class="safe-note warning"><Icon name="alert" size={15} /><span>This secret is shown once. Existing credentials created before SMTP support must be recreated.</span></div>
+        </div>
+        <footer><button class="btn btn-primary" type="button" onclick={() => (keyDialog = false)}>I saved the credential</button></footer>
       {:else}
-        <form onsubmit={(event) => { event.preventDefault(); createKey(); }}><div class="modal-body"><label class="field"><span>Key name</span><input class="input" bind:value={keyDraft.name} placeholder="Production API" required /></label><label class="field"><span>Sending domain</span><select class="select" bind:value={keyDraft.domainId} required>{#each verifiedDomains as domain}<option value={domain.id}>{domain.name}</option>{/each}</select></label></div><footer><button class="btn" type="button" onclick={() => (keyDialog = false)}>Cancel</button><button class="btn btn-primary" type="submit" disabled={saving || !keyDraft.name.trim() || !keyDraft.domainId}>{saving ? 'Creating…' : 'Create key'}</button></footer></form>
+        <form onsubmit={(event) => { event.preventDefault(); createKey(); }}><div class="modal-body"><label class="field"><span>Credential name</span><input class="input" bind:value={keyDraft.name} placeholder="Production app" required /></label><label class="field"><span>Sending domain</span><select class="select" bind:value={keyDraft.domainId} required>{#each verifiedDomains as domain}<option value={domain.id}>{domain.name}</option>{/each}</select></label><div class="safe-note"><Icon name="shield" size={15} /><span>Dokyr creates a unique SMTP username. The one-time secret is its password and your API token.</span></div></div><footer><button class="btn" type="button" onclick={() => (keyDialog = false)}>Cancel</button><button class="btn btn-primary" type="submit" disabled={saving || !keyDraft.name.trim() || !keyDraft.domainId}>{saving ? 'Creating…' : 'Create credential'}</button></footer></form>
       {/if}
     </div>
   </div>
 {/if}
 
 {#if deleteTarget}
-  <ConfirmDialog title={`Remove ${deleteTarget.name}?`} message="This removes the domain from Stalwart, revokes its API keys, and deletes its local delivery history." confirmLabel="Remove domain" busy={saving} error={deleteError} requireText={deleteTarget.name} onConfirm={removeDomain} onClose={() => { if (!saving) deleteTarget = null; }} />
+  <ConfirmDialog title={`Remove ${deleteTarget.name}?`} message="This removes the domain from Stalwart, revokes its mail credentials, and deletes its local delivery history." confirmLabel="Remove domain" busy={saving} error={deleteError} requireText={deleteTarget.name} onConfirm={removeDomain} onClose={() => { if (!saving) deleteTarget = null; }} />
 {/if}
 
 <style>
@@ -391,10 +487,11 @@
   .domain-note { margin: var(--space-4) var(--space-5) 0; padding: 10px 12px; display: flex; gap: 8px; border-radius: var(--radius-md); background: var(--color-info-soft); color: var(--color-info); font-size: var(--text-xs); }.domain-note.warning { background: var(--color-warning-soft); color: var(--color-warning); }
   .record-guide { padding: var(--space-5); display: flex; align-items: center; }.record-guide > div { display: flex; align-items: center; gap: 9px; }.record-guide b { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: var(--color-accent-soft); color: var(--color-accent); font-size: var(--text-2xs); }.record-guide span { display: grid; }.record-guide strong { font-size: var(--text-xs); }.record-guide small { color: var(--color-muted); font-size: var(--text-2xs); }.record-guide > i { width: clamp(18px, 4vw, 56px); height: 1px; margin: 0 var(--space-3); background: var(--color-rule); }
   .records-heading { margin: 0 var(--space-5) var(--space-2); display: flex; align-items: end; justify-content: space-between; gap: var(--space-3); }.records-heading > div { display: grid; gap: 2px; }.records-heading strong { font-size: var(--text-xs); }.records-heading small { color: var(--color-muted); font-size: var(--text-2xs); }.records-heading > span { color: var(--color-muted); font-size: var(--text-2xs); white-space: nowrap; }.records-table { margin: 0 var(--space-5) var(--space-4); overflow: hidden; border: 1px solid var(--color-rule); border-radius: var(--radius-md); }.record-row { min-height: 62px; padding: 8px 10px; display: grid; grid-template-columns: 38px 68px minmax(170px, .9fr) minmax(200px, 1.25fr); align-items: center; gap: 8px; border-top: 1px solid var(--color-rule); }.record-row:first-child { border-top: 0; }.record-header { min-height: 32px; background: var(--color-paper-subtle); color: var(--color-muted); font-size: var(--text-2xs); font-weight: 700; text-transform: uppercase; }.record-row > span { min-width: 0; }.record-row > span:nth-child(2) { display: grid; gap: 3px; }.record-row button { width: 28px; height: 28px; flex: 0 0 auto; display: grid; place-items: center; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--color-muted); cursor: pointer; }.record-row button:hover { background: var(--color-paper-subtle); color: var(--color-accent); }.record-status { width: 23px; height: 23px; display: grid; place-items: center; border-radius: 50%; background: var(--color-warning-soft); color: var(--color-warning); }.record-status.verified { background: var(--color-success-soft); color: var(--color-success); }.record-status.incorrect { background: var(--color-danger-soft); color: var(--color-danger); }.record-type { width: fit-content; padding: 2px 5px; border-radius: 3px; background: var(--color-paper-subtle); color: var(--color-ink-secondary); font-size: var(--text-2xs); font-weight: 700; }.record-row small { color: var(--color-muted); font-size: 9px; }.record-value { display: grid; gap: 2px; }.copyable { min-width: 0; display: flex; align-items: center; gap: 3px; }.copyable code { min-width: 0; flex: 1; overflow: hidden; color: var(--color-ink-secondary); font-size: var(--text-2xs); line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }.optional-records { margin: 0 var(--space-5) var(--space-4); border: 1px solid var(--color-rule); border-radius: var(--radius-md); }.optional-records summary { min-height: 58px; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); color: var(--color-ink-secondary); cursor: pointer; list-style: none; }.optional-records summary::-webkit-details-marker { display: none; }.optional-records summary > span:first-child { display: grid; gap: 2px; }.optional-records summary strong { font-size: var(--text-xs); }.optional-records summary small { color: var(--color-muted); font-size: var(--text-2xs); font-weight: 400; }.optional-count { display: flex; align-items: center; gap: 6px; color: var(--color-muted); font-size: var(--text-2xs); }.optional-count :global(svg) { transition: transform .16s ease; }.optional-records[open] .optional-count :global(svg) { transform: rotate(180deg); }.optional-records .records-table { margin: 0; border-width: 1px 0 0; border-radius: 0 0 var(--radius-md) var(--radius-md); }.domain-foot { min-height: 34px; padding: 0 var(--space-5); display: flex; align-items: center; gap: 6px; border-top: 1px solid var(--color-rule); color: var(--color-muted); font-size: var(--text-2xs); }
-  .section-head { min-height: 72px; padding: var(--space-4) var(--space-5); display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); border-bottom: 1px solid var(--color-rule); }.section-head h2 { margin: 0; font-size: var(--text-md); }.section-head p { margin: 3px 0 0; color: var(--color-muted); font-size: var(--text-xs); }.key-list article, .message-list article { min-height: 66px; padding: 0 var(--space-5); display: grid; align-items: center; gap: var(--space-3); border-top: 1px solid var(--color-rule); }.key-list article:first-child, .message-list article:first-child { border-top: 0; }.key-list article { grid-template-columns: 34px 1fr auto 34px; }.key-icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--radius-md); background: var(--color-accent-softer); color: var(--color-accent); }.key-list article > div, .message-list article > div { min-width: 0; display: grid; }.key-list strong, .message-list strong { font-size: var(--text-xs); }.key-list small, .message-list small { overflow: hidden; color: var(--color-muted); font-size: var(--text-2xs); text-overflow: ellipsis; white-space: nowrap; }.key-time { color: var(--color-muted); font-size: 9px; text-align: right; }.key-time b { color: var(--color-ink-secondary); font-size: var(--text-2xs); font-weight: 500; }.message-list article { grid-template-columns: 30px 1fr auto; }.message-list article > span:last-child { display: grid; text-align: right; }.message-list b { font-size: var(--text-2xs); text-transform: capitalize; }.message-list b.sent { color: var(--color-success); }.message-list b.failed { color: var(--color-danger); }.delivery-mark { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 50%; background: var(--color-warning-soft); color: var(--color-warning); }.delivery-mark.sent { background: var(--color-success-soft); color: var(--color-success); }.delivery-mark.failed { background: var(--color-danger-soft); color: var(--color-danger); }
+  .section-head { min-height: 72px; padding: var(--space-4) var(--space-5); display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); border-bottom: 1px solid var(--color-rule); }.section-head h2 { margin: 0; font-size: var(--text-md); }.section-head p { margin: 3px 0 0; color: var(--color-muted); font-size: var(--text-xs); }.key-list article, .message-list article { min-height: 66px; padding: 0 var(--space-5); display: grid; align-items: center; gap: var(--space-3); border-top: 1px solid var(--color-rule); }.key-list article:first-child, .message-list article:first-child { border-top: 0; }.key-list article { grid-template-columns: 34px 1fr auto 34px; }.key-icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--radius-md); background: var(--color-accent-softer); color: var(--color-accent); }.key-list article > div, .message-list article > div { min-width: 0; display: grid; }.key-list strong, .message-list strong { font-size: var(--text-xs); }.key-list small, .message-list small { overflow: hidden; color: var(--color-muted); font-size: var(--text-2xs); text-overflow: ellipsis; white-space: nowrap; }.legacy-key { color: var(--color-warning); }.key-time { color: var(--color-muted); font-size: 9px; text-align: right; }.key-time b { color: var(--color-ink-secondary); font-size: var(--text-2xs); font-weight: 500; }.message-list article { grid-template-columns: 30px 1fr auto; }.message-list article > span:last-child { display: grid; text-align: right; }.message-list b { font-size: var(--text-2xs); text-transform: capitalize; }.message-list b.delivered { color: var(--color-success); }.message-list b.queued { color: var(--color-warning); }.message-list b.failed { color: var(--color-danger); }.delivery-mark { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 50%; background: var(--color-warning-soft); color: var(--color-warning); }.delivery-mark.delivered { background: var(--color-success-soft); color: var(--color-success); }.delivery-mark.failed { background: var(--color-danger-soft); color: var(--color-danger); }
+  .send-guide { margin: var(--space-5); overflow: hidden; border: 1px solid var(--color-rule); border-radius: var(--radius-lg); background: var(--color-paper-subtle); }.send-guide > header { min-height: 78px; padding: var(--space-4); display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); border-bottom: 1px solid var(--color-rule); }.send-guide h3 { margin: 3px 0 2px; font-size: var(--text-md); }.send-guide header p { margin: 0; color: var(--color-muted); font-size: var(--text-xs); }.send-guide-body { padding: var(--space-4); display: grid; grid-template-columns: minmax(210px, .55fr) minmax(0, 1.45fr); gap: var(--space-4); }.send-guide ol { margin: 0; padding: 0; display: grid; align-content: start; gap: var(--space-4); list-style: none; }.send-guide li { display: grid; grid-template-columns: 26px 1fr; gap: 9px; }.send-guide li > b { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: var(--color-accent-soft); color: var(--color-accent); font-size: var(--text-2xs); }.send-guide li > span { display: grid; gap: 2px; }.send-guide li strong { font-size: var(--text-xs); }.send-guide li small { color: var(--color-muted); font-size: var(--text-2xs); line-height: 1.45; }.send-guide li code { color: var(--color-ink-secondary); }.api-example { min-width: 0; overflow: hidden; border: 1px solid var(--color-log-rule); border-radius: var(--radius-md); background: var(--color-log-bg); }.api-example-head { min-height: 50px; padding: 7px 8px 7px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--color-log-rule); }.api-example-head > span { min-width: 0; display: grid; gap: 2px; }.api-example-head small { color: var(--color-log-muted); font-size: 9px; text-transform: uppercase; }.api-example-head code { overflow: hidden; color: var(--color-log-text); font-size: var(--text-2xs); text-overflow: ellipsis; white-space: nowrap; }.api-example-head button { width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid var(--color-log-rule); border-radius: var(--radius-sm); background: var(--color-log-surface); color: var(--color-log-muted); cursor: pointer; }.api-example-head button:hover { color: var(--color-log-text); }.code-tabs { padding: 8px 12px 0; display: flex; gap: 4px; }.code-tabs button { min-height: 27px; padding: 0 9px; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--color-log-muted); font-size: var(--text-2xs); font-weight: 650; cursor: pointer; }.code-tabs button.active { background: var(--color-log-surface); color: var(--color-log-text); }.api-example pre { min-height: 220px; margin: 0; padding: 12px; overflow: auto; }.api-example pre code { color: var(--color-log-text); font-size: 11px; line-height: 1.6; white-space: pre; }
   .empty-panel { min-height: 320px; display: grid; place-items: center; }.loading-grid { display: grid; grid-template-columns: 220px 1fr; gap: var(--space-4); }.loading-grid div { min-height: 280px; border: 1px solid var(--color-rule); border-radius: var(--radius-lg); background: linear-gradient(100deg, var(--color-paper-raised) 20%, var(--color-paper-subtle) 45%, var(--color-paper-raised) 70%); background-size: 300% 100%; animation: shimmer 1.4s infinite; }.loading-grid div:nth-child(2) { grid-column: 2; }.loading-grid div:nth-child(3) { display: none; }@keyframes shimmer { to { background-position: -200% 0; } }
   .setup-panel { padding: var(--space-6); display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, .7fr); align-items: center; gap: var(--space-7); }.setup-copy { display: flex; align-items: flex-start; gap: var(--space-4); }.setup-icon { width: 46px; height: 46px; flex: 0 0 auto; display: grid; place-items: center; border-radius: var(--radius-md); background: var(--color-accent-softer); color: var(--color-accent); }.setup-copy h2 { margin: 5px 0 5px; font-size: var(--text-lg); }.setup-copy p { max-width: 580px; margin: 0; color: var(--color-muted); font-size: var(--text-sm); line-height: 1.55; }.setup-panel form { display: grid; gap: var(--space-3); }.setup-panel form .btn { justify-self: end; }
-  .mail-modal { width: min(500px, 100%); }.modal-body { padding: var(--space-5); display: grid; gap: var(--space-4); }.safe-note { padding: 10px 12px; display: flex; align-items: center; gap: 9px; border-radius: var(--radius-md); background: var(--color-success-soft); color: var(--color-success); font-size: var(--text-xs); }.safe-note.warning { background: var(--color-warning-soft); color: var(--color-warning); }.secret-box { padding: 8px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-log-bg); }.secret-box code { min-width: 0; flex: 1; overflow: hidden; color: var(--color-log-text); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }.secret-box button { min-height: 30px; padding: 0 10px; display: flex; align-items: center; gap: 6px; border: 1px solid var(--color-log-rule); border-radius: var(--radius-sm); background: var(--color-log-surface); color: var(--color-log-text); cursor: pointer; }
-  @media (max-width: 900px) { .mail-readiness { grid-template-columns: auto 1fr; }.readiness-checks { grid-column: 2; grid-template-columns: repeat(2, auto); }.setup-panel { grid-template-columns: 1fr; }.setup-panel form .btn { justify-self: start; }.domain-workspace { grid-template-columns: 1fr; }.domain-list { display: grid; grid-template-columns: repeat(2, 1fr); }.domain-list > header { grid-column: 1 / -1; }.record-row { grid-template-columns: 32px 56px minmax(150px, .85fr) minmax(180px, 1fr); } }
-  @media (max-width: 650px) { .mail-readiness { padding: var(--space-4); grid-template-columns: 1fr; }.signal-orbit { display: none; }.readiness-checks { grid-column: 1; grid-template-columns: 1fr; }.mail-tabs { overflow-x: auto; }.domain-list { grid-template-columns: 1fr; }.domain-head { flex-direction: column; }.domain-actions { width: 100%; }.domain-actions .btn { flex: 1; }.record-guide { display: none; }.records-table { margin-top: var(--space-4); overflow-x: auto; }.record-row { width: 690px; }.key-list article { grid-template-columns: 34px 1fr 34px; }.key-time { display: none; }.section-head { align-items: flex-start; flex-direction: column; }.section-head .btn { width: 100%; }.message-list article { grid-template-columns: 30px minmax(0, 1fr); }.message-list article > span:last-child { grid-column: 2; text-align: left; }.loading-grid { grid-template-columns: 1fr; }.loading-grid div:nth-child(2) { display: none; } }
+  .mail-modal { width: min(540px, 100%); }.modal-body { padding: var(--space-5); display: grid; gap: var(--space-4); }.safe-note { padding: 10px 12px; display: flex; align-items: center; gap: 9px; border-radius: var(--radius-md); background: var(--color-success-soft); color: var(--color-success); font-size: var(--text-xs); }.safe-note.warning { background: var(--color-warning-soft); color: var(--color-warning); }.credential-grid { display: grid; gap: 1px; overflow: hidden; border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-rule); }.credential-grid > div { padding: 9px 11px; display: grid; gap: 3px; background: var(--color-paper-raised); }.credential-grid small, .credential-secret > span { color: var(--color-muted); font-size: var(--text-2xs); }.credential-grid span { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; }.credential-grid code { min-width: 0; overflow: hidden; color: var(--color-ink-secondary); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }.credential-grid button { width: 28px; height: 28px; flex: 0 0 auto; display: grid; place-items: center; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--color-muted); cursor: pointer; }.credential-secret { display: grid; gap: 6px; }.secret-box { padding: 8px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-log-bg); }.secret-box code { min-width: 0; flex: 1; overflow: hidden; color: var(--color-log-text); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }.secret-box button { min-height: 30px; padding: 0 10px; display: flex; align-items: center; gap: 6px; border: 1px solid var(--color-log-rule); border-radius: var(--radius-sm); background: var(--color-log-surface); color: var(--color-log-text); cursor: pointer; }
+  @media (max-width: 900px) { .mail-readiness { grid-template-columns: auto 1fr; }.readiness-checks { grid-column: 2; grid-template-columns: repeat(2, auto); }.setup-panel { grid-template-columns: 1fr; }.setup-panel form .btn { justify-self: start; }.domain-workspace { grid-template-columns: 1fr; }.domain-list { display: grid; grid-template-columns: repeat(2, 1fr); }.domain-list > header { grid-column: 1 / -1; }.record-row { grid-template-columns: 32px 56px minmax(150px, .85fr) minmax(180px, 1fr); }.send-guide-body { grid-template-columns: 1fr; } }
+  @media (max-width: 650px) { .mail-readiness { padding: var(--space-4); grid-template-columns: 1fr; }.signal-orbit { display: none; }.readiness-checks { grid-column: 1; grid-template-columns: 1fr; }.mail-tabs { overflow-x: auto; }.domain-list { grid-template-columns: 1fr; }.domain-head { flex-direction: column; }.domain-actions { width: 100%; }.domain-actions .btn { flex: 1; }.record-guide { display: none; }.records-table { margin-top: var(--space-4); overflow-x: auto; }.record-row { width: 690px; }.key-list article { grid-template-columns: 34px 1fr 34px; }.key-time { display: none; }.section-head { align-items: flex-start; flex-direction: column; }.section-head .btn { width: 100%; }.send-guide { margin: var(--space-3); }.send-guide > header { align-items: flex-start; flex-direction: column; }.send-guide > header .btn { width: 100%; }.message-list article { grid-template-columns: 30px minmax(0, 1fr); }.message-list article > span:last-child { grid-column: 2; text-align: left; }.loading-grid { grid-template-columns: 1fr; }.loading-grid div:nth-child(2) { display: none; } }
 </style>

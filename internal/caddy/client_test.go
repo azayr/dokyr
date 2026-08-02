@@ -215,6 +215,28 @@ func TestIsControlHost(t *testing.T) {
 	}
 }
 
+func TestMailHostnameOnlyForwardsACMEChallenge(t *testing.T) {
+	client, err := New("http://caddy:2019", []string{"panel.example.com"}, nil, "dokyr:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetMailHostname("mail.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	configuration := client.Render([]Route{{Domain: "mail.example.com", Upstream: "project:80"}})
+	for _, expected := range []string{"@mailAcme host mail.example.com", "handle /.well-known/acme-challenge/*", "reverse_proxy stalwart:8080"} {
+		if !strings.Contains(configuration, expected) {
+			t.Fatalf("mail ACME config does not contain %q:\n%s", expected, configuration)
+		}
+	}
+	if strings.Contains(configuration, "reverse_proxy project:80") {
+		t.Fatalf("mail hostname must not be assigned to a project:\n%s", configuration)
+	}
+	if !client.IsControlHost("mail.example.com") {
+		t.Fatal("mail hostname must be reserved from project domains")
+	}
+}
+
 // TestRenderKeepsControlHostAheadOfProjects covers the shadowing case: Caddy
 // stops at the first matching handle block, so a project route must never be
 // written before the control-panel matcher.
