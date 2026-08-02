@@ -59,6 +59,13 @@ type Config struct {
 	UpdateChannel                string
 	MailStalwartURL              string
 	MailStalwartAPIKey           string
+	MailStalwartUser             string
+	MailStalwartPassword         string
+	MailStalwartHostname         string
+	MailStalwartDefaultDomain    string
+	MailStalwartRelayHost        string
+	MailStalwartRelayPort        int
+	MailStalwartRelayPassword    string
 	SMTP                         SMTPBootstrap
 	Registry                     RegistryBootstrap
 }
@@ -96,6 +103,13 @@ func Load() Config {
 		UpdateChannel:                env("SELFHOST_UPDATE_CHANNEL", "latest"),
 		MailStalwartURL:              strings.TrimSpace(os.Getenv("MAIL_STALWART_URL")),
 		MailStalwartAPIKey:           strings.TrimSpace(os.Getenv("MAIL_STALWART_API_KEY")),
+		MailStalwartUser:             strings.TrimSpace(os.Getenv("MAIL_STALWART_USER")),
+		MailStalwartPassword:         os.Getenv("MAIL_STALWART_PASSWORD"),
+		MailStalwartHostname:         strings.TrimSpace(os.Getenv("MAIL_STALWART_HOSTNAME")),
+		MailStalwartDefaultDomain:    strings.TrimSpace(os.Getenv("MAIL_STALWART_DEFAULT_DOMAIN")),
+		MailStalwartRelayHost:        strings.TrimSpace(os.Getenv("MAIL_STALWART_RELAY_HOST")),
+		MailStalwartRelayPort:        envInt("MAIL_STALWART_RELAY_PORT", 465),
+		MailStalwartRelayPassword:    os.Getenv("MAIL_STALWART_RELAY_PASSWORD"),
 		SMTP: SMTPBootstrap{
 			Present:                   smtpHost != "" || smtpFromEmail != "",
 			Enabled:                   envBool("SMTP_ENABLED", true),

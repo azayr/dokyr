@@ -248,7 +248,7 @@ func (d *Docker) ProjectMetrics(ctx context.Context, projectID string) (MetricsS
 }
 
 // ControlPlaneMetrics returns only the containers that run Dokyr itself and its
-// PostgreSQL, Caddy, and registry dependencies. The containers are identified
+// PostgreSQL, Caddy, registry, and Stalwart dependencies. The containers are identified
 // from the Compose project label of the currently running Dokyr container.
 func (d *Docker) ControlPlaneMetrics(ctx context.Context) (MetricsSnapshot, error) {
 	snapshot, err := d.Metrics(ctx)
@@ -475,7 +475,7 @@ func controlPlaneService(labels map[string]string, project string) string {
 		return service
 	case "selfhost":
 		return "dokyr"
-	case "postgres", "caddy", "registry":
+	case "postgres", "caddy", "registry", "stalwart":
 		return service
 	default:
 		return ""
@@ -492,8 +492,10 @@ func controlPlaneOrder(service string) int {
 		return 2
 	case "registry":
 		return 3
+	case "stalwart":
+		return 4
 	default:
-		return 3
+		return 5
 	}
 }
 

@@ -46,6 +46,9 @@ func TestNewRequiresCompleteStalwartConnection(t *testing.T) {
 	if _, err := New(Config{StalwartURL: "https://mail.example.com"}); err == nil {
 		t.Fatal("expected incomplete connection to fail")
 	}
+	if _, err := New(Config{StalwartURL: "https://mail.example.com", StalwartUser: "admin"}); err == nil {
+		t.Fatal("expected incomplete basic authentication to fail")
+	}
 	if gateway, err := New(Config{}); err != nil || gateway.Configured() {
 		t.Fatalf("empty optional connection = (%v, %v)", gateway, err)
 	}
@@ -59,6 +62,9 @@ func TestProvisionDomainCreatesThenFetchesDNSZone(t *testing.T) {
 	}
 	gateway.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		calls++
+		if r.URL.Path != "/jmap" {
+			t.Fatalf("path = %q, want /jmap", r.URL.Path)
+		}
 		if r.Header.Get("Authorization") != "Bearer secret" {
 			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
 		}
@@ -87,5 +93,77 @@ func TestProvisionDomainCreatesThenFetchesDNSZone(t *testing.T) {
 	}
 	if id != "dom1" || calls != 2 || len(records) != 2 {
 		t.Fatalf("id=%q calls=%d records=%#v", id, calls, records)
+	}
+}
+
+func TestEnsureBootstrapUsesBasicAuthAndRequestsRestart(t *testing.T) {
+	calls := 0
+	gateway, err := New(Config{
+		StalwartURL: "http://stalwart:8080", StalwartUser: "admin", StalwartPassword: "secret",
+		BootstrapHostname: "mail.example.com", BootstrapDefaultDomain: "dokyr.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		username, password, ok := r.BasicAuth()
+		if !ok || username != "admin" || password != "secret" {
+			t.Fatalf("basic auth = (%q, %q, %v)", username, password, ok)
+		}
+		var payload struct {
+			MethodCalls [][]json.RawMessage `json:"methodCalls"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		var method string
+		_ = json.Unmarshal(payload.MethodCalls[0][0], &method)
+		body := `{"methodResponses":[["x:Bootstrap/get",{"list":[{"id":"singleton"}]},"get"]]}`
+		if method == "x:Bootstrap/set" {
+			body = `{"methodResponses":[["x:Bootstrap/set",{"updated":{"singleton":{"username":"admin@dokyr.test","secret":"generated"}}},"bootstrap"]]}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewBufferString(body))}, nil
+	})}
+	restart, err := gateway.EnsureBootstrap(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restart || calls != 2 {
+		t.Fatalf("restart=%v calls=%d, want true and 2", restart, calls)
+	}
+}
+
+func TestPrepareSenderCreatesDomainAccount(t *testing.T) {
+	calls := 0
+	gateway, err := New(Config{
+		StalwartURL: "http://stalwart:8080", StalwartUser: "admin", StalwartPassword: "secret",
+		RelayHost: "stalwart", RelayPort: 465, RelayPassword: "relay-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		var payload struct {
+			MethodCalls [][]json.RawMessage `json:"methodCalls"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		var method string
+		_ = json.Unmarshal(payload.MethodCalls[0][0], &method)
+		body := `{"methodResponses":[["x:Account/query",{"ids":[]},"query"]]}`
+		if method == "x:Account/set" {
+			body = `{"methodResponses":[["x:Account/set",{"created":{"dokyr":{"id":"account1"}}},"create"]]}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewBufferString(body))}, nil
+	})}
+	relay, err := gateway.PrepareSender(t.Context(), "domain1", "Hello@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || relay.Username != "hello@example.com" || relay.Password != "relay-secret" || !relay.InsecureSkipVerify {
+		t.Fatalf("calls=%d relay=%+v", calls, relay)
 	}
 }

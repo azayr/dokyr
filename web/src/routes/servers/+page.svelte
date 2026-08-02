@@ -10,7 +10,8 @@
     { key: 'dokyr', name: 'Dokyr', role: 'Control plane', icon: 'box' },
     { key: 'postgres', name: 'PostgreSQL', role: 'State database', icon: 'database' },
     { key: 'caddy', name: 'Caddy', role: 'Ingress proxy', icon: 'globe' },
-    { key: 'registry', name: 'Registry', role: 'Container image storage', icon: 'layers' }
+    { key: 'registry', name: 'Registry', role: 'Container image storage', icon: 'layers' },
+    { key: 'stalwart', name: 'Stalwart', role: 'Mail server', icon: 'mail' }
   ];
   const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const defaultCleanupSchedule = {

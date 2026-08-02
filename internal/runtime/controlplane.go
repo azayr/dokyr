@@ -57,6 +57,21 @@ func (d *Docker) ControlPlaneContainerName(ctx context.Context, service string) 
 	return "", ErrNotFound
 }
 
+// RestartControlPlaneService restarts one service in Dokyr's own Compose
+// project. Stalwart requires one restart after its bootstrap object writes the
+// durable configuration file.
+func (d *Docker) RestartControlPlaneService(ctx context.Context, service string) error {
+	container, err := d.ControlPlaneContainerName(ctx, service)
+	if err != nil {
+		return err
+	}
+	response, err := d.request(ctx, http.MethodPost, "/containers/"+url.PathEscape(container)+"/restart?t=30", nil, nil)
+	if err != nil {
+		return err
+	}
+	return response.Body.Close()
+}
+
 // ExecInContainer runs a command inside an arbitrary container and captures the
 // demultiplexed stdout and stderr streams.
 func (d *Docker) ExecInContainer(ctx context.Context, container string, cmd []string) (CommandResult, error) {

@@ -18,22 +18,50 @@ import (
 )
 
 type Config struct {
-	StalwartURL    string
-	StalwartAPIKey string
+	StalwartURL            string
+	StalwartAPIKey         string
+	StalwartUser           string
+	StalwartPassword       string
+	BootstrapHostname      string
+	BootstrapDefaultDomain string
+	RelayHost              string
+	RelayPort              int
+	RelayPassword          string
 }
 
 type Gateway struct {
-	baseURL  string
-	apiKey   string
-	client   *http.Client
-	resolver *net.Resolver
+	baseURL                string
+	apiKey                 string
+	username               string
+	password               string
+	bootstrapHostname      string
+	bootstrapDefaultDomain string
+	relayHost              string
+	relayPort              int
+	relayPassword          string
+	client                 *http.Client
+	resolver               *net.Resolver
+}
+
+type RelayConfig struct {
+	Host               string
+	Port               int
+	Username           string
+	Password           string
+	InsecureSkipVerify bool
 }
 
 func New(config Config) (*Gateway, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(config.StalwartURL), "/")
 	apiKey := strings.TrimSpace(config.StalwartAPIKey)
-	if (baseURL == "") != (apiKey == "") {
-		return nil, errors.New("MAIL_STALWART_URL and MAIL_STALWART_API_KEY must be configured together")
+	username := strings.TrimSpace(config.StalwartUser)
+	password := config.StalwartPassword
+	if username == "" && password != "" || username != "" && password == "" {
+		return nil, errors.New("MAIL_STALWART_USER and MAIL_STALWART_PASSWORD must be configured together")
+	}
+	hasAuth := apiKey != "" || username != ""
+	if (baseURL == "") != !hasAuth {
+		return nil, errors.New("MAIL_STALWART_URL requires an API key or username and password")
 	}
 	if baseURL != "" {
 		parsed, err := url.Parse(baseURL)
@@ -42,14 +70,201 @@ func New(config Config) (*Gateway, error) {
 		}
 	}
 	return &Gateway{
-		baseURL:  baseURL,
-		apiKey:   apiKey,
-		client:   &http.Client{Timeout: 15 * time.Second},
-		resolver: net.DefaultResolver,
+		baseURL:                baseURL,
+		apiKey:                 apiKey,
+		username:               username,
+		password:               password,
+		bootstrapHostname:      strings.ToLower(strings.TrimSuffix(strings.TrimSpace(config.BootstrapHostname), ".")),
+		bootstrapDefaultDomain: strings.ToLower(strings.TrimSuffix(strings.TrimSpace(config.BootstrapDefaultDomain), ".")),
+		relayHost:              strings.TrimSpace(config.RelayHost),
+		relayPort:              config.RelayPort,
+		relayPassword:          config.RelayPassword,
+		client:                 &http.Client{Timeout: 15 * time.Second},
+		resolver:               net.DefaultResolver,
 	}, nil
 }
 
-func (g *Gateway) Configured() bool { return g != nil && g.baseURL != "" && g.apiKey != "" }
+func (g *Gateway) Configured() bool {
+	return g != nil && g.baseURL != "" && (g.apiKey != "" || g.username != "")
+}
+
+func (g *Gateway) ManagedDelivery() bool {
+	return g != nil && g.Configured() && g.relayHost != "" && g.relayPort > 0 && g.relayPort <= 65535 && g.relayPassword != ""
+}
+
+// EnsureBootstrap completes the one-time setup for the bundled Stalwart
+// container. It returns true when Stalwart must be restarted to enter normal
+// mail-service mode. External API-key connections skip this lifecycle.
+func (g *Gateway) EnsureBootstrap(ctx context.Context) (bool, error) {
+	if !g.Configured() || g.apiKey != "" || g.bootstrapHostname == "" || g.bootstrapDefaultDomain == "" {
+		return false, nil
+	}
+	request := map[string]any{
+		"methodCalls": []any{[]any{"x:Bootstrap/get", map[string]any{"ids": []string{"singleton"}}, "get"}},
+		"using":       []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+	}
+	response, err := g.call(ctx, request)
+	if err != nil {
+		return false, err
+	}
+	args, method, err := firstMethodResponse(response)
+	if err != nil {
+		return false, err
+	}
+	if method == "error" {
+		return false, fmt.Errorf("Stalwart bootstrap check failed: %s", jmapError(args))
+	}
+	var current struct {
+		List []json.RawMessage `json:"list"`
+	}
+	if err := json.Unmarshal(args, &current); err != nil {
+		return false, fmt.Errorf("decode Stalwart bootstrap state: %w", err)
+	}
+	if len(current.List) == 0 {
+		return false, nil
+	}
+	update := map[string]any{
+		"serverHostname":        g.bootstrapHostname,
+		"defaultDomain":         g.bootstrapDefaultDomain,
+		"requestTlsCertificate": false,
+		"generateDkimKeys":      true,
+		"dataStore":             map[string]any{"@type": "RocksDb", "path": "/var/lib/stalwart/"},
+		"blobStore":             map[string]any{"@type": "Default"},
+		"searchStore":           map[string]any{"@type": "Default"},
+		"inMemoryStore":         map[string]any{"@type": "Default"},
+		"directory":             map[string]any{"@type": "Internal"},
+		"tracer": map[string]any{
+			"@type": "Stdout", "level": "info", "ansi": false, "multiline": false,
+			"events": map[string]any{}, "eventsPolicy": "exclude", "enable": true, "lossy": false,
+		},
+		"dnsServer": map[string]any{"@type": "Manual"},
+	}
+	response, err = g.call(ctx, map[string]any{
+		"methodCalls": []any{[]any{"x:Bootstrap/set", map[string]any{"update": map[string]any{"singleton": update}}, "bootstrap"}},
+		"using":       []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+	})
+	if err != nil {
+		return false, err
+	}
+	args, method, err = firstMethodResponse(response)
+	if err != nil {
+		return false, err
+	}
+	if method == "error" {
+		return false, fmt.Errorf("Stalwart bootstrap failed: %s", jmapError(args))
+	}
+	var result struct {
+		Updated    map[string]json.RawMessage `json:"updated"`
+		NotUpdated map[string]json.RawMessage `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(args, &result); err != nil {
+		return false, fmt.Errorf("decode Stalwart bootstrap response: %w", err)
+	}
+	if detail, failed := result.NotUpdated["singleton"]; failed {
+		return false, fmt.Errorf("Stalwart bootstrap failed: %s", jmapError(detail))
+	}
+	if _, updated := result.Updated["singleton"]; !updated {
+		return false, errors.New("Stalwart did not confirm its bootstrap configuration")
+	}
+	return true, nil
+}
+
+func (g *Gateway) Ping(ctx context.Context) error {
+	if !g.Configured() {
+		return errors.New("Stalwart is not connected")
+	}
+	response, err := g.call(ctx, map[string]any{
+		"methodCalls": []any{[]any{"x:Domain/query", map[string]any{"limit": 1}, "ping"}},
+		"using":       []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+	})
+	if err != nil {
+		return err
+	}
+	args, method, err := firstMethodResponse(response)
+	if err != nil {
+		return err
+	}
+	if method == "error" {
+		return fmt.Errorf("Stalwart is not ready: %s", jmapError(args))
+	}
+	return nil
+}
+
+// PrepareSender ensures Stalwart has a mailbox identity matching the requested
+// From address, then returns credentials for the private implicit-TLS
+// submission listener. The password never leaves the Dokyr control plane.
+func (g *Gateway) PrepareSender(ctx context.Context, domainID, address string) (RelayConfig, error) {
+	if !g.ManagedDelivery() {
+		return RelayConfig{}, errors.New("the bundled Stalwart relay is not configured")
+	}
+	address = strings.ToLower(strings.TrimSpace(address))
+	separator := strings.LastIndexByte(address, '@')
+	if separator < 1 || separator == len(address)-1 || strings.TrimSpace(domainID) == "" {
+		return RelayConfig{}, errors.New("sender identity is invalid")
+	}
+	localPart := address[:separator]
+	query := map[string]any{
+		"methodCalls": []any{[]any{"x:Account/query", map[string]any{"filter": map[string]any{
+			"operator": "AND", "conditions": []any{map[string]any{"name": localPart}, map[string]any{"domainId": domainID}},
+		}, "limit": 1}, "query"}},
+		"using": []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+	}
+	response, err := g.call(ctx, query)
+	if err != nil {
+		return RelayConfig{}, err
+	}
+	args, method, err := firstMethodResponse(response)
+	if err != nil {
+		return RelayConfig{}, err
+	}
+	if method == "error" {
+		return RelayConfig{}, fmt.Errorf("Stalwart could not query the sender: %s", jmapError(args))
+	}
+	var found struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(args, &found); err != nil {
+		return RelayConfig{}, fmt.Errorf("decode Stalwart sender query: %w", err)
+	}
+	if len(found.IDs) == 0 {
+		account := map[string]any{
+			"@type": "User", "name": localPart, "domainId": domainID,
+			"credentials":    map[string]any{"0": map[string]any{"@type": "Password", "secret": g.relayPassword}},
+			"memberGroupIds": map[string]any{}, "roles": map[string]any{"@type": "User"},
+			"permissions": map[string]any{"@type": "Inherit"}, "quotas": map[string]any{},
+			"aliases": map[string]any{}, "encryptionAtRest": map[string]any{"@type": "Disabled"},
+			"description": "Managed by Dokyr Mail",
+		}
+		response, err = g.call(ctx, map[string]any{
+			"methodCalls": []any{[]any{"x:Account/set", map[string]any{"create": map[string]any{"dokyr": account}}, "create"}},
+			"using":       []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+		})
+		if err != nil {
+			return RelayConfig{}, err
+		}
+		args, method, err = firstMethodResponse(response)
+		if err != nil {
+			return RelayConfig{}, err
+		}
+		if method == "error" {
+			return RelayConfig{}, fmt.Errorf("Stalwart could not create the sender: %s", jmapError(args))
+		}
+		var created struct {
+			Created    map[string]json.RawMessage `json:"created"`
+			NotCreated map[string]json.RawMessage `json:"notCreated"`
+		}
+		if err := json.Unmarshal(args, &created); err != nil {
+			return RelayConfig{}, fmt.Errorf("decode Stalwart sender response: %w", err)
+		}
+		if detail, failed := created.NotCreated["dokyr"]; failed {
+			return RelayConfig{}, fmt.Errorf("Stalwart could not create the sender: %s", jmapError(detail))
+		}
+		if _, ok := created.Created["dokyr"]; !ok {
+			return RelayConfig{}, errors.New("Stalwart did not confirm the sender identity")
+		}
+	}
+	return RelayConfig{Host: g.relayHost, Port: g.relayPort, Username: address, Password: g.relayPassword, InsecureSkipVerify: true}, nil
+}
 
 func (g *Gateway) ProvisionDomain(ctx context.Context, name string) (string, []store.MailDNSRecord, error) {
 	if !g.Configured() {
@@ -166,11 +381,15 @@ func (g *Gateway) call(ctx context.Context, payload any) (json.RawMessage, error
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.baseURL+"/api", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.baseURL+"/jmap", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+g.apiKey)
+	if g.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+g.apiKey)
+	} else {
+		req.SetBasicAuth(g.username, g.password)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	response, err := g.client.Do(req)
 	if err != nil {

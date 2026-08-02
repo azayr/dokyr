@@ -109,10 +109,18 @@ func main() {
 		log.Error("configure platform updates", "error", err)
 		os.Exit(1)
 	}
-	mailGateway, err := mailgateway.New(mailgateway.Config{StalwartURL: cfg.MailStalwartURL, StalwartAPIKey: cfg.MailStalwartAPIKey})
+	mailGateway, err := mailgateway.New(mailgateway.Config{
+		StalwartURL: cfg.MailStalwartURL, StalwartAPIKey: cfg.MailStalwartAPIKey,
+		StalwartUser: cfg.MailStalwartUser, StalwartPassword: cfg.MailStalwartPassword,
+		BootstrapHostname: cfg.MailStalwartHostname, BootstrapDefaultDomain: cfg.MailStalwartDefaultDomain,
+		RelayHost: cfg.MailStalwartRelayHost, RelayPort: cfg.MailStalwartRelayPort, RelayPassword: cfg.MailStalwartRelayPassword,
+	})
 	if err != nil {
 		log.Error("configure mail gateway", "error", err)
 		os.Exit(1)
+	}
+	if mailGateway.Configured() {
+		go initializeStalwart(metricsContext, docker, mailGateway, log)
 	}
 	apiHandler := api.New(db, docker, authManager, integrations, registryTokens, box, caddyClient, updateClient, mailGateway, cfg.PublicURL, cfg.RegistryHosts, cfg.RegistryInternalSecret, log)
 	smtpImported, err := apiHandler.BootstrapSMTPSettings(context.Background(), cfg.SMTP)
@@ -168,5 +176,35 @@ func main() {
 	if err := http.ListenAndServe(cfg.Address, mux); err != nil {
 		log.Error("server stopped", "error", err)
 		os.Exit(1)
+	}
+}
+
+func initializeStalwart(ctx context.Context, docker *runtime.Docker, gateway *mailgateway.Gateway, log *slog.Logger) {
+	for attempt := 1; ; attempt++ {
+		attemptContext, cancel := context.WithTimeout(ctx, 20*time.Second)
+		restart, err := gateway.EnsureBootstrap(attemptContext)
+		cancel()
+		if err == nil && restart {
+			restartContext, restartCancel := context.WithTimeout(ctx, 45*time.Second)
+			err = docker.RestartControlPlaneService(restartContext, "stalwart")
+			restartCancel()
+		}
+		if err == nil {
+			readyContext, readyCancel := context.WithTimeout(ctx, 10*time.Second)
+			err = gateway.Ping(readyContext)
+			readyCancel()
+		}
+		if err == nil {
+			log.Info("bundled Stalwart mail service is ready")
+			return
+		}
+		if attempt == 1 || attempt%12 == 0 {
+			log.Warn("waiting for Stalwart mail service", "attempt", attempt, "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
 	}
 }

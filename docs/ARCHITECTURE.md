@@ -19,6 +19,7 @@ The current release can:
 - assign a domain to an application through Caddy;
 - configure each application's private container port and choose HTTP-only or automatic HTTPS ingress;
 - manage domains and service routes, and safely validate/apply or reset runtime Caddyfile overrides from the Domains screen;
+- verify developer-owned mail domains, provision them in bundled Stalwart, issue domain-scoped API keys, and submit transactional email;
 - save encrypted environment variables and recreate the container without pulling or rebuilding its image;
 - create private-by-default MySQL, MariaDB, and PostgreSQL services with persistent volumes;
 - optionally publish a database on an explicitly selected host port.
@@ -39,11 +40,13 @@ flowchart LR
     DNS["DNS or local hosts file"]
     Git["GitHub / GitLab"]
     Registry["Docker-compatible registries"]
+    Internet["Public mail network"]
 
     subgraph Host["Docker host / VPS"]
         Caddy["Caddy edge proxy"]
         App["Dokyr control plane<br/>Go API + Svelte static UI"]
         PG["Control-plane PostgreSQL"]
+        Mail["Stalwart mail server"]
         Docker["Docker Engine"]
         Workloads["Managed application containers"]
         Databases["Managed database containers"]
@@ -54,6 +57,8 @@ flowchart LR
     Caddy -->|"assigned project domain"| Workloads
     Caddy -->|"unknown host: 404"| User
     App --> PG
+    App -->|"JMAP management + SMTP submission"| Mail
+    Mail <--> Internet
     App -->|"Unix socket API"| Docker
     App -->|"Caddy admin Unix socket"| Caddy
     App <--> Git
@@ -66,7 +71,7 @@ The key architectural decision is that Dokyr does not embed a Docker daemon or a
 
 ## 3. Containers, networks, ports, and volumes
 
-The supplied `compose.yaml` starts three platform containers.
+The supplied `compose.yaml` starts five platform containers.
 
 ```mermaid
 flowchart TB
@@ -77,9 +82,13 @@ flowchart TB
         Caddy["caddy<br/>host 8888→80<br/>host 8443→443"]
         Control["dokyr<br/>listens on 8080 internally"]
         MetaDB["postgres:17-alpine<br/>not published"]
+        RegistryService["registry:3<br/>private container registry"]
+        Mail["stalwart:v0.16<br/>host SMTP/mail protocol ports"]
         AdminSock[("caddy_admin volume<br/>admin.sock")]
         MetaVol[("postgres_data")]
         CaddyVol[("caddy_data + caddy_config")]
+        RegistryVol[("registry_data + registry_auth")]
+        MailVol[("stalwart_config + stalwart_data")]
     end
 
     subgraph Managed["Containers created through Docker API"]
@@ -91,25 +100,33 @@ flowchart TB
     Internet --> Caddy
     Caddy -->|"control network"| Control
     Control -->|"control network"| MetaDB
+    Control -->|"JMAP + private submission"| Mail
     Control --- AdminSock --- Caddy
     Control --- HostSocket
     Caddy -->|"selfhost-proxy network"| Project
+    Caddy -->|"control network"| RegistryService
+    Internet -->|"SMTP 25; optional client protocols"| Mail
     Control -. "Docker API" .-> Project
     Control -. "Docker API" .-> DB
     Project -->|"selfhost-proxy network"| DB
     DB --- DBVol
     MetaDB --- MetaVol
     Caddy --- CaddyVol
+    RegistryService --- RegistryVol
+    Mail --- MailVol
 ```
 
 | Resource | Purpose | Exposure |
 |---|---|---|
-| `control` network | Private communication among Dokyr, Caddy, and metadata PostgreSQL | Docker-internal network |
+| `control` network | Private communication among Dokyr, Caddy, PostgreSQL, Registry, and Stalwart | Docker-internal network |
 | `selfhost-proxy` network | Caddy-to-workload and workload-to-database communication | Docker bridge network, not itself public |
+| `mail_egress` network | Gives only Stalwart outbound DNS and Internet access without joining it to application workloads | Docker bridge network, not itself public |
 | `/var/run/docker.sock` | Lets Dokyr call the Docker Engine API | Mounted only in the Dokyr container |
 | `caddy_admin` | Shares Caddy's admin Unix socket with Dokyr | No TCP admin port |
 | `postgres_data` | Persists control-plane records | Docker volume |
 | `caddy_data`, `caddy_config` | Persists certificates and Caddy state | Docker volumes |
+| `registry_data`, `registry_auth` | Persists registry objects and token-signing material | Docker volumes |
+| `stalwart_config`, `stalwart_data` | Persists Stalwart configuration, identities, DKIM keys, and mail data | Docker volumes |
 | `selfhost-db-*` volumes | Persist managed database data | One named volume per database service |
 
 By default, Caddy publishes HTTP on host port `8888` and HTTPS on `8443`, which avoids collisions with other local services. Set `HTTP_PORT=80` and `HTTPS_PORT=443` on a VPS when those ports are available.
@@ -126,6 +143,8 @@ By default, Caddy publishes HTTP on host port `8888` and HTTPS on `8443`, which 
 | `internal/store/migrations` | Ordered, embedded SQL migrations; the database schema's source of truth |
 | `internal/runtime` | Docker Engine API client for health, image pull, containers, logs, databases, and restart |
 | `internal/caddy` | Domain validation, HTTP/HTTPS route rendering, health checks, and atomic configuration through the admin socket |
+| `internal/mailgateway` | Stalwart bootstrap, JMAP domain/account management, and DNS record discovery |
+| `internal/mailer` | SMTP message submission for platform notifications and developer mail |
 | `internal/integration` | GitHub/GitLab OAuth, provider APIs, and private repository discovery |
 | `internal/secretbox` | AES-GCM encryption/decryption for stored secrets |
 | `internal/s3` | AWS Signature V4 upload and download client for server backup archives |
@@ -160,6 +179,7 @@ sequenceDiagram
     participant Auth as JWT + secret box
     participant Docker as Docker Engine
     participant Caddy as Caddy admin API
+    participant Mail as Stalwart
     participant HTTP as HTTP server
 
     Main->>Main: Load environment configuration
@@ -171,7 +191,10 @@ sequenceDiagram
     Main->>Auth: Validate JWT and encryption keys
     Main->>Docker: Create Unix-socket client
     Main->>Caddy: Create admin-socket client
-    par Background domain synchronization
+    par Background Stalwart initialization
+        Main->>Mail: Bootstrap once through internal JMAP
+        Main->>Mail: Restart into normal mail-service mode when required
+    and Background domain synchronization
         Main->>Store: Read assigned domains
         Main->>Caddy: Load complete generated configuration
     and Serve requests
@@ -448,6 +471,10 @@ Applied filenames are recorded in `schema_migrations`. Each migration runs in it
 | `HTTP_PORT` | `8888` | Compose-only Caddy HTTP host port |
 | `HTTPS_PORT` | `8443` | Compose-only Caddy HTTPS TCP/UDP host port |
 | `POSTGRES_PASSWORD` | insecure development value | Compose control-plane database password |
+| `STALWART_HOSTNAME` | `mail.dokyr.test` | Public mail server hostname; set a real FQDN in production |
+| `STALWART_RECOVERY_PASSWORD` | insecure development value | Recovery/management credential generated by the installer |
+| `STALWART_RELAY_PASSWORD` | insecure development value | Private sender credential generated by the installer |
+| `MAIL_STALWART_URL` | `http://stalwart:8080` in Compose | Internal JMAP management endpoint |
 
 Keep `SELFHOST_ENCRYPTION_KEY` stable. Losing or changing it makes saved provider tokens, registry passwords, database passwords, and environment values unreadable. Rotating it requires a deliberate decrypt-and-re-encrypt migration, which does not exist yet.
 
@@ -460,10 +487,10 @@ Operational requirements:
 - expose the control panel only on intended hostnames or a trusted management address;
 - use HTTPS and `SELFHOST_COOKIE_SECURE=true` outside local development;
 - replace every development secret in `.env.example` with long random values;
-- never mount the Docker socket into Caddy, PostgreSQL, or managed workloads;
+- never mount the Docker socket into Caddy, PostgreSQL, Stalwart, or managed workloads;
 - keep Caddy's admin API on its shared Unix socket, not a public TCP listener;
 - restrict who may reveal database credentials or update environment variables;
-- back up PostgreSQL, Caddy data, and every managed database volume;
+- back up PostgreSQL, Caddy data, Stalwart volumes, and every managed database volume;
 - review image provenance because deployed images run on the same Docker host;
 - treat public database exposure as exceptional and firewall published ports at the VPS layer.
 
@@ -514,7 +541,7 @@ services:
     build: null
 ```
 
-The image contains only the Dokyr process and built web application. It still requires PostgreSQL, a reachable Docker Unix socket, and Caddy with the shared admin socket. The repository's `compose.yaml` is the canonical description of those dependencies.
+The image contains only the Dokyr process and built web application. It still requires PostgreSQL, a reachable Docker Unix socket, Caddy with the shared admin socket, Registry, and Stalwart. The repository's `compose.yaml` is the canonical description of those dependencies.
 
 Useful runtime checks:
 
@@ -522,6 +549,7 @@ Useful runtime checks:
 docker compose ps
 docker compose logs -f dokyr
 docker compose logs -f caddy
+docker compose logs -f stalwart
 docker inspect selfhost-<project-id>
 docker network inspect selfhost-proxy
 ```

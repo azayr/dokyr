@@ -26,8 +26,15 @@ services:
       SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
       SMTP_NOTIFY_DEPLOYMENT_FAILURES: ${SMTP_NOTIFY_DEPLOYMENT_FAILURES:-true}
       SMTP_NOTIFY_DEPLOYMENT_SUCCESSES: ${SMTP_NOTIFY_DEPLOYMENT_SUCCESSES:-false}
-      MAIL_STALWART_URL: ${MAIL_STALWART_URL:-}
+      MAIL_STALWART_URL: ${MAIL_STALWART_URL:-http://stalwart:8080}
       MAIL_STALWART_API_KEY: ${MAIL_STALWART_API_KEY:-}
+      MAIL_STALWART_USER: ${MAIL_STALWART_USER:-admin}
+      MAIL_STALWART_PASSWORD: ${MAIL_STALWART_PASSWORD:-${STALWART_RECOVERY_PASSWORD:-dokyr-local-stalwart-password}}
+      MAIL_STALWART_HOSTNAME: ${MAIL_STALWART_HOSTNAME:-mail.dokyr.test}
+      MAIL_STALWART_DEFAULT_DOMAIN: ${MAIL_STALWART_DEFAULT_DOMAIN:-dokyr.test}
+      MAIL_STALWART_RELAY_HOST: ${MAIL_STALWART_RELAY_HOST:-stalwart}
+      MAIL_STALWART_RELAY_PORT: ${MAIL_STALWART_RELAY_PORT:-465}
+      MAIL_STALWART_RELAY_PASSWORD: ${MAIL_STALWART_RELAY_PASSWORD:-${STALWART_RELAY_PASSWORD:-dokyr-local-relay-password}}
       CADDY_ADMIN_URL: unix:///run/caddy-admin/admin.sock
       DOKYR_CONTROL_UPSTREAM: dokyr:8080
       SELFHOST_CONTROL_HOSTS: ${CONTROL_HOSTS:-localhost}
@@ -60,6 +67,8 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
+      stalwart:
+        condition: service_started
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
 
@@ -79,6 +88,25 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+
+  stalwart:
+    image: ${STALWART_IMAGE:-stalwartlabs/stalwart:v0.16}
+    restart: unless-stopped
+    environment:
+      STALWART_RECOVERY_ADMIN: admin:${STALWART_RECOVERY_PASSWORD:-dokyr-local-stalwart-password}
+      STALWART_HOSTNAME: ${MAIL_STALWART_HOSTNAME:-mail.dokyr.test}
+      STALWART_PUBLIC_URL: ${STALWART_PUBLIC_URL:-https://mail.dokyr.test}
+    ports:
+      - "${STALWART_SMTP_PORT:-25}:25"
+      - "${STALWART_SUBMISSIONS_PORT:-465}:465"
+      - "${STALWART_IMAPS_PORT:-993}:993"
+      - "${STALWART_POP3S_PORT:-995}:995"
+      - "${STALWART_SIEVE_PORT:-4190}:4190"
+    volumes:
+      - stalwart_config:/etc/stalwart
+      - stalwart_data:/var/lib/stalwart
+    networks: [control, mail_egress]
+    security_opt: [no-new-privileges:true]
 
   registry:
     image: registry:3
@@ -162,6 +190,7 @@ services:
 networks:
   control:
     internal: true
+  mail_egress:
   proxy:
     name: selfhost-proxy
 
@@ -172,3 +201,5 @@ volumes:
   caddy_config:
   caddy_admin:
   registry_auth:
+  stalwart_config:
+  stalwart_data:

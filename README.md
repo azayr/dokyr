@@ -1,10 +1,10 @@
 # Dokyr
 
-A lightweight, self-hosted deployment control plane. The foundation combines a Go API, an embedded Svelte interface, a small PostgreSQL container, Docker Engine discovery through the host socket, and a separate Caddy reverse proxy.
+A lightweight, self-hosted deployment control plane. The foundation combines a Go API, an embedded Svelte interface, PostgreSQL, Caddy, a private container registry, and a built-in Stalwart mail server.
 
 The complete implementation guide—including container topology, request and deployment sequences, data model, security boundaries, configuration, operations, known limitations, and maintainer invariants—is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-The prebuilt control-plane image is available as `ghcr.io/azayr/dokyr:latest`. It contains the Go service and Svelte interface; PostgreSQL, Caddy, the Docker socket, networks, and volumes are still supplied by `compose.yaml`.
+The prebuilt control-plane image is available as `ghcr.io/azayr/dokyr:latest`. It contains the Go service and Svelte interface; PostgreSQL, Caddy, the registry, Stalwart, the Docker socket, networks, and volumes are supplied by `compose.yaml`.
 
 ## Install on a VPS
 
@@ -14,7 +14,7 @@ The fastest way to install Dokyr on a fresh server is the remote installer. It d
 curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/install.sh | sudo sh
 ```
 
-The installer defaults to `/opt/dokyr`, publishes the control panel on HTTP port `80` and HTTPS port `443`, and asks only for the public URL and control-panel hostname. Run it as root so the control plane can access the host Docker socket. After the stack starts, open the printed URL and create the owner account.
+The installer defaults to `/opt/dokyr`, publishes the control panel on HTTP port `80` and HTTPS port `443`, and prompts for the panel and mail hostnames while generating omitted secrets. Run it as root so the control plane can access the host Docker socket. After the stack starts, open the printed URL and create the owner account.
 
 For an automated install, download the script and run it with the variables you want preset:
 
@@ -24,6 +24,7 @@ sudo DOKYR_INSTALL_DIR=/srv/dokyr \
   HTTP_PORT=80 HTTPS_PORT=443 \
   PUBLIC_URL=http://panel.example.com \
   CONTROL_HOSTS="panel.example.com" \
+  STALWART_HOSTNAME=mail.example.com \
   POSTGRES_PASSWORD="..." JWT_SECRET="..." ENCRYPTION_KEY="..." \
   sh /tmp/install-dokyr.sh
 ```
@@ -64,6 +65,19 @@ are not restarted.
 Automatic updates are off by default. When enabled, they run only during the
 configured maintenance hour. Release migrations must remain backward
 compatible so a container rollback can safely run the previous binary.
+
+The in-app updater replaces the Dokyr image only. When a release changes the
+Compose topology—such as adding the bundled Stalwart service—an existing VPS
+must also refresh `compose.yaml`. Preserve a backup and any local edits:
+
+```sh
+cd /opt/dokyr
+sudo cp compose.yaml compose.yaml.before-stalwart
+sudo curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/compose.yaml -o compose.yaml
+sudo sed -i.bak '/^    build: \.$/d' compose.yaml
+sudo docker compose pull
+sudo docker compose up -d --remove-orphans
+```
 
 Caddy rejects unknown hostnames with a 404 instead of forwarding them to the control panel. Direct IPv4 access is allowed automatically, so a fresh installation remains reachable at the VPS IP and published HTTP port. `CONTROL_HOSTS` is the allowlist for additional control-panel domain names. For example, on a VPS:
 
@@ -155,10 +169,12 @@ restarting the containers is intentionally not enough.
 
 Dokyr can expose a small Resend-style sending workflow under
 **Infrastructure → Mail**. A developer adds a domain, publishes the unique
-ownership TXT record, and asks Dokyr to verify public DNS. When Stalwart is
-connected through `MAIL_STALWART_URL` and `MAIL_STALWART_API_KEY`, Dokyr then
-creates the domain in Stalwart and imports its generated DKIM, SPF, MX, DMARC,
-and discovery records for copy-and-verify setup.
+ownership TXT record, and asks Dokyr to verify public DNS. Stalwart ships as a
+first-class service in the Compose stack. Dokyr bootstraps it with RocksDB
+storage, manages domains through its internal JMAP endpoint, and imports the
+generated DKIM, SPF, MX, DMARC, and discovery records for copy-and-verify
+setup. Stalwart configuration and messages persist in the `stalwart_config`
+and `stalwart_data` volumes.
 
 Use a dedicated sending subdomain such as `updates.example.com` for the first
 release. Stalwart generates DNS for the exact domain it manages, so using the
@@ -166,9 +182,24 @@ apex domain can overlap with an existing mailbox provider's MX and SPF records.
 
 After every required record is verified, the developer can create a one-time,
 domain-scoped API key and send with `POST /v1/emails`. The key may send only
-from its verified domain. Stalwart's management credential is never exposed to
-developers. Delivery uses the SMTP connection saved under **Settings → SMTP**,
-which should point to the Stalwart submission listener for a self-hosted setup.
+from its verified domain. Dokyr creates the corresponding Stalwart sender
+identity on first use and submits over the private container network; neither
+the management nor relay credential is exposed to developers. **Settings →
+SMTP** remains separate and controls Dokyr's own deployment notifications.
+
+For production, set `STALWART_HOSTNAME` to a hostname such as
+`mail.example.com`, point its A/AAAA records at the VPS, configure matching PTR
+(reverse DNS) with the provider, and allow inbound TCP ports 25, 465, 993, 995,
+and 4190. Some VPS providers block port 25 by default. Caddy already owns host
+port 443, so Stalwart starts with automatic certificate requests disabled; add
+a trusted certificate in Stalwart before exposing IMAPS or submission to mail
+clients. Server-to-server SMTP on port 25 continues to use opportunistic TLS.
+
+An external Stalwart installation remains supported by overriding
+`MAIL_STALWART_URL` and `MAIL_STALWART_API_KEY`, clearing the bundled Basic
+authentication values, and pointing the `MAIL_STALWART_RELAY_*` values at its
+submission listener. Alternatively, clear the relay values and use the generic
+SMTP configuration for delivery.
 
 This first milestone sends synchronously and records the latest delivery
 attempts. It does not yet include a durable retry queue, bounce/complaint

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -34,12 +35,18 @@ func (a *API) mailOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	smtpSettings, _, smtpErr := a.smtpMailerConfig(r.Context())
+	stalwartConnected := false
+	if a.mailGateway != nil && a.mailGateway.Configured() {
+		checkContext, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		stalwartConnected = a.mailGateway.Ping(checkContext) == nil
+		cancel()
+	}
 	write(w, http.StatusOK, map[string]any{
 		"domains":            domains,
 		"apiKeys":            keys,
 		"messages":           messages,
-		"stalwartConnected":  a.mailGateway != nil && a.mailGateway.Configured(),
-		"deliveryConfigured": smtpErr == nil && smtpSettings.Enabled && smtpConfigured(smtpSettings),
+		"stalwartConnected":  stalwartConnected,
+		"deliveryConfigured": (stalwartConnected && a.mailGateway.ManagedDelivery()) || (smtpErr == nil && smtpSettings.Enabled && smtpConfigured(smtpSettings)),
 	})
 }
 
@@ -309,8 +316,19 @@ func (a *API) sendDeveloperEmail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	settings, smtpConfig, err := a.smtpMailerConfig(r.Context())
-	if err != nil || !settings.Enabled || !smtpConfigured(settings) {
-		write(w, http.StatusServiceUnavailable, map[string]string{"error": "mail delivery SMTP is not configured in Dokyr settings"})
+	managedDelivery := a.mailGateway != nil && a.mailGateway.ManagedDelivery() && domain.StalwartID != ""
+	if managedDelivery {
+		relay, relayErr := a.mailGateway.PrepareSender(r.Context(), domain.StalwartID, from.Address)
+		if relayErr != nil {
+			write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart could not prepare the sender: " + relayErr.Error()})
+			return
+		}
+		smtpConfig = mailer.Config{
+			Host: relay.Host, Port: relay.Port, Encryption: "tls", Username: relay.Username,
+			Password: relay.Password, FromName: from.Name, FromEmail: from.Address, InsecureSkipVerify: relay.InsecureSkipVerify,
+		}
+	} else if err != nil || !settings.Enabled || !smtpConfigured(settings) {
+		write(w, http.StatusServiceUnavailable, map[string]string{"error": "mail delivery is not configured in Dokyr"})
 		return
 	}
 	message := store.MailMessage{ID: newID("mail"), DomainID: domain.ID, APIKeyID: key.ID, FromEmail: from.Address,

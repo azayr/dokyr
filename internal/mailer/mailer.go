@@ -16,13 +16,14 @@ import (
 )
 
 type Config struct {
-	Host       string
-	Port       int
-	Encryption string
-	Username   string
-	Password   string
-	FromName   string
-	FromEmail  string
+	Host               string
+	Port               int
+	Encryption         string
+	Username           string
+	Password           string
+	FromName           string
+	FromEmail          string
+	InsecureSkipVerify bool
 }
 
 type Message struct {
@@ -63,7 +64,7 @@ func Send(ctx context.Context, config Config, message Message) error {
 
 	address := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
 	dialer := &net.Dialer{Timeout: 12 * time.Second}
-	tlsConfig := &tls.Config{ServerName: config.Host, MinVersion: tls.VersionTLS12}
+	tlsConfig := &tls.Config{ServerName: config.Host, MinVersion: tls.VersionTLS12, InsecureSkipVerify: config.InsecureSkipVerify} // #nosec G402 -- only enabled for the private bundled Stalwart link.
 	var connection net.Conn
 	var err error
 	if config.Encryption == "tls" {

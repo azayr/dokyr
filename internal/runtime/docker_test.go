@@ -370,23 +370,24 @@ func TestControlPlaneMetricsFiltersAndOrdersDependencies(t *testing.T) {
 			{ID: "api", ControlPlaneService: "dokyr", State: "running", CPUPercent: 5, MemoryUsage: 100},
 			{ID: "database", ControlPlaneService: "postgres", State: "running", CPUPercent: 3, MemoryUsage: 200},
 			{ID: "registry", ControlPlaneService: "registry", State: "running", CPUPercent: 1, MemoryUsage: 75},
+			{ID: "stalwart", ControlPlaneService: "stalwart", State: "running", CPUPercent: 4, MemoryUsage: 125},
 		},
 	}}}
 	snapshot, err := docker.ControlPlaneMetrics(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Global.Containers != 4 || snapshot.Global.Running != 4 {
-		t.Fatalf("control-plane counts = %d/%d, want 4/4", snapshot.Global.Running, snapshot.Global.Containers)
+	if snapshot.Global.Containers != 5 || snapshot.Global.Running != 5 {
+		t.Fatalf("control-plane counts = %d/%d, want 5/5", snapshot.Global.Running, snapshot.Global.Containers)
 	}
-	if snapshot.Global.CPUPercent != 11 || snapshot.Global.MemoryUsage != 425 {
+	if snapshot.Global.CPUPercent != 15 || snapshot.Global.MemoryUsage != 550 {
 		t.Fatalf("control-plane aggregate = cpu %.2f memory %d", snapshot.Global.CPUPercent, snapshot.Global.MemoryUsage)
 	}
 	got := []string{}
 	for _, container := range snapshot.Containers {
 		got = append(got, container.ControlPlaneService)
 	}
-	if strings.Join(got, ",") != "dokyr,postgres,caddy,registry" {
+	if strings.Join(got, ",") != "dokyr,postgres,caddy,registry,stalwart" {
 		t.Fatalf("control-plane order = %v", got)
 	}
 }
@@ -413,6 +414,10 @@ func TestControlPlaneServiceUsesCurrentComposeProject(t *testing.T) {
 	labels["com.docker.compose.service"] = "registry"
 	if got := controlPlaneService(labels, "dokyr"); got != "registry" {
 		t.Fatalf("controlPlaneService = %q, want registry", got)
+	}
+	labels["com.docker.compose.service"] = "stalwart"
+	if got := controlPlaneService(labels, "dokyr"); got != "stalwart" {
+		t.Fatalf("controlPlaneService = %q, want stalwart", got)
 	}
 }
 

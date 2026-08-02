@@ -336,8 +336,8 @@ func (a *API) controlPlaneLogs(w http.ResponseWriter, r *http.Request) {
 	if service == "selfhost" {
 		service = "dokyr"
 	}
-	if service != "dokyr" && service != "postgres" && service != "caddy" && service != "registry" {
-		bad(w, "service must be dokyr, postgres, caddy, or registry")
+	if service != "dokyr" && service != "postgres" && service != "caddy" && service != "registry" && service != "stalwart" {
+		bad(w, "service must be dokyr, postgres, caddy, registry, or stalwart")
 		return
 	}
 	tail := 300
