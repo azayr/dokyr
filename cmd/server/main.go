@@ -15,6 +15,7 @@ import (
 	"github.com/azayr/selfhost/internal/caddy"
 	"github.com/azayr/selfhost/internal/config"
 	"github.com/azayr/selfhost/internal/integration"
+	"github.com/azayr/selfhost/internal/mailgateway"
 	"github.com/azayr/selfhost/internal/platformupdate"
 	"github.com/azayr/selfhost/internal/registry"
 	"github.com/azayr/selfhost/internal/runtime"
@@ -108,7 +109,12 @@ func main() {
 		log.Error("configure platform updates", "error", err)
 		os.Exit(1)
 	}
-	apiHandler := api.New(db, docker, authManager, integrations, registryTokens, box, caddyClient, updateClient, cfg.PublicURL, cfg.RegistryHosts, cfg.RegistryInternalSecret, log)
+	mailGateway, err := mailgateway.New(mailgateway.Config{StalwartURL: cfg.MailStalwartURL, StalwartAPIKey: cfg.MailStalwartAPIKey})
+	if err != nil {
+		log.Error("configure mail gateway", "error", err)
+		os.Exit(1)
+	}
+	apiHandler := api.New(db, docker, authManager, integrations, registryTokens, box, caddyClient, updateClient, mailGateway, cfg.PublicURL, cfg.RegistryHosts, cfg.RegistryInternalSecret, log)
 	smtpImported, err := apiHandler.BootstrapSMTPSettings(context.Background(), cfg.SMTP)
 	if err != nil {
 		log.Error("bootstrap SMTP settings", "error", err)
@@ -144,6 +150,7 @@ func main() {
 	}()
 	mux := http.NewServeMux()
 	mux.Handle("/api/", apiHandler.Handler())
+	mux.Handle("/v1/", apiHandler.Handler())
 	frontend := http.FileServer(http.Dir(cfg.Frontend))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		path := filepath.Join(cfg.Frontend, filepath.Clean(r.URL.Path))

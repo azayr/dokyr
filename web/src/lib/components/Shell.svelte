@@ -32,6 +32,7 @@
       items: [
         { href: '/servers', icon: 'server', label: 'Servers' },
         { href: '/domains', icon: 'globe', label: 'Domains' },
+        { href: '/mail', icon: 'mail', label: 'Mail', badge: 'Beta' },
         ...(manageRegistry ? [{ href: '/object-storage', icon: 'cloud', label: 'Object storage' }] : []),
         { href: '/registry', icon: 'layers', label: 'Registry' },
         { href: '/integrations', icon: 'git', label: 'Sources' }
@@ -121,7 +122,7 @@
           <span class="nav-label">{group.label}</span>
           {#each group.items as item}
             <a href={item.href} class:active={isActive(item.href)} aria-current={isActive(item.href) ? 'page' : undefined} data-sidebar-tip={item.label}>
-              <Icon name={item.icon} size={16} /><span>{item.label}</span>
+              <Icon name={item.icon} size={16} /><span>{item.label}</span>{#if item.badge}<em class="nav-badge">{item.badge}</em>{/if}
             </a>
           {/each}
         </div>
@@ -316,6 +317,20 @@
     background: var(--color-accent-soft);
     color: var(--color-accent);
     font-weight: 600;
+  }
+  .nav-badge {
+    margin-left: auto;
+    padding: 2px 5px;
+    border: 1px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-rule));
+    border-radius: 999px;
+    background: var(--color-accent-softer);
+    color: var(--color-accent);
+    font-size: 8px;
+    font-style: normal;
+    font-weight: 750;
+    letter-spacing: .06em;
+    line-height: 1;
+    text-transform: uppercase;
   }
 
   .sidebar-bottom {
@@ -764,6 +779,7 @@
     .sidebar-collapsed .brand :global(.logo strong),
     .sidebar-collapsed .nav-label,
     .sidebar-collapsed .nav-group a > span,
+    .sidebar-collapsed .nav-badge,
     .sidebar-collapsed .platform-version > span:nth-child(2),
     .sidebar-collapsed .platform-version > i,
     .sidebar-collapsed .identity-text,

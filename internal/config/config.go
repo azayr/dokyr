@@ -57,6 +57,8 @@ type Config struct {
 	RegistryInternalSecret       string
 	PlatformImage                string
 	UpdateChannel                string
+	MailStalwartURL              string
+	MailStalwartAPIKey           string
 	SMTP                         SMTPBootstrap
 	Registry                     RegistryBootstrap
 }
@@ -92,6 +94,8 @@ func Load() Config {
 		RegistryInternalSecret:       hex.EncodeToString(registryInternalHash[:]),
 		PlatformImage:                env("SELFHOST_PLATFORM_IMAGE", "ghcr.io/azayr/dokyr"),
 		UpdateChannel:                env("SELFHOST_UPDATE_CHANNEL", "latest"),
+		MailStalwartURL:              strings.TrimSpace(os.Getenv("MAIL_STALWART_URL")),
+		MailStalwartAPIKey:           strings.TrimSpace(os.Getenv("MAIL_STALWART_API_KEY")),
 		SMTP: SMTPBootstrap{
 			Present:                   smtpHost != "" || smtpFromEmail != "",
 			Enabled:                   envBool("SMTP_ENABLED", true),

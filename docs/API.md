@@ -350,6 +350,44 @@ public GitHub App installation flow described under Sources and registries.
 
 `encryption` is `starttls`, `tls`, or `none`. An empty password preserves the existing saved password. `POST /api/settings/smtp/test` accepts `{ "recipient": "optional@example.com" }`; omit it to send to the current owner.
 
+## Developer mail gateway
+
+Authenticated workspace endpoints:
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/mail` | Current user's domains, keys, recent messages, and connection readiness |
+| `POST` | `/api/mail/domains` | Add `{ "name": "example.com" }` and generate an ownership record |
+| `POST` | `/api/mail/domains/{id}/verify` | Check public DNS and provision the owned domain in Stalwart |
+| `DELETE` | `/api/mail/domains/{id}` | Remove the domain, its scoped keys, and Stalwart domain |
+| `POST` | `/api/mail/api-keys` | Create `{ "name": "Production", "domainId": "mdom_…" }` |
+| `DELETE` | `/api/mail/api-keys/{id}` | Revoke a sending key |
+
+The API-key secret is returned only by the create response. Send email through
+the public developer endpoint with that secret as a bearer token:
+
+```http
+POST /v1/emails
+Authorization: Bearer dkr_mail_...
+Content-Type: application/json
+```
+
+```json
+{
+  "from": "Dokyr <deployments@example.com>",
+  "to": ["developer@company.com"],
+  "subject": "Deployment complete",
+  "html": "<p>Your deployment is ready.</p>",
+  "text": "Your deployment is ready.",
+  "replyTo": "support@example.com"
+}
+```
+
+The `from` address must belong to the verified domain attached to the key. A
+request accepts 1–50 recipients and at least one of `html` or `text`. The MVP
+sends synchronously and returns `{ "id": "mail_…", "status": "sent" }` after
+SMTP accepts every recipient.
+
 ## Dashboard, projects, and domains
 
 | Method | Path | Description |

@@ -28,6 +28,10 @@ var ErrEmailTaken = errors.New("an account already exists for this email address
 // users.
 var ErrLastOwner = errors.New("the last owner cannot be removed or demoted")
 
+// ErrMailDomainTaken reports that a sending domain is already claimed by a
+// Dokyr account. Domain names are globally unique within an installation.
+var ErrMailDomainTaken = errors.New("mail domain is already claimed")
+
 // isUniqueViolation reports whether err is Postgres error 23505.
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError

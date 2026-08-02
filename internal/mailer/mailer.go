@@ -26,10 +26,13 @@ type Config struct {
 }
 
 type Message struct {
-	To      string
-	Subject string
-	Text    string
-	HTML    string
+	To        string
+	FromName  string
+	FromEmail string
+	ReplyTo   string
+	Subject   string
+	Text      string
+	HTML      string
 }
 
 func Send(ctx context.Context, config Config, message Message) error {
@@ -39,11 +42,20 @@ func Send(ctx context.Context, config Config, message Message) error {
 	if config.Host == "" || config.Port < 1 || config.Port > 65535 {
 		return errors.New("SMTP host and port are required")
 	}
-	if _, err := mail.ParseAddress(config.FromEmail); err != nil {
+	fromEmail := strings.TrimSpace(message.FromEmail)
+	if fromEmail == "" {
+		fromEmail = config.FromEmail
+	}
+	if _, err := mail.ParseAddress(fromEmail); err != nil {
 		return errors.New("SMTP sender email is invalid")
 	}
 	if _, err := mail.ParseAddress(message.To); err != nil {
 		return errors.New("recipient email is invalid")
+	}
+	if strings.TrimSpace(message.ReplyTo) != "" {
+		if _, err := mail.ParseAddress(message.ReplyTo); err != nil {
+			return errors.New("reply-to email is invalid")
+		}
 	}
 	if strings.ContainsAny(message.Subject, "\r\n") {
 		return errors.New("email subject contains invalid characters")
@@ -85,7 +97,7 @@ func Send(ctx context.Context, config Config, message Message) error {
 			return fmt.Errorf("authenticate with SMTP server: %w", err)
 		}
 	}
-	if err := client.Mail(config.FromEmail); err != nil {
+	if err := client.Mail(fromEmail); err != nil {
 		return fmt.Errorf("set SMTP sender: %w", err)
 	}
 	if err := client.Rcpt(message.To); err != nil {
@@ -110,11 +122,22 @@ func Send(ctx context.Context, config Config, message Message) error {
 
 func buildMessage(config Config, message Message) []byte {
 	boundary := "dokyr-alternative"
-	from := (&mail.Address{Name: config.FromName, Address: config.FromEmail}).String()
+	fromName, fromEmail := strings.TrimSpace(message.FromName), strings.TrimSpace(message.FromEmail)
+	if fromName == "" {
+		fromName = config.FromName
+	}
+	if fromEmail == "" {
+		fromEmail = config.FromEmail
+	}
+	from := (&mail.Address{Name: fromName, Address: fromEmail}).String()
 	to := (&mail.Address{Address: message.To}).String()
 	subject := mime.QEncoding.Encode("utf-8", message.Subject)
 	var body bytes.Buffer
-	fmt.Fprintf(&body, "From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=%q\r\n\r\n", from, to, subject, boundary)
+	fmt.Fprintf(&body, "From: %s\r\nTo: %s\r\nSubject: %s\r\n", from, to, subject)
+	if replyTo := strings.TrimSpace(message.ReplyTo); replyTo != "" {
+		fmt.Fprintf(&body, "Reply-To: %s\r\n", (&mail.Address{Address: replyTo}).String())
+	}
+	fmt.Fprintf(&body, "MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=%q\r\n\r\n", boundary)
 	fmt.Fprintf(&body, "--%s\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n%s\r\n", boundary, message.Text)
 	fmt.Fprintf(&body, "--%s\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n%s\r\n", boundary, message.HTML)
 	fmt.Fprintf(&body, "--%s--\r\n", boundary)

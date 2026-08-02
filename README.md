@@ -151,6 +151,30 @@ To deliberately bootstrap a different SMTP server, first remove the SMTP
 configuration through an explicit administrative/database operation. Merely
 restarting the containers is intentionally not enough.
 
+## Developer mail gateway
+
+Dokyr can expose a small Resend-style sending workflow under
+**Infrastructure → Mail**. A developer adds a domain, publishes the unique
+ownership TXT record, and asks Dokyr to verify public DNS. When Stalwart is
+connected through `MAIL_STALWART_URL` and `MAIL_STALWART_API_KEY`, Dokyr then
+creates the domain in Stalwart and imports its generated DKIM, SPF, MX, DMARC,
+and discovery records for copy-and-verify setup.
+
+Use a dedicated sending subdomain such as `updates.example.com` for the first
+release. Stalwart generates DNS for the exact domain it manages, so using the
+apex domain can overlap with an existing mailbox provider's MX and SPF records.
+
+After every required record is verified, the developer can create a one-time,
+domain-scoped API key and send with `POST /v1/emails`. The key may send only
+from its verified domain. Stalwart's management credential is never exposed to
+developers. Delivery uses the SMTP connection saved under **Settings → SMTP**,
+which should point to the Stalwart submission listener for a self-hosted setup.
+
+This first milestone sends synchronously and records the latest delivery
+attempts. It does not yet include a durable retry queue, bounce/complaint
+webhooks, suppression lists, per-key rate limits, or reputation management;
+those are required before offering the gateway to untrusted public tenants.
+
 ## GitHub login, private repositories, and registries
 
 GitHub login and repository access use separate applications and permissions.

@@ -30,6 +30,7 @@ import (
 	"github.com/azayr/selfhost/internal/config"
 	"github.com/azayr/selfhost/internal/integration"
 	"github.com/azayr/selfhost/internal/mailer"
+	"github.com/azayr/selfhost/internal/mailgateway"
 	"github.com/azayr/selfhost/internal/platformupdate"
 	"github.com/azayr/selfhost/internal/registry"
 	"github.com/azayr/selfhost/internal/runtime"
@@ -51,6 +52,7 @@ type API struct {
 	publicURL              string
 	registryHosts          []string
 	registryInternalSecret string
+	mailGateway            *mailgateway.Gateway
 	domainMu               sync.Mutex
 	databaseMu             sync.Mutex
 	applicationMu          sync.Mutex
@@ -78,7 +80,7 @@ type domainBindingInput struct {
 	Rules        []domainRuleInput `json:"rules"`
 }
 
-func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integration.Service, registryTokens *registry.TokenIssuer, box *secretbox.Box, caddyClient *caddy.Client, updates *platformupdate.Client, publicURL string, registryHosts []string, registryInternalSecret string, log *slog.Logger) *API {
+func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integration.Service, registryTokens *registry.TokenIssuer, box *secretbox.Box, caddyClient *caddy.Client, updates *platformupdate.Client, mailGateway *mailgateway.Gateway, publicURL string, registryHosts []string, registryInternalSecret string, log *slog.Logger) *API {
 	// Roles come from the database on every request rather than from the
 	// session token, so removing or re-roling an account takes effect at once
 	// instead of when the token expires.
@@ -102,6 +104,7 @@ func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integ
 		publicURL:              strings.TrimRight(publicURL, "/"),
 		registryHosts:          append([]string(nil), registryHosts...),
 		registryInternalSecret: registryInternalSecret,
+		mailGateway:            mailGateway,
 		log:                    log,
 		deploymentCancels:      make(map[string]context.CancelFunc),
 		backupQueue:            make(chan string, 100),
@@ -131,6 +134,7 @@ func (a *API) Handler() http.Handler {
 	public.HandleFunc("POST /api/webhooks/registry/{id}/{token}", a.registryWebhook)
 	public.HandleFunc("POST /api/registry/events", a.internalRegistryEvents)
 	public.HandleFunc("GET /api/registry/token", a.registryToken)
+	public.HandleFunc("POST /v1/emails", a.sendDeveloperEmail)
 	a.registerProtectedRoutes(protected)
 	return a.mountRoutes(public, protected)
 }
@@ -167,6 +171,12 @@ func (a *API) registerProtectedRoutes(protected *guardedMux) {
 	protected.handle("DELETE /api/users/{id}", authz.PermUserManage, a.deleteUser)
 	protected.handle("GET /api/dashboard", authz.PermProjectRead, a.dashboard)
 	protected.handle("GET /api/domains", authz.PermProjectRead, a.domainsIndex)
+	protected.handle("GET /api/mail", authz.PermProjectRead, a.mailOverview)
+	protected.handle("POST /api/mail/domains", authz.PermProjectWrite, a.createMailDomain)
+	protected.handle("POST /api/mail/domains/{id}/verify", authz.PermProjectWrite, a.verifyMailDomain)
+	protected.handle("DELETE /api/mail/domains/{id}", authz.PermProjectWrite, a.deleteMailDomain)
+	protected.handle("POST /api/mail/api-keys", authz.PermSecretWrite, a.createMailAPIKey)
+	protected.handle("DELETE /api/mail/api-keys/{id}", authz.PermSecretWrite, a.deleteMailAPIKey)
 	protected.handle("GET /api/projects", authz.PermProjectRead, a.projects)
 	protected.handle("POST /api/projects", authz.PermProjectWrite, a.createProject)
 	protected.handle("GET /api/projects/{id}", authz.PermProjectRead, a.project)
@@ -272,6 +282,8 @@ func (a *API) mountRoutes(public *http.ServeMux, protected *guardedMux) http.Han
 	root.Handle("/api/users/", a.auth.Require(protected.handler()))
 	root.Handle("/api/dashboard", a.auth.Require(protected.handler()))
 	root.Handle("/api/domains", a.auth.Require(protected.handler()))
+	root.Handle("/api/mail", a.auth.Require(protected.handler()))
+	root.Handle("/api/mail/", a.auth.Require(protected.handler()))
 	root.Handle("/api/projects", a.auth.Require(protected.handler()))
 	root.Handle("/api/projects/", a.auth.Require(protected.handler()))
 	root.Handle("/api/deployments", a.auth.Require(protected.handler()))
@@ -283,6 +295,7 @@ func (a *API) mountRoutes(public *http.ServeMux, protected *guardedMux) http.Han
 	root.Handle("GET /api/integrations/github/install/callback", public)
 	root.Handle("GET /api/registry/token", public)
 	root.Handle("POST /api/registry/events", public)
+	root.Handle("POST /v1/emails", public)
 	root.Handle("/api/integrations", a.auth.Require(protected.handler()))
 	root.Handle("/api/integrations/", a.auth.Require(protected.handler()))
 	root.Handle("/api/caddy/", a.auth.Require(protected.handler()))
