@@ -121,8 +121,6 @@ POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(read_input "PostgreSQL password (leave
 JWT_SECRET="${JWT_SECRET:-$(read_input "JWT secret (leave blank to generate)" "")}"
 ENCRYPTION_KEY="${ENCRYPTION_KEY:-$(read_input "Encryption key (leave blank to generate)" "")}"
 REGISTRY_INTERNAL_SECRET="${REGISTRY_INTERNAL_SECRET:-}"
-STALWART_HOSTNAME="${STALWART_HOSTNAME:-$(read_input "Mail server hostname (e.g. mail.example.com)" "mail.localhost")}"
-STALWART_PUBLIC_URL="${STALWART_PUBLIC_URL:-https://${STALWART_HOSTNAME}}"
 STALWART_RECOVERY_PASSWORD="${STALWART_RECOVERY_PASSWORD:-}"
 STALWART_RELAY_PASSWORD="${STALWART_RELAY_PASSWORD:-}"
 
@@ -206,11 +204,11 @@ SMTP_FROM_EMAIL=
 SMTP_NOTIFY_DEPLOYMENT_FAILURES=true
 SMTP_NOTIFY_DEPLOYMENT_SUCCESSES=false
 
-# Built-in Stalwart mail service. Point this hostname at the VPS before using
-# the gateway in production, and configure reverse DNS with the VPS provider.
+# Built-in Stalwart mail service. Its public hostname is configured once from
+# Infrastructure -> Mail after the owner account is created.
 STALWART_IMAGE=stalwartlabs/stalwart:v0.16
-STALWART_HOSTNAME=${STALWART_HOSTNAME}
-STALWART_PUBLIC_URL=${STALWART_PUBLIC_URL}
+STALWART_HOSTNAME=
+STALWART_PUBLIC_URL=
 STALWART_RECOVERY_PASSWORD=${STALWART_RECOVERY_PASSWORD}
 STALWART_RELAY_PASSWORD=${STALWART_RELAY_PASSWORD}
 STALWART_SMTP_PORT=25
@@ -223,8 +221,8 @@ MAIL_STALWART_URL=http://stalwart:8080
 MAIL_STALWART_API_KEY=
 MAIL_STALWART_USER=admin
 MAIL_STALWART_PASSWORD=${STALWART_RECOVERY_PASSWORD}
-MAIL_STALWART_HOSTNAME=${STALWART_HOSTNAME}
-MAIL_STALWART_DEFAULT_DOMAIN=${STALWART_HOSTNAME}
+MAIL_STALWART_HOSTNAME=
+MAIL_STALWART_DEFAULT_DOMAIN=
 MAIL_STALWART_RELAY_HOST=stalwart
 MAIL_STALWART_RELAY_PORT=465
 MAIL_STALWART_RELAY_PASSWORD=${STALWART_RELAY_PASSWORD}
@@ -252,8 +250,8 @@ log "Install directory: ${INSTALL_DIR}"
 log ""
 log "Next steps:"
 log "  1. Visit ${PUBLIC_URL} and create the owner account."
-log "  2. Point ${STALWART_HOSTNAME} to this server and ask the VPS provider to set matching reverse DNS."
-log "  3. Ensure TCP ports 25, 465, 993, 995, and 4190 are allowed by the firewall and VPS provider."
+log "  2. Open Infrastructure -> Mail and choose the server's public mail hostname."
+log "  3. Point that hostname to this server, set matching reverse DNS, and allow TCP port 25."
 log "  4. Add sending domains from Infrastructure -> Mail."
 log "  5. Point a registry hostname to this server, then attach it from Infrastructure -> Registry -> Registry domain."
 log "  6. (Optional) Link GitHub from Settings -> Security; Dokyr creates an identity-only GitHub App for this server."

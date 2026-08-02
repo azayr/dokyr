@@ -16,6 +16,9 @@
   let messages = [];
   let stalwartConnected = false;
   let deliveryConfigured = false;
+  let mailSetup = false;
+  let mailServerHostname = '';
+  let setupHostname = '';
   let tab = 'domains';
   let selectedId = '';
   let domainDialog = false;
@@ -30,6 +33,7 @@
   $: verifiedDomains = domains.filter((domain) => domain.status === 'verified');
   $: canWrite = can($currentPermissions, 'project:write');
   $: canWriteSecrets = can($currentPermissions, 'secret:write');
+  $: canSetupMail = can($currentPermissions, 'platform:write');
 
   onMount(load);
 
@@ -45,10 +49,31 @@
       messages = payload.messages || [];
       stalwartConnected = Boolean(payload.stalwartConnected);
       deliveryConfigured = Boolean(payload.deliveryConfigured);
+      mailSetup = Boolean(payload.mailSetup);
+      mailServerHostname = payload.mailServerHostname || '';
+      if (!setupHostname) setupHostname = mailServerHostname;
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not load mail';
     } finally {
       loading = false;
+    }
+  }
+
+  async function setupMailServer() {
+    saving = true;
+    error = '';
+    try {
+      const response = await api('/api/mail/setup', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hostname: setupHostname })
+      });
+      const payload = await readAPIJSON(response);
+      if (!response.ok) throw new Error(payload.error || 'Could not set up the mail server');
+      toast.success(payload.refreshedDomains ? `Mail server ready. Refreshed ${payload.refreshedDomains} domain${payload.refreshedDomains === 1 ? '' : 's'}.` : 'Mail server is ready.');
+      await load();
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : 'Could not set up the mail server';
+    } finally {
+      saving = false;
     }
   }
 
@@ -167,7 +192,7 @@
 <svelte:head><title>Mail · Dokyr</title></svelte:head>
 
 <Shell eyebrow="Infrastructure" title="Mail" subtitle="Verify sending domains and issue scoped API keys for your applications.">
-  <div slot="actions">{#if canWrite}<button class="btn btn-primary" type="button" onclick={() => (domainDialog = true)}><Icon name="plus" size={14} /> Add domain</button>{/if}</div>
+  <div slot="actions">{#if mailSetup && canWrite}<button class="btn btn-primary" type="button" onclick={() => (domainDialog = true)}><Icon name="plus" size={14} /> Add domain</button>{/if}</div>
 
   {#if error}<div class="alert alert-error page-alert"><Icon name="x-circle" size={15} /><div><strong>Mail action failed</strong><span>{error}</span></div></div>{/if}
 
@@ -175,8 +200,8 @@
     <div class="signal-orbit"><span></span><i></i><b></b><Icon name="mail" size={22} /></div>
     <div class="readiness-copy">
       <span class="eyebrow">Developer email gateway</span>
-      <strong>{verifiedDomains.length > 0 ? `${verifiedDomains.length} verified sending domain${verifiedDomains.length === 1 ? '' : 's'}` : 'Connect your first sending domain'}</strong>
-      <p>Dokyr proves ownership first, then checks every DKIM, SPF, and return-path record before enabling delivery.</p>
+      <strong>{!mailSetup ? 'Set up your mail server' : verifiedDomains.length > 0 ? `${verifiedDomains.length} verified sending domain${verifiedDomains.length === 1 ? '' : 's'}` : 'Connect your first sending domain'}</strong>
+      <p>{mailSetup ? 'Dokyr proves ownership first, then checks every DKIM, SPF, and return-path record before enabling delivery.' : 'Choose one public hostname for SMTP identity and MX records. Developer domains can be added afterward.'}</p>
     </div>
     <div class="readiness-checks">
       <span class:ready={stalwartConnected}><i></i>Stalwart {stalwartConnected ? 'connected' : 'not connected'}</span>
@@ -184,6 +209,19 @@
     </div>
   </section>
 
+  {#if !loading && !mailSetup}
+    <section class="panel setup-panel">
+      <div class="setup-copy"><span class="setup-icon"><Icon name="settings" size={20} /></span><div><span class="eyebrow">One-time platform setup</span><h2>Choose the server developers will send through</h2><p>This is your infrastructure hostname, not a developer’s sending domain. Every verified domain will point its MX and discovery records here.</p></div></div>
+      {#if canSetupMail}
+        <form onsubmit={(event) => { event.preventDefault(); setupMailServer(); }}>
+          <label class="field"><span>Mail server hostname</span><input class="input input-mono" bind:value={setupHostname} placeholder="mail.example.com" autocomplete="off" spellcheck="false" required /><small>Create an A record pointing this hostname to the Dokyr server and configure matching reverse DNS.</small></label>
+          <button class="btn btn-primary" type="submit" disabled={saving || !setupHostname.trim()}>{saving ? 'Setting up…' : 'Set up mail server'}</button>
+        </form>
+      {:else}
+        <div class="safe-note warning"><Icon name="alert" size={15} /><span>Ask the platform owner to complete Mail setup before adding sending domains.</span></div>
+      {/if}
+    </section>
+  {:else}
   <nav class="mail-tabs" aria-label="Mail sections">
     <button class:active={tab === 'domains'} type="button" onclick={() => (tab = 'domains')}><Icon name="globe" size={14} /> Domains <span>{domains.length}</span></button>
     <button class:active={tab === 'keys'} type="button" onclick={() => (tab = 'keys')}><Icon name="key" size={14} /> API keys <span>{apiKeys.length}</span></button>
@@ -284,6 +322,7 @@
       {/if}
     </section>
   {/if}
+  {/if}
 </Shell>
 
 {#if domainDialog}
@@ -332,7 +371,8 @@
   .records-table { margin: 0 var(--space-5) var(--space-4); overflow: hidden; border: 1px solid var(--color-rule); border-radius: var(--radius-md); }.record-row { min-height: 62px; padding: 8px 10px; display: grid; grid-template-columns: 38px 68px minmax(150px, .8fr) minmax(180px, 1.25fr) 28px; align-items: center; gap: 8px; border-top: 1px solid var(--color-rule); }.record-row:first-child { border-top: 0; }.record-header { min-height: 32px; background: var(--color-paper-subtle); color: var(--color-muted); font-size: var(--text-2xs); font-weight: 700; text-transform: uppercase; }.record-row > span { min-width: 0; }.record-row > span:nth-child(2) { display: grid; gap: 3px; }.record-row button { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--color-muted); cursor: pointer; }.record-row button:hover { background: var(--color-paper-subtle); color: var(--color-accent); }.record-status { width: 23px; height: 23px; display: grid; place-items: center; border-radius: 50%; background: var(--color-warning-soft); color: var(--color-warning); }.record-status.verified { background: var(--color-success-soft); color: var(--color-success); }.record-status.incorrect { background: var(--color-danger-soft); color: var(--color-danger); }.record-type { width: fit-content; padding: 2px 5px; border-radius: 3px; background: var(--color-paper-subtle); color: var(--color-ink-secondary); font-size: var(--text-2xs); font-weight: 700; }.record-row small { color: var(--color-muted); font-size: 9px; }.record-value { display: grid; gap: 2px; }.record-value code { overflow: hidden; color: var(--color-ink-secondary); font-size: var(--text-2xs); line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }.domain-foot { min-height: 34px; padding: 0 var(--space-5); display: flex; align-items: center; gap: 6px; border-top: 1px solid var(--color-rule); color: var(--color-muted); font-size: var(--text-2xs); }
   .section-head { min-height: 72px; padding: var(--space-4) var(--space-5); display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); border-bottom: 1px solid var(--color-rule); }.section-head h2 { margin: 0; font-size: var(--text-md); }.section-head p { margin: 3px 0 0; color: var(--color-muted); font-size: var(--text-xs); }.key-list article, .message-list article { min-height: 66px; padding: 0 var(--space-5); display: grid; align-items: center; gap: var(--space-3); border-top: 1px solid var(--color-rule); }.key-list article:first-child, .message-list article:first-child { border-top: 0; }.key-list article { grid-template-columns: 34px 1fr auto 34px; }.key-icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--radius-md); background: var(--color-accent-softer); color: var(--color-accent); }.key-list article > div, .message-list article > div { min-width: 0; display: grid; }.key-list strong, .message-list strong { font-size: var(--text-xs); }.key-list small, .message-list small { overflow: hidden; color: var(--color-muted); font-size: var(--text-2xs); text-overflow: ellipsis; white-space: nowrap; }.key-time { color: var(--color-muted); font-size: 9px; text-align: right; }.key-time b { color: var(--color-ink-secondary); font-size: var(--text-2xs); font-weight: 500; }.message-list article { grid-template-columns: 30px 1fr auto; }.message-list article > span:last-child { display: grid; text-align: right; }.message-list b { font-size: var(--text-2xs); text-transform: capitalize; }.message-list b.sent { color: var(--color-success); }.message-list b.failed { color: var(--color-danger); }.delivery-mark { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 50%; background: var(--color-warning-soft); color: var(--color-warning); }.delivery-mark.sent { background: var(--color-success-soft); color: var(--color-success); }.delivery-mark.failed { background: var(--color-danger-soft); color: var(--color-danger); }
   .empty-panel { min-height: 320px; display: grid; place-items: center; }.loading-grid { display: grid; grid-template-columns: 220px 1fr; gap: var(--space-4); }.loading-grid div { min-height: 280px; border: 1px solid var(--color-rule); border-radius: var(--radius-lg); background: linear-gradient(100deg, var(--color-paper-raised) 20%, var(--color-paper-subtle) 45%, var(--color-paper-raised) 70%); background-size: 300% 100%; animation: shimmer 1.4s infinite; }.loading-grid div:nth-child(2) { grid-column: 2; }.loading-grid div:nth-child(3) { display: none; }@keyframes shimmer { to { background-position: -200% 0; } }
+  .setup-panel { padding: var(--space-6); display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, .7fr); align-items: center; gap: var(--space-7); }.setup-copy { display: flex; align-items: flex-start; gap: var(--space-4); }.setup-icon { width: 46px; height: 46px; flex: 0 0 auto; display: grid; place-items: center; border-radius: var(--radius-md); background: var(--color-accent-softer); color: var(--color-accent); }.setup-copy h2 { margin: 5px 0 5px; font-size: var(--text-lg); }.setup-copy p { max-width: 580px; margin: 0; color: var(--color-muted); font-size: var(--text-sm); line-height: 1.55; }.setup-panel form { display: grid; gap: var(--space-3); }.setup-panel form .btn { justify-self: end; }
   .mail-modal { width: min(500px, 100%); }.modal-body { padding: var(--space-5); display: grid; gap: var(--space-4); }.safe-note { padding: 10px 12px; display: flex; align-items: center; gap: 9px; border-radius: var(--radius-md); background: var(--color-success-soft); color: var(--color-success); font-size: var(--text-xs); }.safe-note.warning { background: var(--color-warning-soft); color: var(--color-warning); }.secret-box { padding: 8px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-log-bg); }.secret-box code { min-width: 0; flex: 1; overflow: hidden; color: var(--color-log-text); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }.secret-box button { min-height: 30px; padding: 0 10px; display: flex; align-items: center; gap: 6px; border: 1px solid var(--color-log-rule); border-radius: var(--radius-sm); background: var(--color-log-surface); color: var(--color-log-text); cursor: pointer; }
-  @media (max-width: 900px) { .mail-readiness { grid-template-columns: auto 1fr; }.readiness-checks { grid-column: 2; grid-template-columns: repeat(2, auto); }.domain-workspace { grid-template-columns: 1fr; }.domain-list { display: grid; grid-template-columns: repeat(2, 1fr); }.domain-list > header { grid-column: 1 / -1; }.record-row { grid-template-columns: 32px 56px minmax(120px, .8fr) minmax(160px, 1fr) 28px; } }
+  @media (max-width: 900px) { .mail-readiness { grid-template-columns: auto 1fr; }.readiness-checks { grid-column: 2; grid-template-columns: repeat(2, auto); }.setup-panel { grid-template-columns: 1fr; }.setup-panel form .btn { justify-self: start; }.domain-workspace { grid-template-columns: 1fr; }.domain-list { display: grid; grid-template-columns: repeat(2, 1fr); }.domain-list > header { grid-column: 1 / -1; }.record-row { grid-template-columns: 32px 56px minmax(120px, .8fr) minmax(160px, 1fr) 28px; } }
   @media (max-width: 650px) { .mail-readiness { padding: var(--space-4); grid-template-columns: 1fr; }.signal-orbit { display: none; }.readiness-checks { grid-column: 1; grid-template-columns: 1fr; }.mail-tabs { overflow-x: auto; }.domain-list { grid-template-columns: 1fr; }.domain-head { flex-direction: column; }.domain-actions { width: 100%; }.domain-actions .btn { flex: 1; }.record-guide { display: none; }.records-table { margin-top: var(--space-4); overflow-x: auto; }.record-row { width: 690px; }.key-list article { grid-template-columns: 34px 1fr 34px; }.key-time { display: none; }.section-head { align-items: flex-start; flex-direction: column; }.section-head .btn { width: 100%; }.message-list article { grid-template-columns: 30px minmax(0, 1fr); }.message-list article > span:last-child { grid-column: 2; text-align: left; }.loading-grid { grid-template-columns: 1fr; }.loading-grid div:nth-child(2) { display: none; } }
 </style>

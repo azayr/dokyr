@@ -14,11 +14,18 @@ import (
 
 	"github.com/azayr/selfhost/internal/auth"
 	"github.com/azayr/selfhost/internal/mailer"
+	"github.com/azayr/selfhost/internal/mailgateway"
 	"github.com/azayr/selfhost/internal/store"
 )
 
 func (a *API) mailOverview(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.FromContext(r.Context())
+	mailSettings, settingsErr := a.store.MailServerSettings(r.Context())
+	mailSetup := settingsErr == nil
+	if settingsErr != nil && !store.NotFound(settingsErr) {
+		problem(w, settingsErr)
+		return
+	}
 	domains, err := a.store.MailDomains(r.Context(), claims.Subject)
 	if err != nil {
 		problem(w, err)
@@ -36,7 +43,7 @@ func (a *API) mailOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	smtpSettings, _, smtpErr := a.smtpMailerConfig(r.Context())
 	stalwartConnected := false
-	if a.mailGateway != nil && a.mailGateway.Configured() {
+	if mailSetup && a.mailGateway != nil && a.mailGateway.Configured() {
 		checkContext, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		stalwartConnected = a.mailGateway.Ping(checkContext) == nil
 		cancel()
@@ -47,10 +54,114 @@ func (a *API) mailOverview(w http.ResponseWriter, r *http.Request) {
 		"messages":           messages,
 		"stalwartConnected":  stalwartConnected,
 		"deliveryConfigured": (stalwartConnected && a.mailGateway.ManagedDelivery()) || (smtpErr == nil && smtpSettings.Enabled && smtpConfigured(smtpSettings)),
+		"mailSetup":          mailSetup,
+		"mailServerHostname": mailSettings.Hostname,
 	})
 }
 
+func (a *API) updateMailSetup(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Hostname string `json:"hostname"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	hostname := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(input.Hostname), "."))
+	if !mailgateway.ValidPublicHostname(hostname) {
+		bad(w, "enter a public mail server hostname such as mail.example.com")
+		return
+	}
+	if a.mailGateway == nil || !a.mailGateway.Configured() {
+		write(w, http.StatusServiceUnavailable, map[string]string{"error": "the bundled Stalwart connection is unavailable"})
+		return
+	}
+	a.mailMu.Lock()
+	defer a.mailMu.Unlock()
+	setupContext, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	restart, err := a.mailGateway.ConfigureServer(setupContext, hostname)
+	cancel()
+	if err != nil {
+		write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart setup failed: " + err.Error()})
+		return
+	}
+	if restart {
+		restartContext, restartCancel := context.WithTimeout(r.Context(), 45*time.Second)
+		err = a.docker.RestartControlPlaneService(restartContext, "stalwart")
+		restartCancel()
+		if err != nil {
+			write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart was configured but could not restart: " + err.Error()})
+			return
+		}
+	}
+	if err := a.waitForMailGateway(r.Context(), 30*time.Second); err != nil {
+		write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart was configured but did not become ready: " + err.Error()})
+		return
+	}
+	claims, _ := auth.FromContext(r.Context())
+	settings := store.MailServerSettings{Hostname: hostname, CreatedBy: claims.Subject}
+	if err := a.store.UpsertMailServerSettings(r.Context(), settings); err != nil {
+		problem(w, err)
+		return
+	}
+	refreshed := 0
+	domains, err := a.store.AllMailDomains(r.Context())
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	for _, domain := range domains {
+		if domain.StalwartID == "" {
+			continue
+		}
+		records, recordErr := a.mailGateway.DomainRecords(r.Context(), domain.StalwartID, domain.Name)
+		if recordErr != nil {
+			a.log.Warn("refresh mail domain after server setup", "domain", domain.Name, "error", recordErr)
+			continue
+		}
+		if err := a.store.ReplaceMailDNSRecords(r.Context(), domain.ID, records); err != nil {
+			a.log.Warn("save refreshed mail DNS records", "domain", domain.Name, "error", err)
+			continue
+		}
+		refreshed++
+	}
+	saved, err := a.store.MailServerSettings(r.Context())
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	write(w, http.StatusOK, map[string]any{"settings": saved, "refreshedDomains": refreshed})
+}
+
+func (a *API) waitForMailGateway(ctx context.Context, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		checkContext, cancel := context.WithTimeout(ctx, 3*time.Second)
+		lastErr = a.mailGateway.Ping(checkContext)
+		cancel()
+		if lastErr == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("mail service readiness timed out")
+	}
+	return lastErr
+}
+
 func (a *API) createMailDomain(w http.ResponseWriter, r *http.Request) {
+	if _, err := a.store.MailServerSettings(r.Context()); store.NotFound(err) {
+		write(w, http.StatusConflict, map[string]string{"error": "the platform owner must set up the mail server before domains can be added"})
+		return
+	} else if err != nil {
+		problem(w, err)
+		return
+	}
 	var input struct {
 		Name string `json:"name"`
 	}

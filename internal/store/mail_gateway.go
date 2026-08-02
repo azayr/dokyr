@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -62,6 +63,48 @@ type MailMessage struct {
 	SentAt     *time.Time `json:"sentAt"`
 }
 
+type MailServerSettings struct {
+	Hostname  string    `json:"hostname"`
+	CreatedBy string    `json:"-"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+func (s *Store) MailServerSettings(ctx context.Context) (MailServerSettings, error) {
+	var settings MailServerSettings
+	err := s.db.QueryRowContext(ctx, `SELECT hostname,COALESCE(created_by,''),created_at,updated_at
+		FROM mail_server_settings WHERE singleton=TRUE`).Scan(&settings.Hostname, &settings.CreatedBy, &settings.CreatedAt, &settings.UpdatedAt)
+	return settings, err
+}
+
+func (s *Store) UpsertMailServerSettings(ctx context.Context, settings MailServerSettings) error {
+	var createdBy any
+	if settings.CreatedBy != "" {
+		createdBy = settings.CreatedBy
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO mail_server_settings(singleton,hostname,created_by)
+		VALUES(TRUE,LOWER($1),$2) ON CONFLICT(singleton) DO UPDATE SET hostname=EXCLUDED.hostname,
+		created_by=COALESCE(mail_server_settings.created_by,EXCLUDED.created_by),updated_at=NOW()`, settings.Hostname, createdBy)
+	return err
+}
+
+func (s *Store) CreateMailServerSettingsIfMissing(ctx context.Context, settings MailServerSettings) (bool, error) {
+	_, err := s.MailServerSettings(ctx)
+	if err == nil {
+		return false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	result, err := s.db.ExecContext(ctx, `INSERT INTO mail_server_settings(singleton,hostname) VALUES(TRUE,LOWER($1))
+		ON CONFLICT(singleton) DO NOTHING`, settings.Hostname)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows == 1, err
+}
+
 func (s *Store) CreateMailDomain(ctx context.Context, domain MailDomain, ownership MailDNSRecord) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -101,6 +144,25 @@ func (s *Store) MailDomains(ctx context.Context, userID string) ([]MailDomain, e
 		}
 		domain.Records, err = s.MailDNSRecords(ctx, domain.ID)
 		if err != nil {
+			return nil, err
+		}
+		domains = append(domains, domain)
+	}
+	return domains, rows.Err()
+}
+
+func (s *Store) AllMailDomains(ctx context.Context) ([]MailDomain, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,user_id,name,status,ownership_token,stalwart_id,last_error,
+		last_checked_at,verified_at,created_at,updated_at FROM mail_domains ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	domains := []MailDomain{}
+	for rows.Next() {
+		var domain MailDomain
+		if err := rows.Scan(&domain.ID, &domain.UserID, &domain.Name, &domain.Status, &domain.OwnershipToken,
+			&domain.StalwartID, &domain.LastError, &domain.LastCheckedAt, &domain.VerifiedAt, &domain.CreatedAt, &domain.UpdatedAt); err != nil {
 			return nil, err
 		}
 		domains = append(domains, domain)
@@ -156,6 +218,27 @@ func (s *Store) AddMailDNSRecords(ctx context.Context, domainID, stalwartID stri
 		if err != nil {
 			return err
 		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ReplaceMailDNSRecords(ctx context.Context, domainID string, records []MailDNSRecord) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mail_domain_dns_records WHERE domain_id=$1 AND purpose<>'Ownership'`, domainID); err != nil {
+		return err
+	}
+	for _, record := range records {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO mail_domain_dns_records(domain_id,record_type,name,value,priority,purpose,required)
+			VALUES($1,$2,$3,$4,$5,$6,$7)`, domainID, record.Type, record.Name, record.Value, record.Priority, record.Purpose, record.Required); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE mail_domains SET status='pending_dns',last_error='',verified_at=NULL,updated_at=NOW() WHERE id=$1`, domainID); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

@@ -109,6 +109,26 @@ func main() {
 		log.Error("configure platform updates", "error", err)
 		os.Exit(1)
 	}
+	mailSetup := false
+	if settings, settingsErr := db.MailServerSettings(context.Background()); settingsErr == nil {
+		cfg.MailStalwartHostname = settings.Hostname
+		cfg.MailStalwartDefaultDomain = settings.Hostname
+		mailSetup = true
+	} else if !store.NotFound(settingsErr) {
+		log.Error("read mail server settings", "error", settingsErr)
+		os.Exit(1)
+	} else if mailgateway.ValidPublicHostname(cfg.MailStalwartHostname) {
+		_, createErr := db.CreateMailServerSettingsIfMissing(context.Background(), store.MailServerSettings{Hostname: cfg.MailStalwartHostname})
+		if createErr != nil {
+			log.Error("import mail server hostname", "error", createErr)
+			os.Exit(1)
+		}
+		mailSetup = true
+		cfg.MailStalwartDefaultDomain = cfg.MailStalwartHostname
+	} else {
+		cfg.MailStalwartHostname = ""
+		cfg.MailStalwartDefaultDomain = ""
+	}
 	mailGateway, err := mailgateway.New(mailgateway.Config{
 		StalwartURL: cfg.MailStalwartURL, StalwartAPIKey: cfg.MailStalwartAPIKey,
 		StalwartUser: cfg.MailStalwartUser, StalwartPassword: cfg.MailStalwartPassword,
@@ -119,7 +139,7 @@ func main() {
 		log.Error("configure mail gateway", "error", err)
 		os.Exit(1)
 	}
-	if mailGateway.Configured() {
+	if mailGateway.Configured() && mailSetup {
 		go initializeStalwart(metricsContext, docker, mailGateway, log)
 	}
 	apiHandler := api.New(db, docker, authManager, integrations, registryTokens, box, caddyClient, updateClient, mailGateway, cfg.PublicURL, cfg.RegistryHosts, cfg.RegistryInternalSecret, log)

@@ -54,6 +54,60 @@ func TestNewRequiresCompleteStalwartConnection(t *testing.T) {
 	}
 }
 
+func TestConfigureServerUpdatesAnExistingStalwartInstallation(t *testing.T) {
+	methods := []string{}
+	gateway, err := New(Config{StalwartURL: "https://mail.example", StalwartUser: "admin", StalwartPassword: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var payload struct {
+			MethodCalls [][]json.RawMessage `json:"methodCalls"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		var method string
+		_ = json.Unmarshal(payload.MethodCalls[0][0], &method)
+		methods = append(methods, method)
+		body := `{"methodResponses":[["x:Bootstrap/get",{"list":[]},"get"]]}`
+		if method == "x:SystemSettings/set" {
+			var arguments struct {
+				Update map[string]struct {
+					DefaultHostname string `json:"defaultHostname"`
+				} `json:"update"`
+			}
+			if err := json.Unmarshal(payload.MethodCalls[0][1], &arguments); err != nil {
+				t.Fatal(err)
+			}
+			if arguments.Update["singleton"].DefaultHostname != "mail.example.com" {
+				t.Fatalf("hostname = %q", arguments.Update["singleton"].DefaultHostname)
+			}
+			body = `{"methodResponses":[["x:SystemSettings/set",{"updated":{"singleton":null}},"configure-hostname"]]}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewBufferString(body))}, nil
+	})}
+	restart, err := gateway.ConfigureServer(t.Context(), "mail.example.com")
+	if err != nil || restart {
+		t.Fatalf("configure = (restart %v, error %v)", restart, err)
+	}
+	want := []string{"x:Bootstrap/get", "x:SystemSettings/set"}
+	if len(methods) != len(want) || methods[0] != want[0] || methods[1] != want[1] {
+		t.Fatalf("methods = %v, want %v", methods, want)
+	}
+}
+
+func TestValidPublicHostnameRejectsDevelopmentDefaults(t *testing.T) {
+	for _, hostname := range []string{"mail.dokyr.test", "mail.localhost", "localhost", "127.0.0.1", "-mail.example.com"} {
+		if ValidPublicHostname(hostname) {
+			t.Errorf("ValidPublicHostname(%q) = true", hostname)
+		}
+	}
+	if !ValidPublicHostname("mail.example.com") {
+		t.Fatal("expected public hostname to be valid")
+	}
+}
+
 func TestProvisionDomainCreatesThenFetchesDNSZone(t *testing.T) {
 	calls := 0
 	gateway, err := New(Config{StalwartURL: "https://mail.example", StalwartAPIKey: "secret"})

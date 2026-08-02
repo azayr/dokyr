@@ -14,7 +14,7 @@ The fastest way to install Dokyr on a fresh server is the remote installer. It d
 curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/install.sh | sudo sh
 ```
 
-The installer defaults to `/opt/dokyr`, publishes the control panel on HTTP port `80` and HTTPS port `443`, and prompts for the panel and mail hostnames while generating omitted secrets. Run it as root so the control plane can access the host Docker socket. After the stack starts, open the printed URL and create the owner account.
+The installer defaults to `/opt/dokyr`, publishes the control panel on HTTP port `80` and HTTPS port `443`, and prompts for the panel hostname while generating omitted secrets. Run it as root so the control plane can access the host Docker socket. After the stack starts, create the owner account, then configure one public mail-server hostname from **Infrastructure → Mail**.
 
 For an automated install, download the script and run it with the variables you want preset:
 
@@ -24,7 +24,6 @@ sudo DOKYR_INSTALL_DIR=/srv/dokyr \
   HTTP_PORT=80 HTTPS_PORT=443 \
   PUBLIC_URL=http://panel.example.com \
   CONTROL_HOSTS="panel.example.com" \
-  STALWART_HOSTNAME=mail.example.com \
   POSTGRES_PASSWORD="..." JWT_SECRET="..." ENCRYPTION_KEY="..." \
   sh /tmp/install-dokyr.sh
 ```
@@ -187,8 +186,8 @@ identity on first use and submits over the private container network; neither
 the management nor relay credential is exposed to developers. **Settings →
 SMTP** remains separate and controls Dokyr's own deployment notifications.
 
-For production, set `STALWART_HOSTNAME` to a hostname such as
-`mail.example.com`, point its A/AAAA records at the VPS, configure matching PTR
+For production, configure a hostname such as `mail.example.com` from
+**Infrastructure → Mail**, point its A/AAAA records at the VPS, configure matching PTR
 (reverse DNS) with the provider, and allow inbound TCP ports 25, 465, 993, 995,
 and 4190. Some VPS providers block port 25 by default. Caddy already owns host
 port 443, so Stalwart starts with automatic certificate requests disabled; add

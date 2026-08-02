@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/azayr/selfhost/internal/store"
@@ -30,6 +31,7 @@ type Config struct {
 }
 
 type Gateway struct {
+	mu                     sync.RWMutex
 	baseURL                string
 	apiKey                 string
 	username               string
@@ -92,11 +94,82 @@ func (g *Gateway) ManagedDelivery() bool {
 	return g != nil && g.Configured() && g.relayHost != "" && g.relayPort > 0 && g.relayPort <= 65535 && g.relayPassword != ""
 }
 
+func ValidPublicHostname(value string) bool {
+	value = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
+	if len(value) < 3 || len(value) > 253 || !strings.Contains(value, ".") || net.ParseIP(value) != nil {
+		return false
+	}
+	labels := strings.Split(value, ".")
+	reserved := map[string]bool{"test": true, "local": true, "localhost": true, "invalid": true, "example": true}
+	if reserved[labels[len(labels)-1]] {
+		return false
+	}
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (g *Gateway) ConfigureServer(ctx context.Context, hostname string) (bool, error) {
+	hostname = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hostname), "."))
+	if !ValidPublicHostname(hostname) {
+		return false, errors.New("mail server hostname must be a public domain such as mail.example.com")
+	}
+	g.mu.Lock()
+	g.bootstrapHostname = hostname
+	g.bootstrapDefaultDomain = hostname
+	g.mu.Unlock()
+	restart, err := g.EnsureBootstrap(ctx)
+	if err != nil || restart {
+		return restart, err
+	}
+	response, err := g.call(ctx, map[string]any{
+		"methodCalls": []any{[]any{"x:SystemSettings/set", map[string]any{"update": map[string]any{
+			"singleton": map[string]any{"defaultHostname": hostname},
+		}}, "configure-hostname"}},
+		"using": []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"},
+	})
+	if err != nil {
+		return false, err
+	}
+	args, method, err := firstMethodResponse(response)
+	if err != nil {
+		return false, err
+	}
+	if method == "error" {
+		return false, fmt.Errorf("Stalwart could not update its hostname: %s", jmapError(args))
+	}
+	var result struct {
+		Updated    map[string]json.RawMessage `json:"updated"`
+		NotUpdated map[string]json.RawMessage `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(args, &result); err != nil {
+		return false, fmt.Errorf("decode Stalwart hostname response: %w", err)
+	}
+	if detail, failed := result.NotUpdated["singleton"]; failed {
+		return false, fmt.Errorf("Stalwart could not update its hostname: %s", jmapError(detail))
+	}
+	if _, updated := result.Updated["singleton"]; !updated {
+		return false, errors.New("Stalwart did not confirm its hostname")
+	}
+	return false, nil
+}
+
 // EnsureBootstrap completes the one-time setup for the bundled Stalwart
 // container. It returns true when Stalwart must be restarted to enter normal
 // mail-service mode. External API-key connections skip this lifecycle.
 func (g *Gateway) EnsureBootstrap(ctx context.Context) (bool, error) {
-	if !g.Configured() || g.apiKey != "" || g.bootstrapHostname == "" || g.bootstrapDefaultDomain == "" {
+	g.mu.RLock()
+	bootstrapHostname, bootstrapDefaultDomain := g.bootstrapHostname, g.bootstrapDefaultDomain
+	g.mu.RUnlock()
+	if !g.Configured() || g.apiKey != "" || bootstrapHostname == "" || bootstrapDefaultDomain == "" {
 		return false, nil
 	}
 	request := map[string]any{
@@ -124,8 +197,8 @@ func (g *Gateway) EnsureBootstrap(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	update := map[string]any{
-		"serverHostname":        g.bootstrapHostname,
-		"defaultDomain":         g.bootstrapDefaultDomain,
+		"serverHostname":        bootstrapHostname,
+		"defaultDomain":         bootstrapDefaultDomain,
 		"requestTlsCertificate": false,
 		"generateDkimKeys":      true,
 		"dataStore":             map[string]any{"@type": "RocksDb", "path": "/var/lib/stalwart/"},
@@ -344,6 +417,14 @@ func (g *Gateway) domainZone(ctx context.Context, id string) (string, error) {
 		return "", errors.New("Stalwart did not generate DNS records for the domain")
 	}
 	return result.List[0].DNSZoneFile, nil
+}
+
+func (g *Gateway) DomainRecords(ctx context.Context, id, name string) ([]store.MailDNSRecord, error) {
+	zone, err := g.domainZone(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return ParseZoneFile(zone, name), nil
 }
 
 func (g *Gateway) DeleteDomain(ctx context.Context, id string) error {
