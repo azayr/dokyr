@@ -62,6 +62,29 @@ func (a *API) mailOverview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (a *API) verifyMailSetupDNS(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Domain string `json:"domain"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	domainName := mailgateway.DomainForServerHostname(input.Domain)
+	hostname, err := mailgateway.ServerHostnameForDomain(domainName)
+	if err != nil {
+		bad(w, err.Error())
+		return
+	}
+	if a.mailGateway == nil {
+		write(w, http.StatusServiceUnavailable, map[string]string{"error": "the bundled Stalwart connection is unavailable"})
+		return
+	}
+	checkContext, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	result := a.mailGateway.VerifyServerDNS(checkContext, hostname)
+	cancel()
+	write(w, http.StatusOK, result)
+}
+
 func (a *API) updateMailSetup(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Domain   string `json:"domain"`
@@ -70,7 +93,7 @@ func (a *API) updateMailSetup(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &input) {
 		return
 	}
-	domainName := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(input.Domain), "."))
+	domainName := mailgateway.DomainForServerHostname(input.Domain)
 	if domainName == "" && strings.TrimSpace(input.Hostname) != "" {
 		domainName = mailgateway.DomainForServerHostname(input.Hostname)
 	}
@@ -83,6 +106,7 @@ func (a *API) updateMailSetup(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusServiceUnavailable, map[string]string{"error": "the bundled Stalwart connection is unavailable"})
 		return
 	}
+	a.log.Info("mail server setup started", "hostname", hostname)
 	a.mailMu.Lock()
 	defer a.mailMu.Unlock()
 	currentSettings, currentErr := a.store.MailServerSettings(r.Context())
@@ -91,10 +115,12 @@ func (a *API) updateMailSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.caddy.SetMailHostname(hostname); err != nil {
+		a.log.Error("mail server setup failed", "hostname", hostname, "stage", "caddy-hostname", "error", err)
 		write(w, http.StatusBadGateway, map[string]string{"error": "mail hostname routing failed: " + err.Error()})
 		return
 	}
 	if err := a.SyncDomains(r.Context()); err != nil {
+		a.log.Error("mail server setup failed", "hostname", hostname, "stage", "caddy-routes", "error", err)
 		write(w, http.StatusBadGateway, map[string]string{"error": "mail hostname routing failed: " + err.Error()})
 		return
 	}
@@ -102,6 +128,7 @@ func (a *API) updateMailSetup(w http.ResponseWriter, r *http.Request) {
 	restart, err := a.mailGateway.ConfigureServer(setupContext, hostname)
 	cancel()
 	if err != nil {
+		a.log.Error("mail server setup failed", "hostname", hostname, "stage", "stalwart-server", "error", err)
 		write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart setup failed: " + err.Error()})
 		return
 	}
@@ -110,11 +137,13 @@ func (a *API) updateMailSetup(w http.ResponseWriter, r *http.Request) {
 		err = a.docker.RestartControlPlaneService(restartContext, "stalwart")
 		restartCancel()
 		if err != nil {
+			a.log.Error("mail server setup failed", "hostname", hostname, "stage", "stalwart-restart", "error", err)
 			write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart was configured but could not restart: " + err.Error()})
 			return
 		}
 	}
 	if err := a.waitForMailGateway(r.Context(), 30*time.Second); err != nil {
+		a.log.Error("mail server setup failed", "hostname", hostname, "stage", "stalwart-ready", "error", err)
 		write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart was configured but did not become ready: " + err.Error()})
 		return
 	}
@@ -122,6 +151,7 @@ func (a *API) updateMailSetup(w http.ResponseWriter, r *http.Request) {
 	policyErr := a.mailGateway.ConfigureSMTPSubmissionPolicy(policyContext)
 	policyCancel()
 	if policyErr != nil {
+		a.log.Error("mail server setup failed", "hostname", hostname, "stage", "smtp-policy", "error", policyErr)
 		write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart SMTP policy setup failed: " + policyErr.Error()})
 		return
 	}
@@ -136,12 +166,14 @@ func (a *API) updateMailSetup(w http.ResponseWriter, r *http.Request) {
 		currentSettings.ACMEProviderID, currentSettings.StalwartDomainID)
 	tlsCancel()
 	if tlsErr != nil {
+		a.log.Error("mail server setup failed", "hostname", hostname, "stage", "tls", "error", tlsErr)
 		write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart TLS setup failed: " + tlsErr.Error()})
 		return
 	}
 	settings := store.MailServerSettings{DomainName: domainName, Hostname: hostname, ACMEProviderID: acmeProviderID,
 		StalwartDomainID: stalwartDomainID, CreatedBy: claims.Subject}
 	if err := a.store.UpsertMailServerSettings(r.Context(), settings); err != nil {
+		a.log.Error("mail server setup failed", "hostname", hostname, "stage", "save-settings", "error", err)
 		problem(w, err)
 		return
 	}
@@ -171,6 +203,7 @@ func (a *API) updateMailSetup(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
+	a.log.Info("mail server setup completed", "hostname", hostname, "refreshedDomains", refreshed)
 	write(w, http.StatusOK, map[string]any{"settings": saved, "refreshedDomains": refreshed})
 }
 

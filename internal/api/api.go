@@ -173,6 +173,7 @@ func (a *API) registerProtectedRoutes(protected *guardedMux) {
 	protected.handle("GET /api/dashboard", authz.PermProjectRead, a.dashboard)
 	protected.handle("GET /api/domains", authz.PermProjectRead, a.domainsIndex)
 	protected.handle("GET /api/mail", authz.PermProjectRead, a.mailOverview)
+	protected.handle("POST /api/mail/setup/verify-dns", authz.PermPlatformWrite, a.verifyMailSetupDNS)
 	protected.handle("PUT /api/mail/setup", authz.PermPlatformWrite, a.updateMailSetup)
 	protected.handle("POST /api/mail/domains", authz.PermProjectWrite, a.createMailDomain)
 	protected.handle("POST /api/mail/domains/{id}/verify", authz.PermProjectWrite, a.verifyMailDomain)

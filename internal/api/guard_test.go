@@ -43,6 +43,7 @@ var routePermissions = map[string]authz.Permission{
 	"GET /api/dashboard":                       authz.PermProjectRead,
 	"GET /api/domains":                         authz.PermProjectRead,
 	"GET /api/mail":                            authz.PermProjectRead,
+	"POST /api/mail/setup/verify-dns":          authz.PermPlatformWrite,
 	"PUT /api/mail/setup":                      authz.PermPlatformWrite,
 	"POST /api/mail/domains":                   authz.PermProjectWrite,
 	"POST /api/mail/domains/{id}/verify":       authz.PermProjectWrite,

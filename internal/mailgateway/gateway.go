@@ -53,6 +53,15 @@ type RelayConfig struct {
 	InsecureSkipVerify bool
 }
 
+type ServerDNSVerification struct {
+	Hostname      string   `json:"hostname"`
+	IPv4Addresses []string `json:"ipv4Addresses"`
+	IPv6Addresses []string `json:"ipv6Addresses"`
+	Verified      bool     `json:"verified"`
+	Status        string   `json:"status"`
+	Message       string   `json:"message"`
+}
+
 func New(config Config) (*Gateway, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(config.StalwartURL), "/")
 	apiKey := strings.TrimSpace(config.StalwartAPIKey)
@@ -131,6 +140,52 @@ func DomainForServerHostname(hostname string) string {
 		return strings.TrimPrefix(hostname, "mail.")
 	}
 	return hostname
+}
+
+// VerifyServerDNS performs the short public-DNS preflight required before the
+// bundled server is configured. Certificate issuance requires at least one
+// publicly routable IPv4 address; IPv6 is reported so operators can remove a
+// stale AAAA record before it sends ACME traffic to the wrong host.
+func (g *Gateway) VerifyServerDNS(ctx context.Context, hostname string) ServerDNSVerification {
+	result := ServerDNSVerification{Hostname: strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hostname), ".")), Status: "missing"}
+	addresses, err := g.resolver.LookupIPAddr(ctx, result.Hostname)
+	if err != nil {
+		result.Message = "No public A record was found yet. DNS changes can take a few minutes to appear."
+		if !isNotFound(err) {
+			result.Status = "error"
+			result.Message = "Public DNS could not be checked: " + err.Error()
+		}
+		return result
+	}
+	seen := map[string]bool{}
+	for _, address := range addresses {
+		ip := address.IP
+		if ip == nil || ip.IsPrivate() || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			continue
+		}
+		value := ip.String()
+		if seen[value] {
+			continue
+		}
+		seen[value] = true
+		if ip.To4() != nil {
+			result.IPv4Addresses = append(result.IPv4Addresses, value)
+		} else {
+			result.IPv6Addresses = append(result.IPv6Addresses, value)
+		}
+	}
+	if len(result.IPv4Addresses) == 0 {
+		result.Status = "incorrect"
+		result.Message = "The hostname does not resolve to a public IPv4 address. Add a DNS-only A record pointing to this VPS."
+		return result
+	}
+	result.Verified = true
+	result.Status = "verified"
+	result.Message = "The mail hostname resolves publicly. Dokyr can continue with Stalwart and TLS setup."
+	if len(result.IPv6Addresses) > 0 {
+		result.Message += " An AAAA record is also present; keep it only when this VPS accepts mail over IPv6."
+	}
+	return result
 }
 
 func (g *Gateway) ConfigureServer(ctx context.Context, hostname string) (bool, error) {
