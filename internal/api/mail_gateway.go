@@ -155,6 +155,23 @@ func (a *API) updateMailSetup(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart SMTP policy setup failed: " + policyErr.Error()})
 		return
 	}
+	// Stalwart persists SMTP-stage and hostname changes immediately, but its
+	// active SMTP listeners keep the previous compiled expressions until the
+	// service restarts. Without this reload, authentication succeeds while an
+	// otherwise valid sender in the credential's domain is rejected.
+	policyRestartContext, policyRestartCancel := context.WithTimeout(r.Context(), 45*time.Second)
+	policyRestartErr := a.docker.RestartControlPlaneService(policyRestartContext, "stalwart")
+	policyRestartCancel()
+	if policyRestartErr != nil {
+		a.log.Error("mail server setup failed", "hostname", hostname, "stage", "smtp-policy-restart", "error", policyRestartErr)
+		write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart SMTP policy was configured but could not be activated: " + policyRestartErr.Error()})
+		return
+	}
+	if err := a.waitForMailGateway(r.Context(), 30*time.Second); err != nil {
+		a.log.Error("mail server setup failed", "hostname", hostname, "stage", "smtp-policy-ready", "error", err)
+		write(w, http.StatusBadGateway, map[string]string{"error": "Stalwart SMTP policy was configured but the service did not become ready: " + err.Error()})
+		return
+	}
 	claims, _ := auth.FromContext(r.Context())
 	owner, ownerErr := a.store.User(r.Context(), claims.Subject)
 	if ownerErr != nil {
