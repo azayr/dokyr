@@ -1471,6 +1471,46 @@ func (d *Docker) RestartDatabase(ctx context.Context, serviceID string) error {
 	return d.restartContainer(ctx, databaseContainerName(serviceID))
 }
 
+// ExportDatabaseVolume writes Docker's portable tar stream for the database's
+// mounted data directory. The caller is responsible for stopping the service
+// first so on-disk database files are consistent.
+func (d *Docker) ExportDatabaseVolume(ctx context.Context, serviceID, engine string, destination io.Writer) error {
+	preset, ok := DatabaseEngine(engine)
+	if !ok {
+		return fmt.Errorf("unsupported database engine %q", engine)
+	}
+	res, err := d.rawRequest(ctx, http.MethodGet, "/containers/"+url.PathEscape(databaseContainerName(serviceID))+"/archive?path="+url.QueryEscape(preset.VolumeTarget), nil, "")
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	_, err = io.Copy(destination, res.Body)
+	return err
+}
+
+func (d *Docker) RestoreDatabaseVolume(ctx context.Context, serviceID, engine string, source io.Reader) error {
+	preset, ok := DatabaseEngine(engine)
+	if !ok {
+		return fmt.Errorf("unsupported database engine %q", engine)
+	}
+	res, err := d.rawRequest(ctx, http.MethodPut, "/containers/"+url.PathEscape(databaseContainerName(serviceID))+"/archive?path="+url.QueryEscape(filepath.Dir(preset.VolumeTarget))+"&noOverwriteDirNonDir=true", source, "application/x-tar")
+	if err != nil {
+		return err
+	}
+	return res.Body.Close()
+}
+
+func (d *Docker) RemoveVolume(ctx context.Context, name string) error {
+	res, err := d.request(ctx, http.MethodDelete, "/volumes/"+url.PathEscape(name)+"?force=1", nil, nil)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return res.Body.Close()
+}
+
 func (d *Docker) stopContainer(ctx context.Context, name string) error {
 	response, err := d.request(ctx, http.MethodPost, "/containers/"+url.PathEscape(name)+"/stop?t=10", nil, nil)
 	if err != nil {

@@ -57,3 +57,17 @@ func TestObjectURLUsesVirtualHostStyle(t *testing.T) {
 		t.Fatalf("URL = %q, want %q", got, want)
 	}
 }
+
+func TestR2NormalizesLegacyRegionForSigning(t *testing.T) {
+	client, err := New(Config{Region: "us-east-1", Bucket: "backups", Endpoint: "https://account.r2.cloudflarestorage.com", AccessKey: "access", SecretKey: "secret", ForcePathStyle: true, Secure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := client.request(context.Background(), "PUT", "project/archive.tar.gz", strings.NewReader("backup"), "hash", time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authorization := request.Header.Get("Authorization"); !strings.Contains(authorization, "/20260802/auto/s3/aws4_request") {
+		t.Fatalf("authorization did not use R2 auto region: %q", authorization)
+	}
+}

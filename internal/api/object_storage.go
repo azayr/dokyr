@@ -215,7 +215,7 @@ func (a *API) deleteObjectStorageConnection(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if item.InUse {
-		write(w, http.StatusConflict, map[string]string{"error": "this connection is in use by Registry or server backups; switch those services before removing it"})
+		write(w, http.StatusConflict, map[string]string{"error": "this connection is in use by Registry or backup schedules; switch those services before removing it"})
 		return
 	}
 	if err := a.store.DeleteObjectStorageConnection(r.Context(), id); err != nil {

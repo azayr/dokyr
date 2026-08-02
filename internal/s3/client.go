@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -35,6 +36,12 @@ func New(config Config) (*Client, error) {
 	config.Region = strings.TrimSpace(config.Region)
 	config.Bucket = strings.TrimSpace(config.Bucket)
 	config.Endpoint = strings.TrimRight(strings.TrimSpace(config.Endpoint), "/")
+	// R2 documents `auto` as its S3 signing region. Older Dokyr registry
+	// settings used the AWS-compatible `us-east-1` alias; normalizing here also
+	// covers migrated connections and avoids SignatureDoesNotMatch responses.
+	if strings.Contains(strings.ToLower(config.Endpoint), ".r2.cloudflarestorage.com") {
+		config.Region = "auto"
+	}
 	if config.Region == "" || config.Bucket == "" || config.AccessKey == "" || config.SecretKey == "" {
 		return nil, errors.New("S3 region, bucket, access key, and secret key are required")
 	}
@@ -87,6 +94,14 @@ func (c *Client) GetFile(ctx context.Context, key, filename string) error {
 		return err
 	}
 	return file.Close()
+}
+
+func (c *Client) Delete(ctx context.Context, key string) error {
+	req, err := c.request(ctx, http.MethodDelete, key, nil, emptySHA256, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	return c.do(req, io.Discard)
 }
 
 const emptySHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -158,6 +173,16 @@ func (c *Client) do(request *http.Request, destination io.Writer) error {
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 16<<10))
 		detail := strings.TrimSpace(string(message))
+		var providerError struct {
+			Code    string `xml:"Code"`
+			Message string `xml:"Message"`
+		}
+		if xml.Unmarshal(message, &providerError) == nil && strings.TrimSpace(providerError.Message) != "" {
+			detail = strings.TrimSpace(providerError.Message)
+			if code := strings.TrimSpace(providerError.Code); code != "" {
+				detail = code + ": " + detail
+			}
+		}
 		if detail == "" {
 			detail = response.Status
 		}

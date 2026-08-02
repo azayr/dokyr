@@ -130,6 +130,7 @@ func main() {
 	apiHandler.StartCleanupScheduler(schedulerContext)
 	apiHandler.StartPlatformUpdateScheduler(schedulerContext)
 	apiHandler.StartServerBackupWorker(schedulerContext)
+	apiHandler.StartProjectBackupWorker(schedulerContext)
 	go func() {
 		for attempt := 1; attempt <= 10; attempt++ {
 			if err := apiHandler.SyncDomains(context.Background()); err == nil {

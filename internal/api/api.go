@@ -63,6 +63,7 @@ type API struct {
 	latestRelease          *platformupdate.Release
 	deploymentCancels      map[string]context.CancelFunc
 	backupQueue            chan string
+	projectBackupQueue     chan string
 }
 
 type domainRuleInput struct {
@@ -104,6 +105,7 @@ func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integ
 		log:                    log,
 		deploymentCancels:      make(map[string]context.CancelFunc),
 		backupQueue:            make(chan string, 100),
+		projectBackupQueue:     make(chan string, 100),
 	}
 }
 func (a *API) Handler() http.Handler {
@@ -171,6 +173,10 @@ func (a *API) registerProtectedRoutes(protected *guardedMux) {
 	protected.handle("POST /api/projects/{id}/clone", authz.PermProjectWrite, a.cloneProject)
 	protected.handle("PUT /api/projects/{id}", authz.PermProjectWrite, a.updateProject)
 	protected.handle("DELETE /api/projects/{id}", authz.PermProjectWrite, a.deleteProject)
+	protected.handle("GET /api/projects/{id}/backups", authz.PermProjectRead, a.projectBackups)
+	protected.handle("POST /api/projects/{id}/backups", authz.PermProjectWrite, a.createProjectBackup)
+	protected.handle("PUT /api/projects/{id}/backups/schedule", authz.PermProjectWrite, a.updateProjectBackupSchedule)
+	protected.handle("POST /api/projects/{id}/backups/{backupId}/restore", authz.PermProjectWrite, a.restoreProjectBackup)
 	// Assigning a domain rewrites Caddy's routing table, which can shadow the
 	// control panel's own hostname. Owner only.
 	protected.handle("PUT /api/projects/{id}/domain", authz.PermIngressWrite, a.updateProjectDomain)

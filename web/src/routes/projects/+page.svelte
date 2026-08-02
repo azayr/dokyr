@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { page } from '$app/state';
+  import { goto } from '$app/navigation';
   import Shell from '$lib/components/Shell.svelte';
   import Status from '$lib/components/Status.svelte';
   import Icon from '$lib/components/Icon.svelte';
@@ -55,7 +56,7 @@
       return;
     }
     toast.success(`Project ${data.name || form.name} created`);
-    location.href = '/projects/' + data.id;
+    await goto('/projects/' + data.id);
   }
 
   const sourceLabel = (project) => (project.sourceType === 'empty' ? 'No services yet' : project.sourceType === 'image' ? project.imageUrl : project.repository);
@@ -140,7 +141,7 @@
           </thead>
           <tbody>
             {#each filtered as project}
-              <tr class="clickable" onclick={() => (location.href = '/projects/' + project.id)}>
+              <tr class="clickable" onclick={() => goto('/projects/' + project.id)}>
                 <td>
                   <span class="project-cell">
                     <span class="project-icon"><Icon name={sourceIcon(project)} size={14} /></span>

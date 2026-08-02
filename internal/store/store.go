@@ -714,7 +714,7 @@ func (s *Store) ObjectStorageConnections(ctx context.Context) ([]ObjectStorageCo
 	rows, err := s.db.QueryContext(ctx, `SELECT o.id,o.name,o.provider,o.region,o.bucket,o.endpoint,o.access_key,
 		o.secret_key_encrypted,o.force_path_style,o.secure,COALESCE(o.created_by,''),o.created_at,o.updated_at,
 		EXISTS(SELECT 1 FROM registry_settings r WHERE r.object_storage_id=o.id),
-		EXISTS(SELECT 1 FROM server_backup_schedule b WHERE b.object_storage_id=o.id)
+		(EXISTS(SELECT 1 FROM server_backup_schedule b WHERE b.object_storage_id=o.id) OR EXISTS(SELECT 1 FROM project_backup_schedules p WHERE p.object_storage_id=o.id))
 		FROM object_storage_connections o ORDER BY o.name`)
 	if err != nil {
 		return nil, err
@@ -739,7 +739,7 @@ func (s *Store) ObjectStorageConnection(ctx context.Context, id string) (ObjectS
 	err := s.db.QueryRowContext(ctx, `SELECT o.id,o.name,o.provider,o.region,o.bucket,o.endpoint,o.access_key,
 		o.secret_key_encrypted,o.force_path_style,o.secure,COALESCE(o.created_by,''),o.created_at,o.updated_at,
 		EXISTS(SELECT 1 FROM registry_settings r WHERE r.object_storage_id=o.id),
-		EXISTS(SELECT 1 FROM server_backup_schedule b WHERE b.object_storage_id=o.id)
+		(EXISTS(SELECT 1 FROM server_backup_schedule b WHERE b.object_storage_id=o.id) OR EXISTS(SELECT 1 FROM project_backup_schedules p WHERE p.object_storage_id=o.id))
 		FROM object_storage_connections o WHERE o.id=$1`, id).Scan(
 		&item.ID, &item.Name, &item.Provider, &item.Region, &item.Bucket, &item.Endpoint,
 		&item.AccessKey, &item.SecretKeyEncrypted, &item.ForcePathStyle, &item.Secure, &item.CreatedBy,
@@ -784,7 +784,9 @@ func (s *Store) DeleteObjectStorageConnection(ctx context.Context, id string) er
 	result, err := s.db.ExecContext(ctx, `DELETE FROM object_storage_connections o
 		WHERE o.id=$1
 		AND NOT EXISTS(SELECT 1 FROM registry_settings r WHERE r.object_storage_id=o.id)
-		AND NOT EXISTS(SELECT 1 FROM server_backup_schedule b WHERE b.object_storage_id=o.id)`, id)
+		AND NOT EXISTS(SELECT 1 FROM server_backup_schedule b WHERE b.object_storage_id=o.id)
+		AND NOT EXISTS(SELECT 1 FROM project_backup_schedules p WHERE p.object_storage_id=o.id)`, id)
+
 	if err != nil {
 		return err
 	}

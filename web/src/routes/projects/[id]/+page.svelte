@@ -5,9 +5,10 @@
   import Shell from '$lib/components/Shell.svelte';
   import Status from '$lib/components/Status.svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import ProjectBackups from '$lib/components/ProjectBackups.svelte';
   import { api, currentUser } from '$lib/auth.js';
 
-  const tabs = ['overview', 'metrics', 'deployments', 'logs', 'environment', 'databases', 'domains', 'settings'];
+  const tabs = ['overview', 'metrics', 'deployments', 'logs', 'environment', 'databases', 'backups', 'domains', 'settings'];
   let activeTab = 'overview';
   let data = { project: { name: 'Loading…', status: 'deploying' }, deployments: [], services: [], applicationServices: [], databaseServices: [] };
   let loading = true;
@@ -1602,6 +1603,8 @@
         {/each}
       {/if}
     </section>
+  {:else if activeTab === 'backups'}
+    <ProjectBackups {project} volumeCount={databaseServices.length} />
   {:else if activeTab === 'logs'}
     <section class="panel log-panel">
       <header>
