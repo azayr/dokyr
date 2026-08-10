@@ -1530,7 +1530,20 @@ func (s *Store) UpdateProject(ctx context.Context, p Project) error {
 }
 
 func (s *Store) DeleteProject(ctx context.Context, id string) error {
-	result, err := s.db.ExecContext(ctx, "DELETE FROM projects WHERE id=$1", id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Domain rules reference application services with ON DELETE RESTRICT so a
+	// service cannot be removed while it is still routed. Delete this project's
+	// bindings first instead of relying on PostgreSQL to choose a safe order for
+	// the two project cascades (bindings and application services).
+	if _, err := tx.ExecContext(ctx, "DELETE FROM project_domain_bindings WHERE project_id=$1", id); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, "DELETE FROM projects WHERE id=$1", id)
 	if err != nil {
 		return err
 	}
@@ -1541,7 +1554,7 @@ func (s *Store) DeleteProject(ctx context.Context, id string) error {
 	if count == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (s *Store) ProjectEnvironmentVariables(ctx context.Context, projectID string) ([]ProjectEnvironmentVariable, error) {
