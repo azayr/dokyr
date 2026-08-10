@@ -2444,14 +2444,21 @@ func (a *API) deleteProject(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
+	// Project deletion spans several Docker calls followed by the control-plane
+	// database delete. Once confirmed, finish that sequence even if the browser
+	// disconnects; otherwise a slow persistent-volume removal can leave the
+	// containers gone while the project record remains.
+	deleteContext, cancelDelete := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
+	defer cancelDelete()
 	a.projectMu.Lock()
 	defer a.projectMu.Unlock()
-	project, err := a.store.Project(r.Context(), strings.TrimSpace(r.PathValue("id")))
+	project, err := a.store.Project(deleteContext, strings.TrimSpace(r.PathValue("id")))
 	if store.NotFound(err) {
 		write(w, 404, map[string]string{"error": "project not found"})
 		return
 	}
 	if err != nil {
+		a.log.Error("read project for deletion", "project", strings.TrimSpace(r.PathValue("id")), "error", err)
 		problem(w, err)
 		return
 	}
@@ -2460,50 +2467,53 @@ func (a *API) deleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Freeze both service collections while the cleanup snapshot is used. Without
+	// the application lock, a service created concurrently can be cascaded out of
+	// PostgreSQL after this snapshot without its container ever being removed.
+	a.applicationMu.Lock()
+	defer a.applicationMu.Unlock()
 	a.databaseMu.Lock()
-	applicationServices, err := a.store.ApplicationServices(r.Context(), project.ID)
+	defer a.databaseMu.Unlock()
+	applicationServices, err := a.store.ApplicationServices(deleteContext, project.ID)
 	if err != nil {
-		a.databaseMu.Unlock()
+		a.log.Error("list application services for project deletion", "project", project.ID, "error", err)
 		problem(w, err)
 		return
 	}
-	databaseServices, err := a.store.ProjectDatabaseServices(r.Context(), project.ID)
+	databaseServices, err := a.store.ProjectDatabaseServices(deleteContext, project.ID)
 	if err != nil {
-		a.databaseMu.Unlock()
+		a.log.Error("list database services for project deletion", "project", project.ID, "error", err)
 		problem(w, err)
 		return
 	}
-	if err := a.docker.RemoveProject(r.Context(), project.ID); err != nil {
-		a.databaseMu.Unlock()
+	if err := a.docker.RemoveProject(deleteContext, project.ID); err != nil {
 		a.log.Warn("remove project container", "project", project.ID, "error", err)
 		write(w, 502, map[string]string{"error": "could not remove the project container"})
 		return
 	}
 	for _, service := range applicationServices {
-		if err := a.docker.RemoveApplication(r.Context(), service.ID); err != nil {
-			a.databaseMu.Unlock()
+		if err := a.docker.RemoveApplication(deleteContext, service.ID); err != nil {
 			a.log.Warn("remove application service", "project", project.ID, "service", service.ID, "error", err)
 			write(w, 502, map[string]string{"error": "could not remove all application service containers"})
 			return
 		}
 	}
 	for _, service := range databaseServices {
-		if err := a.docker.RemoveDatabase(r.Context(), service.ID, service.VolumeName, true); err != nil {
-			a.databaseMu.Unlock()
+		if err := a.docker.RemoveDatabase(deleteContext, service.ID, service.VolumeName, true); err != nil {
 			a.log.Warn("remove project database", "project", project.ID, "database", service.ID, "error", err)
 			write(w, 502, map[string]string{"error": "could not remove all project database resources"})
 			return
 		}
 	}
-	a.databaseMu.Unlock()
 
-	if err := a.store.DeleteProject(r.Context(), project.ID); err != nil {
-		problem(w, err)
+	if err := a.store.DeleteProject(deleteContext, project.ID); err != nil {
+		a.log.Error("finalize project deletion", "project", project.ID, "error", err)
+		write(w, 500, map[string]string{"error": "project resources were removed, but deletion could not be finalized; it is safe to retry"})
 		return
 	}
 	warning := ""
 	a.domainMu.Lock()
-	if err := a.syncDomains(r.Context()); err != nil {
+	if err := a.syncDomains(deleteContext); err != nil {
 		warning = "Project deleted, but Caddy routes could not be refreshed immediately."
 		a.log.Warn("refresh domains after project deletion", "project", project.ID, "error", err)
 	}
