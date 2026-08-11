@@ -1,5 +1,9 @@
 # Dokyr
 
+<p align="center">
+  <img src="assets/brand/github-social-preview.png" alt="Dokyr — your server, your platform" width="1280" />
+</p>
+
 A lightweight, self-hosted deployment control plane. The foundation combines a Go API, an embedded Svelte interface, PostgreSQL, Caddy, a private container registry, and a built-in Stalwart mail server.
 
 The complete implementation guide—including container topology, request and deployment sequences, data model, security boundaries, configuration, operations, known limitations, and maintainer invariants—is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -327,3 +331,7 @@ Private container images are supported from the project creation screen. Save an
 ## Security boundary
 
 Access to the Docker socket is equivalent to administrative access to the host. Only the control-plane container receives it. Caddy, PostgreSQL and managed workloads never receive the socket. Before exposing this beyond a trusted network, replace the example database password, JWT secret, and encryption key; enable secure cookies behind HTTPS; and add request auditing plus strict resource validation.
+
+## License
+
+Dokyr is open-source software released under the [MIT License](LICENSE).

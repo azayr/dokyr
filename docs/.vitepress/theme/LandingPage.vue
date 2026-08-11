@@ -25,6 +25,7 @@ import monitorIcon from '@iconify-icons/lucide/monitor';
 import packageIcon from '@iconify-icons/lucide/package';
 import rocketIcon from '@iconify-icons/lucide/rocket';
 import routeIcon from '@iconify-icons/lucide/git-branch';
+import scaleIcon from '@iconify-icons/lucide/scale';
 import serverIcon from '@iconify-icons/lucide/server';
 import terminalIcon from '@iconify-icons/lucide/terminal';
 
@@ -269,10 +270,12 @@ onMounted(() => {
         <h2 id="open-source-title">No platform should require <em>blind trust.</em></h2>
         <p>
           Dokyr is built in public. Read the Go control plane, inspect every migration, follow the Docker API calls,
-          and contribute improvements that make the platform work better for small teams.
+          and contribute improvements that make the platform work better for small teams. Use, modify, and distribute
+          it under the permissive MIT License.
         </p>
         <div class="open-source-links">
           <a href="https://github.com/azayr/dokyr"><Icon :icon="githubIcon" aria-hidden="true" />GitHub repository <Icon :icon="externalLinkIcon" aria-hidden="true" /></a>
+          <a href="https://github.com/azayr/dokyr/blob/main/LICENSE"><Icon :icon="scaleIcon" aria-hidden="true" />MIT License <Icon :icon="externalLinkIcon" aria-hidden="true" /></a>
           <a :href="withBase('/guide/')"><Icon :icon="bookOpenIcon" aria-hidden="true" />Read the docs <Icon :icon="arrowRightIcon" aria-hidden="true" /></a>
           <a :href="withBase('/API')"><Icon :icon="codeIcon" aria-hidden="true" />Explore the API <Icon :icon="arrowRightIcon" aria-hidden="true" /></a>
         </div>

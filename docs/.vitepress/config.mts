@@ -54,6 +54,7 @@ export default defineConfig({
             url: `${siteOrigin}/`,
             codeRepository: repository,
             downloadUrl: `${repository}/pkgs/container/dokyr`,
+            license: `${repository}/blob/main/LICENSE`,
             description,
             softwareVersion: '0.2.32',
             offers: {
