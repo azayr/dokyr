@@ -163,9 +163,8 @@ pnpm install
 pnpm dev
 ```
 
-Run `pnpm build` for a local production build. Pushes to `main` that change
-`docs/**` trigger `.github/workflows/publish-pages.yml`, which builds with the
-`/dokyr/` base path and deploys the result to GitHub Pages.
+Run `pnpm build` for a local production build. The generated static site is
+written to `docs/.vitepress/dist` for deployment to Cloudflare Pages.
 
 ## SMTP and password recovery
 
