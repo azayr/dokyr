@@ -7,6 +7,13 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@iconify-icons/lucide':
+        specifier: ^1.2.135
+        version: 1.2.135
+      '@iconify/vue':
+        specifier: ^5.0.1
+        version: 5.0.1(vue@3.5.41)
     devDependencies:
       '@fontsource-variable/sora':
         specifier: 5.3.0
@@ -283,11 +290,19 @@ packages:
   '@fontsource/ibm-plex-mono@5.3.0':
     resolution: {integrity: sha512-eTgnZjZEGk1QtD3ZstF+Vclo2HLAni8YMy34/DxllwZvyz1lR/1RF/xTiAquOBO7MvqBx8D2Ig2WCPMVfdZu7Q==}
 
+  '@iconify-icons/lucide@1.2.135':
+    resolution: {integrity: sha512-t2Dya1a+PInBmHScbbGyseze7rrGHRW/dYF4GTR6f51N08sCg6KrtE4zmplnZE1ul2NyC+sxKpXRCv48hEgaQw==}
+
   '@iconify-json/simple-icons@1.2.93':
     resolution: {integrity: sha512-/XhANjfGYOuqvSR3TmUnkQkINvQ4GVjVuukvymRbxtVFBvIq/yiXJqCDycKcQPT401OYT9H2vIY6ihAlz1QIAw==}
 
   '@iconify/types@2.0.0':
     resolution: {integrity: sha512-+wluvCrRhXrhyOmRDJ3q8mux9JkKy5SJ/v8ol2tu4FVjyYvtEzkc/3pK15ET6RKg4b4w4BmTk1+gsCUhf21Ykg==}
+
+  '@iconify/vue@5.0.1':
+    resolution: {integrity: sha512-aumwwooJlFJ5H5qYWB6ZTAyM0C8hpfcSVLB9/a3qnH1GGvIJ+FEbpEs4s/HfErYe/M5qZeLjwmESR5fFm3lXEw==}
+    peerDependencies:
+      vue: '>=3.0.0'
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
@@ -1059,11 +1074,20 @@ snapshots:
 
   '@fontsource/ibm-plex-mono@5.3.0': {}
 
+  '@iconify-icons/lucide@1.2.135':
+    dependencies:
+      '@iconify/types': 2.0.0
+
   '@iconify-json/simple-icons@1.2.93':
     dependencies:
       '@iconify/types': 2.0.0
 
   '@iconify/types@2.0.0': {}
+
+  '@iconify/vue@5.0.1(vue@3.5.41)':
+    dependencies:
+      '@iconify/types': 2.0.0
+      vue: 3.5.41
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 

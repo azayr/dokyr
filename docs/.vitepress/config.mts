@@ -16,14 +16,15 @@ export default defineConfig({
   titleTemplate: ':title · Dokyr',
   description,
   base,
-  appearance: 'dark',
+  appearance: true,
   cleanUrls: true,
   lastUpdated: true,
   sitemap: {
     hostname: `${siteOrigin}/`
   },
   head: [
-    ['meta', { name: 'theme-color', content: '#0b0e14' }],
+    ['meta', { name: 'theme-color', media: '(prefers-color-scheme: light)', content: '#f7f9fc' }],
+    ['meta', { name: 'theme-color', media: '(prefers-color-scheme: dark)', content: '#0b0e14' }],
     ['meta', { name: 'author', content: 'Dokyr contributors' }],
     ['meta', { name: 'robots', content: 'index, follow, max-image-preview:large' }],
     ['meta', { property: 'og:site_name', content: 'Dokyr' }],

@@ -1,45 +1,96 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { withBase } from 'vitepress';
+import { Icon } from '@iconify/vue';
+import arrowRightIcon from '@iconify-icons/lucide/arrow-right';
+import badgeCheckIcon from '@iconify-icons/lucide/badge-check';
+import bookOpenIcon from '@iconify-icons/lucide/book-open';
+import boxesIcon from '@iconify-icons/lucide/boxes';
+import boxIcon from '@iconify-icons/lucide/box';
+import checkIcon from '@iconify-icons/lucide/check';
+import cloudIcon from '@iconify-icons/lucide/cloud';
+import codeIcon from '@iconify-icons/lucide/code-2';
+import containerIcon from '@iconify-icons/lucide/container';
+import copyIcon from '@iconify-icons/lucide/copy';
+import cpuIcon from '@iconify-icons/lucide/cpu';
+import databaseIcon from '@iconify-icons/lucide/database';
+import externalLinkIcon from '@iconify-icons/lucide/external-link';
+import focusIcon from '@iconify-icons/lucide/focus';
+import globeIcon from '@iconify-icons/lucide/globe-2';
+import githubIcon from '@iconify-icons/lucide/github';
+import layersIcon from '@iconify-icons/lucide/layers';
+import lockIcon from '@iconify-icons/lucide/lock-keyhole';
+import mailIcon from '@iconify-icons/lucide/mail';
+import monitorIcon from '@iconify-icons/lucide/monitor';
+import packageIcon from '@iconify-icons/lucide/package';
+import rocketIcon from '@iconify-icons/lucide/rocket';
+import routeIcon from '@iconify-icons/lucide/git-branch';
+import serverIcon from '@iconify-icons/lucide/server';
+import terminalIcon from '@iconify-icons/lucide/terminal';
 
 const installCommand = 'curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/install.sh | sudo sh';
 const copied = ref(false);
+
+const stack = [
+  { name: 'GO', label: 'control plane', icon: cpuIcon },
+  { name: 'SVELTE', label: 'interface', icon: monitorIcon },
+  { name: 'DOCKER', label: 'runtime', icon: containerIcon },
+  { name: 'CADDY', label: 'edge', icon: cloudIcon },
+  { name: 'POSTGRESQL', label: 'state', icon: databaseIcon },
+  { name: 'STALWART', label: 'mail', icon: mailIcon }
+];
+
+const principles = [
+  {
+    label: 'CONTROL',
+    title: 'Your machine stays yours.',
+    text: 'Workloads, secrets, certificates, databases, and volumes remain on infrastructure you operate.',
+    icon: lockIcon
+  },
+  {
+    label: 'CLARITY',
+    title: 'Every deployment has a story.',
+    text: 'Follow pull, create, verify, promote, and rollback events without decoding a black box.',
+    icon: layersIcon
+  },
+  {
+    label: 'FOCUS',
+    title: 'One host, done carefully.',
+    text: 'Designed for indie products, internal tools, agencies, and small teams that do not need a cluster.',
+    icon: focusIcon
+  }
+];
 
 const features = [
   {
     code: '01 / SHIP',
     title: 'Deploy containers without the platform tax.',
     text: 'Pull a public or private image or import image services from Compose. Dokyr records every stage and keeps the previous release ready for rollback.',
-    className: 'feature-wide',
-    visual: 'pipeline'
+    icon: rocketIcon
   },
   {
     code: '02 / ROUTE',
     title: 'Domains become configuration, not ceremony.',
     text: 'Route hostnames and paths to individual services while Caddy handles certificates and atomic configuration updates.',
-    className: 'feature-tall',
-    visual: 'routes'
+    icon: routeIcon
   },
   {
     code: '03 / STORE',
     title: 'Private data services, close to the app.',
     text: 'Provision PostgreSQL, MySQL, or MariaDB with persistent volumes. Publish a port only when you deliberately choose to.',
-    className: 'feature-standard',
-    visual: 'database'
+    icon: databaseIcon
   },
   {
     code: '04 / DISTRIBUTE',
     title: 'Your own registry, with scoped credentials.',
     text: 'Push and pull through the built-in Docker Distribution registry, backed by local storage or an S3-compatible service.',
-    className: 'feature-standard',
-    visual: 'registry'
+    icon: packageIcon
   },
   {
     code: '05 / DELIVER',
     title: 'Verified developer mail is built in.',
     text: 'Connect a sending domain, verify DNS, and issue domain-scoped credentials for SMTP or a small Resend-style HTTP API.',
-    className: 'feature-wide',
-    visual: 'mail'
+    icon: mailIcon
   }
 ];
 
@@ -73,17 +124,13 @@ onMounted(() => {
 
 <template>
   <main class="landing-shell">
-    <div class="page-rail page-rail-left" aria-hidden="true"></div>
-    <div class="page-rail page-rail-right" aria-hidden="true"></div>
-
     <section class="hero section-frame" aria-labelledby="hero-title">
-      <div class="corner corner-tl" aria-hidden="true"></div>
-      <div class="corner corner-tr" aria-hidden="true"></div>
       <div class="hero-copy" data-reveal>
         <a class="release-link" href="https://github.com/azayr/dokyr/releases/tag/v0.2.32">
+          <Icon :icon="badgeCheckIcon" aria-hidden="true" />
           <span>v0.2.32</span>
           latest release
-          <b aria-hidden="true">↗</b>
+          <Icon class="link-icon" :icon="externalLinkIcon" aria-hidden="true" />
         </a>
         <p class="eyebrow">Open-source · single-server PaaS</p>
         <h1 id="hero-title">
@@ -96,10 +143,10 @@ onMounted(() => {
         </p>
         <div class="hero-actions">
           <a class="button button-primary" :href="withBase('/guide/installation')">
-            Install Dokyr <span aria-hidden="true">→</span>
+            <Icon :icon="terminalIcon" aria-hidden="true" /> Install Dokyr
           </a>
           <a class="button button-secondary" href="https://github.com/azayr/dokyr">
-            View source <span aria-hidden="true">↗</span>
+            <Icon :icon="githubIcon" aria-hidden="true" /> View source
           </a>
         </div>
       </div>
@@ -117,11 +164,11 @@ onMounted(() => {
           <span>TARGET</span><strong>api.example.com</strong>
         </div>
         <div class="console-log" role="presentation">
-          <p><span class="console-time">09:42:11</span><i class="ok">✓</i><span class="console-message">prepare release</span></p>
-          <p><span class="console-time">09:42:12</span><i class="ok">✓</i><span class="console-message">pull immutable image</span></p>
-          <p><span class="console-time">09:42:18</span><i class="ok">✓</i><span class="console-message">create replacement container</span></p>
-          <p><span class="console-time">09:42:20</span><i class="ok">✓</i><span class="console-message">verify <b>GET /health</b></span></p>
-          <p class="active"><span class="console-time">09:42:21</span><i>→</i><span class="console-message">promote release behind Caddy</span></p>
+          <p><span class="console-time">09:42:11</span><i class="ok"><Icon :icon="checkIcon" /></i><span class="console-message">prepare release</span></p>
+          <p><span class="console-time">09:42:12</span><i class="ok"><Icon :icon="checkIcon" /></i><span class="console-message">pull immutable image</span></p>
+          <p><span class="console-time">09:42:18</span><i class="ok"><Icon :icon="checkIcon" /></i><span class="console-message">create replacement container</span></p>
+          <p><span class="console-time">09:42:20</span><i class="ok"><Icon :icon="checkIcon" /></i><span class="console-message">verify <b>GET /health</b></span></p>
+          <p class="active"><span class="console-time">09:42:21</span><i><Icon :icon="arrowRightIcon" /></i><span class="console-message">promote release behind Caddy</span></p>
         </div>
         <div class="console-result">
           <div><span>STATUS</span><strong>HEALTHY</strong></div>
@@ -131,21 +178,20 @@ onMounted(() => {
       </div>
 
       <div class="install-bar" data-reveal>
-        <span class="prompt" aria-hidden="true">$</span>
+        <Icon class="prompt" :icon="terminalIcon" aria-hidden="true" />
         <code>{{ installCommand }}</code>
-        <button type="button" @click="copyInstall">{{ copied ? 'COPIED' : 'COPY' }}</button>
+        <button type="button" @click="copyInstall">
+          <Icon :icon="copied ? checkIcon : copyIcon" aria-hidden="true" /> {{ copied ? 'COPIED' : 'COPY' }}
+        </button>
       </div>
     </section>
 
     <div class="stack-strip section-frame" aria-label="Dokyr technology stack" data-reveal>
       <span class="stack-label">BUILT FROM BORING, PROVEN PARTS</span>
       <div class="stack-list">
-        <span><b>GO</b> control plane</span>
-        <span><b>SVELTE</b> interface</span>
-        <span><b>DOCKER</b> runtime</span>
-        <span><b>CADDY</b> edge</span>
-        <span><b>POSTGRESQL</b> state</span>
-        <span><b>STALWART</b> mail</span>
+        <span v-for="item in stack" :key="item.name">
+          <Icon :icon="item.icon" aria-hidden="true" /><b>{{ item.name }}</b><small>{{ item.label }}</small>
+        </span>
       </div>
     </div>
 
@@ -159,20 +205,11 @@ onMounted(() => {
         </p>
       </div>
       <div class="principles" data-reveal>
-        <article>
-          <span>CONTROL</span>
-          <strong>Your machine stays yours.</strong>
-          <p>Workloads, secrets, certificates, databases, and volumes remain on infrastructure you operate.</p>
-        </article>
-        <article>
-          <span>CLARITY</span>
-          <strong>Every deployment has a story.</strong>
-          <p>Follow pull, create, verify, promote, and rollback events without decoding a black box.</p>
-        </article>
-        <article>
-          <span>FOCUS</span>
-          <strong>One host, done carefully.</strong>
-          <p>Designed for indie products, internal tools, agencies, and small teams that do not need a cluster.</p>
+        <article v-for="principle in principles" :key="principle.label">
+          <Icon class="principle-icon" :icon="principle.icon" aria-hidden="true" />
+          <span>{{ principle.label }}</span>
+          <strong>{{ principle.title }}</strong>
+          <p>{{ principle.text }}</p>
         </article>
       </div>
     </section>
@@ -184,44 +221,14 @@ onMounted(() => {
       </div>
 
       <div class="feature-grid">
-        <article v-for="feature in features" :key="feature.code" :class="['feature-card', feature.className]" data-reveal>
+        <article v-for="feature in features" :key="feature.code" class="feature-card" data-reveal>
           <div class="feature-copy">
-            <span class="feature-code">{{ feature.code }}</span>
+            <div class="feature-kicker">
+              <span class="feature-icon" aria-hidden="true"><Icon :icon="feature.icon" /></span>
+              <span class="feature-code">{{ feature.code }}</span>
+            </div>
             <h3>{{ feature.title }}</h3>
             <p>{{ feature.text }}</p>
-          </div>
-
-          <div v-if="feature.visual === 'pipeline'" class="feature-visual pipeline-visual" aria-hidden="true">
-            <div class="pipeline-head"><span>RELEASE / api@2.4.1</span><b>10.4s</b></div>
-            <div class="pipeline-row"><i class="done"></i><span>pull</span><small>6.2s</small></div>
-            <div class="pipeline-row"><i class="done"></i><span>create</span><small>1.1s</small></div>
-            <div class="pipeline-row"><i class="done"></i><span>verify</span><small>2.4s</small></div>
-            <div class="pipeline-row"><i class="live"></i><span>promote</span><small>0.7s</small></div>
-          </div>
-
-          <div v-else-if="feature.visual === 'routes'" class="feature-visual route-visual" aria-hidden="true">
-            <div class="domain-chip">api.example.com</div>
-            <span class="route-line"></span>
-            <div class="route-target"><small>/api/*</small><b>API :8080</b></div>
-            <div class="route-target"><small>/*</small><b>WEB :3000</b></div>
-            <div class="certificate"><i></i> TLS certificate active</div>
-          </div>
-
-          <div v-else-if="feature.visual === 'database'" class="feature-visual database-visual" aria-hidden="true">
-            <div class="db-cylinder"><i></i><i></i><i></i></div>
-            <div><span>POSTGRES 17</span><strong>healthy</strong><small>private network · persistent volume</small></div>
-          </div>
-
-          <div v-else-if="feature.visual === 'registry'" class="feature-visual registry-visual" aria-hidden="true">
-            <div class="package-row"><i></i><span>acme/web</span><b>2.8.0</b></div>
-            <div class="package-row"><i></i><span>acme/api</span><b>2.4.1</b></div>
-            <div class="package-row"><i></i><span>acme/worker</span><b>1.9.3</b></div>
-          </div>
-
-          <div v-else class="feature-visual mail-visual" aria-hidden="true">
-            <div class="mail-header"><span>POST /v1/emails</span><strong>202 QUEUED</strong></div>
-            <code>{<br />&nbsp;&nbsp;"from": "hello@updates.example.com",<br />&nbsp;&nbsp;"to": ["team@example.net"]<br />}</code>
-            <div class="dns-row"><i></i> SPF</div><div class="dns-row"><i></i> DKIM</div><div class="dns-row"><i></i> DMARC</div>
           </div>
         </article>
       </div>
@@ -235,28 +242,28 @@ onMounted(() => {
       </div>
 
       <div class="architecture-board" data-reveal>
-        <div class="arch-internet"><span>INTERNET</span></div>
+        <div class="arch-internet"><Icon class="arch-icon" :icon="globeIcon" aria-hidden="true" /><span>INTERNET</span></div>
         <div class="arch-line line-edge"></div>
-        <div class="arch-node node-caddy"><span>EDGE</span><strong>Caddy</strong><small>HTTP · HTTPS · certificates</small></div>
+        <div class="arch-node node-caddy"><Icon class="arch-icon" :icon="cloudIcon" aria-hidden="true" /><span>EDGE</span><strong>Caddy</strong><small>HTTP · HTTPS · certificates</small></div>
         <div class="arch-line line-control"></div>
-        <div class="arch-node node-dokyr"><span>CONTROL</span><strong>Dokyr</strong><small>Go API · Svelte UI</small></div>
+        <div class="arch-node node-dokyr"><Icon class="arch-icon" :icon="boxesIcon" aria-hidden="true" /><span>CONTROL</span><strong>Dokyr</strong><small>Go API · Svelte UI</small></div>
         <div class="arch-line line-services"></div>
         <div class="arch-services">
-          <div><span>STATE</span><strong>PostgreSQL</strong></div>
-          <div><span>IMAGES</span><strong>Registry</strong></div>
-          <div><span>MAIL</span><strong>Stalwart</strong></div>
+          <div><Icon class="arch-icon" :icon="databaseIcon" aria-hidden="true" /><span>STATE</span><strong>PostgreSQL</strong></div>
+          <div><Icon class="arch-icon" :icon="packageIcon" aria-hidden="true" /><span>IMAGES</span><strong>Registry</strong></div>
+          <div><Icon class="arch-icon" :icon="mailIcon" aria-hidden="true" /><span>MAIL</span><strong>Stalwart</strong></div>
         </div>
-        <div class="arch-socket"><span>UNIX SOCKET</span><strong>Docker Engine</strong></div>
-        <div class="arch-workloads"><i></i><i></i><i></i><span>YOUR WORKLOADS</span></div>
+        <div class="arch-socket"><Icon class="arch-icon" :icon="containerIcon" aria-hidden="true" /><span>UNIX SOCKET</span><strong>Docker Engine</strong></div>
+        <div class="arch-workloads"><i><Icon :icon="boxIcon" /></i><i><Icon :icon="boxIcon" /></i><i><Icon :icon="boxIcon" /></i><span>YOUR WORKLOADS</span></div>
       </div>
 
       <a class="text-link" :href="withBase('/ARCHITECTURE')" data-reveal>
-        Read the complete architecture <span aria-hidden="true">→</span>
+        <Icon :icon="bookOpenIcon" aria-hidden="true" /> Read the complete architecture <Icon :icon="arrowRightIcon" aria-hidden="true" />
       </a>
     </section>
 
     <section class="open-source section-frame" aria-labelledby="open-source-title">
-      <div class="open-source-mark" aria-hidden="true">OPEN<br />SOURCE</div>
+      <div class="open-source-mark" aria-hidden="true"><Icon :icon="githubIcon" /></div>
       <div class="open-source-copy" data-reveal>
         <p class="eyebrow">// fork it, inspect it, make it yours</p>
         <h2 id="open-source-title">No platform should require <em>blind trust.</em></h2>
@@ -265,9 +272,9 @@ onMounted(() => {
           and contribute improvements that make the platform work better for small teams.
         </p>
         <div class="open-source-links">
-          <a href="https://github.com/azayr/dokyr">GitHub repository <span aria-hidden="true">↗</span></a>
-          <a :href="withBase('/guide/')">Read the docs <span aria-hidden="true">→</span></a>
-          <a :href="withBase('/API')">Explore the API <span aria-hidden="true">→</span></a>
+          <a href="https://github.com/azayr/dokyr"><Icon :icon="githubIcon" aria-hidden="true" />GitHub repository <Icon :icon="externalLinkIcon" aria-hidden="true" /></a>
+          <a :href="withBase('/guide/')"><Icon :icon="bookOpenIcon" aria-hidden="true" />Read the docs <Icon :icon="arrowRightIcon" aria-hidden="true" /></a>
+          <a :href="withBase('/API')"><Icon :icon="codeIcon" aria-hidden="true" />Explore the API <Icon :icon="arrowRightIcon" aria-hidden="true" /></a>
         </div>
       </div>
     </section>
@@ -275,12 +282,13 @@ onMounted(() => {
     <section class="final-cta section-frame" aria-labelledby="cta-title">
       <div class="cta-grid" aria-hidden="true"></div>
       <div data-reveal>
+        <span class="cta-icon" aria-hidden="true"><Icon :icon="serverIcon" /></span>
         <p class="eyebrow">// a VPS is enough</p>
         <h2 id="cta-title">Make one server feel like <em>your cloud.</em></h2>
         <p>Install Dokyr, create the owner account, and ship your first container.</p>
         <div class="hero-actions centered">
-          <a class="button button-primary" :href="withBase('/guide/installation')">Start the installation <span aria-hidden="true">→</span></a>
-          <a class="button button-secondary" href="https://github.com/azayr/dokyr">Read the source <span aria-hidden="true">↗</span></a>
+          <a class="button button-primary" :href="withBase('/guide/installation')"><Icon :icon="terminalIcon" aria-hidden="true" />Start the installation</a>
+          <a class="button button-secondary" href="https://github.com/azayr/dokyr"><Icon :icon="githubIcon" aria-hidden="true" />Read the source</a>
         </div>
       </div>
     </section>
