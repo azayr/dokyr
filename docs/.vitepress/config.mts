@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitepress';
+import { withMermaid } from 'vitepress-plugin-mermaid';
 
 const base = process.env.DOCS_BASE || '/';
 const siteOrigin = (process.env.DOCS_ORIGIN || 'https://azayr.github.io/dokyr').replace(/\/$/, '');
@@ -10,7 +11,7 @@ function pageUrl(relativePath: string) {
   return `${siteOrigin}/${relativePath.replace(/(^|\/)index\.md$/, '$1').replace(/\.md$/, '')}`;
 }
 
-export default defineConfig({
+export default withMermaid(defineConfig({
   lang: 'en-US',
   title: 'Dokyr',
   titleTemplate: ':title · Dokyr',
@@ -19,6 +20,19 @@ export default defineConfig({
   appearance: true,
   cleanUrls: true,
   lastUpdated: true,
+  mermaid: {
+    securityLevel: 'strict',
+    theme: 'base',
+    themeVariables: {
+      fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
+      primaryColor: '#eaf2ff',
+      primaryTextColor: '#111827',
+      primaryBorderColor: '#0d63e5',
+      lineColor: '#58708f',
+      secondaryColor: '#f7f9fc',
+      tertiaryColor: '#ffffff'
+    }
+  },
   sitemap: {
     hostname: `${siteOrigin}/`
   },
@@ -207,4 +221,4 @@ export default defineConfig({
       copyright: 'Built in public by Dokyr contributors.'
     }
   }
-});
+}));
