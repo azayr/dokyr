@@ -1,3 +1,8 @@
+---
+title: Dokyr architecture
+description: Explore Dokyr's implemented system architecture, containers, networks, security boundaries, data model, and deployment sequences.
+---
+
 # Dokyr architecture
 
 This document describes the system that is implemented in this repository today. It is intended both for people operating Dokyr and for AI agents changing the code. It separates current behavior from planned capabilities so that the code is not mistaken for a more complete platform than it is.

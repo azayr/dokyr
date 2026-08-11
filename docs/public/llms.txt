@@ -1,0 +1,21 @@
+# Dokyr
+
+> Dokyr is an open-source, single-node deployment control plane for Docker hosts.
+
+Dokyr combines a Go API, Svelte interface, PostgreSQL, Caddy, a private registry, and Stalwart mail server. It deploys container images and Dockerfile-backed services, routes domains with automatic HTTPS, provisions private databases, stores encrypted credentials, and supports verified developer mail domains.
+
+## Documentation
+
+- [Introduction](https://azayr.github.io/dokyr/guide/): Product scope and architecture
+- [Installation](https://azayr.github.io/dokyr/guide/installation): Install Dokyr on a VPS
+- [Projects](https://azayr.github.io/dokyr/guide/first-project): Create and expose a project
+- [Deployments](https://azayr.github.io/dokyr/guide/deployments): Understand the deployment pipeline
+- [Infrastructure](https://azayr.github.io/dokyr/infrastructure/domains): Domains, registry, storage, and mail
+- [Operations](https://azayr.github.io/dokyr/operations/upgrades): Updates, backups, and security
+- [API](https://azayr.github.io/dokyr/API): HTTP API reference
+- [Architecture](https://azayr.github.io/dokyr/ARCHITECTURE): Complete implementation architecture
+- [Source](https://github.com/azayr/dokyr): GitHub repository
+
+## Scope note
+
+Dokyr is currently designed for one Docker host. It does not provide clustering, a worker fleet, high availability, or a general-purpose scheduler.

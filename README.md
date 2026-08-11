@@ -149,6 +149,20 @@ make web
 
 The Vite development server proxies `/api` to the Go service on port 8080.
 
+## Documentation site
+
+The landing page and operator documentation are a VitePress site in `docs/`:
+
+```sh
+cd docs
+pnpm install
+pnpm dev
+```
+
+Run `pnpm build` for a local production build. Pushes to `main` that change
+`docs/**` trigger `.github/workflows/publish-pages.yml`, which builds with the
+`/dokyr/` base path and deploys the result to GitHub Pages.
+
 ## SMTP and password recovery
 
 SMTP can be configured interactively from **Settings → SMTP** or bootstrapped

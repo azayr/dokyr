@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <defs>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0v48" fill="none" stroke="#202838" stroke-width="1"/>
+    </pattern>
+    <linearGradient id="blue" x1="0" x2="1">
+      <stop stop-color="#0d63e5"/>
+      <stop offset="1" stop-color="#56a0ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="#0b0e14"/>
+  <rect width="1200" height="630" fill="url(#grid)" opacity=".8"/>
+  <path d="M70 82h18M79 73v18M1112 539h18M1121 530v18" stroke="#0d63e5" stroke-width="2"/>
+  <g transform="translate(70 92) scale(.17)">
+    <path fill="#f5f7fb" fill-rule="evenodd" d="M32 39h272l27 5 26 9 30 16 19 14 25 25 23 34 17 41 8 41v45l-8 40-14 35-11 19-15 20-24 24-30 21-28 13-33 9-16 2H35l168-88 7-7 2-10h87l16-6 86-76 6-10 1-14-5-11-26-25-1 1-9-9-1 1-46-42-17-9H92l7 7 50 37 3 6v38l-3-1-22-18-5-2-30-24-5-2-52-39-3-8V39Z"/>
+    <path fill="#0d63e5" d="M209 260h3v91l-3 8-5 5-12 5-1 2-159 82v-95l2-5 19-12 28-13 1-2 47-23 1-2 24-11 1-2 54-28Z"/>
+  </g>
+  <text x="174" y="154" fill="#f5f7fb" font-family="Arial, sans-serif" font-size="44" font-weight="700">Dokyr</text>
+  <text x="70" y="295" fill="#f5f7fb" font-family="Arial, sans-serif" font-size="66" font-weight="700">Your server.</text>
+  <text x="70" y="373" fill="url(#blue)" font-family="Arial, sans-serif" font-size="66" font-weight="700">Your platform.</text>
+  <text x="70" y="453" fill="#98a4b7" font-family="Arial, sans-serif" font-size="27">An open-source PaaS for deploying containers on one VPS.</text>
+  <g transform="translate(778 106)">
+    <rect width="350" height="402" rx="18" fill="#111722" stroke="#2a3445"/>
+    <circle cx="27" cy="27" r="5" fill="#ff6b6b"/><circle cx="46" cy="27" r="5" fill="#f6c75a"/><circle cx="65" cy="27" r="5" fill="#43d17b"/>
+    <text x="24" y="88" fill="#718097" font-family="monospace" font-size="16">DEPLOYMENT / API</text>
+    <text x="24" y="129" fill="#f5f7fb" font-family="monospace" font-size="22">production-api</text>
+    <path d="M24 164h302" stroke="#283244"/>
+    <text x="24" y="205" fill="#43d17b" font-family="monospace" font-size="17">✓ pull image</text>
+    <text x="24" y="244" fill="#43d17b" font-family="monospace" font-size="17">✓ create container</text>
+    <text x="24" y="283" fill="#43d17b" font-family="monospace" font-size="17">✓ health check</text>
+    <text x="24" y="322" fill="#56a0ff" font-family="monospace" font-size="17">→ promote release</text>
+    <rect x="24" y="350" width="302" height="28" rx="5" fill="#0d63e5"/>
+    <rect x="24" y="350" width="273" height="28" rx="5" fill="#56a0ff"/>
+  </g>
+</svg>

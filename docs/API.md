@@ -1,3 +1,8 @@
+---
+title: HTTP API reference
+description: Integrate with Dokyr's authenticated HTTP API for projects, services, deployments, domains, users, registry, storage, mail, and operations.
+---
+
 # Dokyr API reference
 
 This document describes the HTTP API exposed by the Dokyr control plane. It is written for a replacement frontend, mobile app, CLI, or another internal client.
@@ -1032,4 +1037,4 @@ bearer token; clients should not call it directly.
 
 ## Source of truth
 
-The route registrations and handlers live in [internal/api/api.go](../internal/api/api.go). The JSON resource definitions live in [internal/store/store.go](../internal/store/store.go). Update this document whenever either changes.
+The route registrations and handlers live in [`internal/api/api.go`](https://github.com/azayr/dokyr/blob/main/internal/api/api.go). The JSON resource definitions live in [`internal/store/store.go`](https://github.com/azayr/dokyr/blob/main/internal/store/store.go). Update this document whenever either changes.
