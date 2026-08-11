@@ -3,10 +3,12 @@
   import '$lib/tokens.css';
   import '$lib/base.css';
   import { loadSession } from '$lib/auth.js';
+  import { initTheme } from '$lib/theme.js';
 
   let ready = false;
 
   onMount(async () => {
+    initTheme();
     const path = location.pathname;
     const publicAuthPaths = ['/login', '/forgot-password', '/reset-password'];
     const setupResponse = await fetch('/api/setup/status');

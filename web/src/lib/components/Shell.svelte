@@ -6,7 +6,7 @@
   import Toaster from './Toaster.svelte';
   import CommandMenu from './CommandMenu.svelte';
   import { currentUser, currentPermissions, can, logout } from '$lib/auth.js';
-  import { themeMode, resolvedTheme, initTheme, setTheme } from '$lib/theme.js';
+  import { themeMode, setTheme } from '$lib/theme.js';
   import { platformUpdate, loadPlatformUpdate, formatPlatformVersion } from '$lib/platform.js';
 
   export let eyebrow = 'Workspace';
@@ -54,7 +54,6 @@
   let sidebarCollapsed = false;
 
   onMount(() => {
-    initTheme();
     sidebarCollapsed = window.localStorage.getItem('dokyr.sidebar.collapsed') === 'true';
     loadPlatformUpdate().catch(() => {});
   });

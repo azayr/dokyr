@@ -41,10 +41,12 @@ This stops the containers, removes their volumes, and deletes the install direct
 ## Run it
 
 ```sh
-docker compose up --build
+docker compose up --build --watch
 ```
 
 Open `http://localhost:8888`. The non-standard default avoids conflicts with local tools such as Laravel Herd. On the first visit, Dokyr asks you to create the owner account; public registration closes immediately afterward. PostgreSQL persists in the `postgres_data` volume and the control plane reads the host Docker Engine through `/var/run/docker.sock`.
+
+Compose Watch monitors both the Svelte UI and Go API sources. Saving a change automatically rebuilds and replaces the Dokyr container, so there is no manual rebuild step. Compose Watch requires Docker Compose 2.22 or later.
 
 For a VPS using the published image, start without a local build:
 

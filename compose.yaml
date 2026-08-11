@@ -71,6 +71,27 @@ services:
         condition: service_started
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
+    develop:
+      watch:
+        # UI: rebuild the bundled Svelte app when frontend sources change.
+        - action: rebuild
+          path: ./web
+          ignore:
+            - node_modules/
+            - .svelte-kit/
+            - build/
+        # API: rebuild the Go binary when application sources change.
+        - action: rebuild
+          path: ./cmd
+        - action: rebuild
+          path: ./internal
+        - action: rebuild
+          path: ./go.mod
+        - action: rebuild
+          path: ./go.sum
+        # Recreate the development image when its build recipe changes.
+        - action: rebuild
+          path: ./Dockerfile
 
   postgres:
     image: postgres:17-alpine

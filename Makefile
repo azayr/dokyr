@@ -1,7 +1,7 @@
 .PHONY: dev api web build check
 
 dev:
-	docker compose up --build
+	docker compose up --build --watch
 
 api:
 	go run ./cmd/server

@@ -2,6 +2,7 @@
   import Logo from './Logo.svelte';
   import Icon from './Icon.svelte';
   import Toaster from './Toaster.svelte';
+  import { themeMode, setTheme } from '$lib/theme.js';
 
   export let step = 'First run';
   export let title = 'Create your control plane';
@@ -12,12 +13,18 @@
     { icon: 'rocket', title: 'Zero-downtime deploys', text: 'Every release is built, verified, and promoted behind Caddy.' },
     { icon: 'shield', title: 'Private by default', text: 'Your workloads, credentials, and logs stay on this server.' }
   ];
+  const themeOptions = [
+    { mode: 'light', icon: 'sun', label: 'Light' },
+    { mode: 'dark', icon: 'moon', label: 'Dark' },
+    { mode: 'system', icon: 'monitor', label: 'System' }
+  ];
 </script>
 
 <svelte:head><title>{title} — Dokyr</title></svelte:head>
 
 <main class="auth">
   <aside class="auth-side">
+    <div class="auth-backdrop" aria-hidden="true"></div>
     <a class="auth-brand" href="/" aria-label="Dokyr home"><Logo size={30} /></a>
     <div class="auth-side-copy">
       <span class="auth-step">{step}</span>
@@ -36,6 +43,20 @@
   </aside>
 
   <section class="auth-main">
+    <div class="auth-theme" role="group" aria-label="Color theme">
+      {#each themeOptions as option}
+        <button
+          type="button"
+          class:active={$themeMode === option.mode}
+          aria-pressed={$themeMode === option.mode}
+          title={`${option.label} theme`}
+          onclick={() => setTheme(option.mode)}
+        >
+          <Icon name={option.icon} size={14} />
+          <span class="sr-only">Use {option.label.toLowerCase()} theme</span>
+        </button>
+      {/each}
+    </div>
     <div class="auth-mobile-brand"><Logo size={28} /></div>
     <div class="auth-card">
       <slot />
@@ -55,12 +76,57 @@
   .auth-side {
     display: none;
   }
+  .auth-backdrop {
+    pointer-events: none;
+  }
   .auth-main {
+    position: relative;
     padding: var(--space-6) var(--space-4) var(--space-10);
     display: grid;
     align-content: center;
     justify-items: center;
     gap: var(--space-4);
+  }
+  .auth-theme {
+    position: absolute;
+    z-index: 4;
+    top: var(--space-4);
+    right: var(--space-4);
+    padding: 3px;
+    display: inline-flex;
+    gap: 2px;
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--color-paper-raised) 90%, transparent);
+    box-shadow: var(--shadow-whisper);
+    backdrop-filter: blur(12px);
+  }
+  .auth-theme button {
+    width: 28px;
+    height: 26px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-muted);
+    cursor: pointer;
+    transition:
+      background var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out),
+      transform var(--duration-fast) var(--ease-out);
+  }
+  .auth-theme button:hover {
+    background: var(--color-paper-subtle);
+    color: var(--color-ink);
+  }
+  .auth-theme button:active {
+    transform: scale(0.92);
+  }
+  .auth-theme button.active {
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
   }
   .auth-mobile-brand {
     margin-bottom: var(--space-2);
@@ -84,17 +150,68 @@
       grid-template-columns: minmax(380px, 44%) 1fr;
     }
     .auth-side {
+      position: relative;
+      isolation: isolate;
+      overflow: hidden;
       padding: var(--space-10) var(--space-12);
       display: flex;
       flex-direction: column;
       border-right: 1px solid var(--color-rule);
-      background: var(--color-paper-raised);
+      background:
+        radial-gradient(circle at 86% 12%, color-mix(in srgb, #0d63e5 9%, transparent), transparent 42%),
+        var(--color-paper-raised);
+    }
+    .auth-side::after {
+      content: '';
+      position: absolute;
+      z-index: -1;
+      inset: 0;
+      background: linear-gradient(
+        to bottom,
+        color-mix(in srgb, var(--color-paper-raised) 38%, transparent) 0%,
+        transparent 34%,
+        color-mix(in srgb, var(--color-paper-raised) 82%, transparent) 63%,
+        var(--color-paper-raised) 82%
+      );
+      pointer-events: none;
+    }
+    .auth-backdrop {
+      position: absolute;
+      z-index: -2;
+      top: 58px;
+      right: -38%;
+      width: 118%;
+      aspect-ratio: 2 / 3;
+      background: url('/images/auth-dashboard.webp') center top / cover no-repeat;
+      opacity: 0.46;
+      filter: saturate(0.78) contrast(0.94);
+      transform: perspective(1100px) rotateY(-9deg) rotateZ(-1.5deg) scale(1.06);
+      transform-origin: 66% 18%;
+      -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 10%, #000 66%, transparent 94%);
+      mask-image: linear-gradient(to bottom, transparent 0%, #000 10%, #000 66%, transparent 94%);
+    }
+    :global(.theme-dark) .auth-backdrop {
+      opacity: 0.34;
+      filter: invert(1) hue-rotate(180deg) saturate(0.72) brightness(0.78) contrast(1.08);
+    }
+    :global(.theme-dark) .auth-side::after {
+      background: linear-gradient(
+        to bottom,
+        color-mix(in srgb, var(--color-paper-raised) 24%, transparent) 0%,
+        transparent 34%,
+        color-mix(in srgb, var(--color-paper-raised) 78%, transparent) 63%,
+        var(--color-paper-raised) 82%
+      );
     }
     .auth-brand {
+      position: relative;
+      z-index: 1;
       color: var(--color-ink);
       text-decoration: none;
     }
     .auth-side-copy {
+      position: relative;
+      z-index: 1;
       margin: auto 0 var(--space-8);
       max-width: 420px;
     }
@@ -119,6 +236,8 @@
       line-height: 1.6;
     }
     .auth-highlights {
+      position: relative;
+      z-index: 1;
       margin: 0;
       padding: var(--space-5) 0 0;
       display: grid;
@@ -154,6 +273,8 @@
       line-height: 1.5;
     }
     .auth-side-footer {
+      position: relative;
+      z-index: 1;
       margin-top: var(--space-8);
       color: var(--color-faint);
       font: 500 var(--text-2xs) var(--font-mono);
