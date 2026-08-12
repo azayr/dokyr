@@ -1,4 +1,4 @@
-/* Dokyr base styles — shared primitives used across every route. */
+/* Dokyr workbench primitives — shared across every route. */
 
 *,
 *::before,
@@ -20,6 +20,7 @@ body {
   font-size: var(--text-base);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  background-image: linear-gradient(to bottom, color-mix(in oklch, var(--color-paper-raised) 34%, transparent), transparent 180px);
 }
 
 button,
@@ -67,6 +68,7 @@ a {
   background: var(--color-paper-raised);
   color: var(--color-ink);
   font-size: var(--text-sm);
+  font-family: var(--font-mono);
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
@@ -233,13 +235,15 @@ textarea.input {
 .panel-header h3 {
   margin: 0;
   font-size: var(--text-md);
+  font-family: var(--font-display);
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.025em;
 }
 .panel-header .eyebrow,
 .eyebrow {
   display: block;
   color: var(--color-muted);
+  font-family: var(--font-mono);
   font-size: var(--text-2xs);
   font-weight: 600;
   letter-spacing: 0.07em;
@@ -267,7 +271,8 @@ textarea.input {
   align-items: center;
   gap: 6px;
   width: max-content;
-  border-radius: 999px;
+  border: 1px solid color-mix(in oklch, currentColor 18%, transparent);
+  border-radius: var(--radius-xs);
   background: var(--color-paper-subtle);
   color: var(--color-muted);
   font-size: var(--text-xs);
@@ -456,6 +461,7 @@ textarea.input {
   background: var(--color-surface-subtle);
   color: var(--color-muted);
   font-size: var(--text-2xs);
+  font-family: var(--font-mono);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-align: left;

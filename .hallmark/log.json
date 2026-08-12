@@ -1,5 +1,12 @@
 [
   {
+    "date": "2026-08-12",
+    "macrostructure": "Workbench",
+    "theme": "studied-DNA",
+    "enrichment": "none",
+    "brief": "Unify the Svelte control panel and VitePress docs around a warm editorial-technical reference"
+  },
+  {
     "date": "2026-07-18",
     "scope": "application shell and deployments workbench",
     "genre": "modern-minimal",

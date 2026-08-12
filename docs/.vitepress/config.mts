@@ -70,7 +70,7 @@ export default withMermaid(defineConfig({
             downloadUrl: `${repository}/pkgs/container/dokyr`,
             license: `${repository}/blob/main/LICENSE`,
             description,
-            softwareVersion: '0.2.32',
+            softwareVersion: '0.2.33',
             offers: {
               '@type': 'Offer',
               price: '0',
@@ -158,7 +158,7 @@ export default withMermaid(defineConfig({
       { text: 'Operations', link: '/operations/upgrades' },
       { text: 'API', link: '/API' },
       { text: 'Architecture', link: '/ARCHITECTURE' },
-      { text: 'v0.2.32', link: 'https://github.com/azayr/dokyr/releases/tag/v0.2.32' }
+      { text: 'v0.2.33', link: 'https://github.com/azayr/dokyr/releases/tag/v0.2.33' }
     ],
     sidebar: {
       '/guide/': [

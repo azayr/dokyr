@@ -1,3 +1,8 @@
+/* Hallmark · macrostructure: Workbench · tone: editorial-technical
+ * theme: studied-DNA (source: image) · paper: oklch(97.8% 0.006 65)
+ * accent: Dokyr blue · display: IBM Plex Mono · body: Sora
+ * P5 H4 E4 S5 R5 V4
+ */
 :root {
   --vp-font-family-base: 'Sora Variable', 'Avenir Next', sans-serif;
   --vp-font-family-mono: 'IBM Plex Mono', ui-monospace, monospace;
@@ -5,10 +10,10 @@
   --vp-c-brand-2: #2e7cf0;
   --vp-c-brand-3: #0755c8;
   --vp-c-brand-soft: rgba(13, 99, 229, 0.14);
-  --vp-button-brand-border: #0d63e5;
-  --vp-button-brand-bg: #0d63e5;
-  --vp-button-brand-hover-border: #2e7cf0;
-  --vp-button-brand-hover-bg: #2e7cf0;
+  --vp-button-brand-border: var(--vp-c-brand-1);
+  --vp-button-brand-bg: var(--vp-c-brand-1);
+  --vp-button-brand-hover-border: var(--vp-c-brand-3);
+  --vp-button-brand-hover-bg: var(--vp-c-brand-3);
   --vp-code-font-size: 0.86em;
 }
 
@@ -27,7 +32,8 @@
 }
 
 .VPNavBarTitle .title {
-  letter-spacing: -0.03em;
+  font-family: var(--vp-font-family-mono);
+  letter-spacing: -0.04em;
 }
 
 .VPNavBarTitle .logo {
@@ -46,6 +52,8 @@
 .VPDoc h1,
 .VPDoc h2,
 .VPDoc h3 {
+  font-family: var(--vp-font-family-mono);
+  font-style: normal;
   letter-spacing: -0.035em;
 }
 
@@ -94,7 +102,15 @@ body:has(.dokyr-home) {
 .dokyr-home .VPNavBar {
   background: rgba(247, 249, 252, 0.92) !important;
   border-bottom-color: #dfe5ee;
+}
+
+.dokyr-home .VPNavBar {
   backdrop-filter: blur(18px);
+}
+
+.dokyr-home .VPNavScreen {
+  z-index: 100;
+  background: var(--vp-nav-screen-bg-color);
 }
 
 .dark .dokyr-home .VPNav,
@@ -153,7 +169,7 @@ body:has(.dokyr-home) {
   --landing-green: #117a40;
   --landing-amber: #a66b00;
   --landing-grid: rgba(75, 94, 121, 0.13);
-  --landing-glow: rgba(13, 99, 229, 0.08);
+  --landing-glow: rgba(13, 99, 229, 0.09);
   --landing-accent-border: rgba(13, 99, 229, 0.28);
   --landing-accent-soft: rgba(13, 99, 229, 0.08);
   --landing-primary-hover: #075bd4;
@@ -181,7 +197,7 @@ body:has(.dokyr-home) {
   min-height: 100vh;
   color: var(--landing-text);
   background: var(--landing-bg);
-  font-family: 'Sora Variable', sans-serif;
+  font-family: var(--vp-font-family-base);
 }
 
 .dark .landing-shell {
@@ -193,6 +209,7 @@ body:has(.dokyr-home) {
   --landing-text: #f5f7fb;
   --landing-muted: #9ca8ba;
   --landing-faint: #657286;
+  --landing-blue: #0d63e5;
   --landing-blue-bright: #5c9eff;
   --landing-green: #41d17c;
   --landing-amber: #f0b84b;
@@ -226,10 +243,12 @@ body:has(.dokyr-home) {
   content: '';
   position: absolute;
   z-index: 0;
-  inset: 64px 0 auto;
-  height: 280px;
+  inset: 0 0 auto;
+  height: 640px;
   pointer-events: none;
-  background: radial-gradient(circle at 50% 0%, var(--landing-glow), transparent 64%);
+  background: radial-gradient(ellipse at 38% 20%, var(--landing-glow) 0%, transparent 72%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 18%, #000 58%, transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 18%, #000 58%, transparent 100%);
 }
 
 .page-rail {
@@ -238,7 +257,7 @@ body:has(.dokyr-home) {
   top: 0;
   bottom: 0;
   width: 1px;
-  background: var(--landing-line);
+  background: linear-gradient(to bottom, transparent, var(--landing-line) 12%, var(--landing-line) 82%, transparent);
   pointer-events: none;
 }
 
@@ -374,15 +393,16 @@ body:has(.dokyr-home) {
 .hero h1 {
   max-width: 630px;
   color: var(--landing-text);
-  font-size: clamp(46px, 5.35vw, 76px);
-  font-weight: 730;
-  line-height: 0.98;
-  letter-spacing: -0.068em;
+  font-family: var(--vp-font-family-mono);
+  font-size: clamp(40px, 4.8vw, 64px);
+  font-weight: 500;
+  line-height: 1.02;
+  letter-spacing: -0.055em;
 }
 
 .landing-shell em {
   color: var(--landing-blue-bright);
-  font-style: italic;
+  font-style: normal;
   font-weight: inherit;
 }
 
@@ -410,7 +430,7 @@ body:has(.dokyr-home) {
   justify-content: center;
   gap: 14px;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: 6px;
   color: var(--landing-text) !important;
   font-size: 12px;
   font-weight: 650;
@@ -434,7 +454,7 @@ body:has(.dokyr-home) {
 .button-primary {
   border-color: var(--landing-blue);
   background: var(--landing-blue);
-  box-shadow: 0 10px 36px rgba(13, 99, 229, 0.22);
+  box-shadow: 0 6px 18px oklch(59% 0.2 36 / 0.16);
 }
 
 .button-primary:hover {
@@ -729,7 +749,7 @@ body:has(.dokyr-home) {
 .architecture,
 .open-source,
 .final-cta {
-  padding: 96px 24px;
+  padding: 76px 24px;
   border-bottom: 1px solid var(--landing-line);
 }
 
@@ -745,10 +765,11 @@ body:has(.dokyr-home) {
 .open-source-copy h2,
 .final-cta h2 {
   color: var(--landing-text);
-  font-size: clamp(34px, 4.8vw, 57px);
-  font-weight: 700;
-  line-height: 1.04;
-  letter-spacing: -0.058em;
+  font-family: var(--vp-font-family-mono);
+  font-size: clamp(30px, 4vw, 48px);
+  font-weight: 500;
+  line-height: 1.08;
+  letter-spacing: -0.045em;
 }
 
 .section-heading > p:last-child,
@@ -772,7 +793,7 @@ body:has(.dokyr-home) {
   min-height: 210px;
   padding: 24px;
   border: 1px solid var(--landing-line);
-  border-radius: 11px;
+  border-radius: 8px;
   background: var(--landing-panel);
 }
 
@@ -845,7 +866,7 @@ body:has(.dokyr-home) {
   gap: 0;
   overflow: hidden;
   border: 1px solid var(--landing-line-strong);
-  border-radius: 12px;
+  border-radius: 8px;
   background: var(--landing-panel);
   transition:
     border-color 180ms ease,
@@ -865,8 +886,9 @@ body:has(.dokyr-home) {
   max-width: 500px;
   margin-top: 18px;
   color: var(--landing-text);
-  font-size: clamp(20px, 2.2vw, 27px);
-  font-weight: 670;
+  font-family: var(--vp-font-family-mono);
+  font-size: clamp(18px, 2vw, 24px);
+  font-weight: 500;
   line-height: 1.1;
   letter-spacing: -0.045em;
 }
@@ -1670,59 +1692,75 @@ body:has(.dokyr-home) {
   }
 
   .architecture-board {
-    min-height: 650px;
+    min-height: 0;
+    padding: 20px;
+    display: grid;
+    gap: 12px;
+    background-size: 28px 28px;
+  }
+
+  .arch-internet,
+  .arch-node,
+  .arch-services,
+  .arch-socket,
+  .arch-workloads {
+    position: relative;
+    inset: auto;
+    width: 100%;
+    transform: none;
+  }
+
+  .arch-internet {
+    justify-content: center;
   }
 
   .arch-node {
-    width: 180px;
+    width: 100%;
+    min-height: 0;
   }
 
   .arch-services {
-    top: 310px;
+    position: relative;
+    inset: auto;
     width: 100%;
-    padding-inline: 16px;
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: 1fr;
     gap: 8px;
+    transform: none;
   }
 
   .arch-services > div {
+    position: relative;
     width: auto;
     min-width: 0;
-    padding: 10px;
+    min-height: 64px;
+    padding: 14px;
   }
 
   .arch-services > div:nth-child(2) {
-    transform: translateY(105px);
+    transform: none;
   }
 
   .arch-services strong {
-    font-size: 10px;
+    font-size: 12px;
   }
 
-  .line-services {
-    left: 28px;
-    width: calc(100% - 56px);
-  }
-
-  .arch-socket {
-    bottom: 34px;
-    left: 16px;
-    width: 150px;
-  }
-
-  .arch-workloads {
-    right: 16px;
-    bottom: 34px;
-    width: 150px;
-  }
-
-  .arch-workloads i:nth-child(n + 2) {
+  .arch-line {
     display: none;
   }
 
+  .arch-socket {
+    width: 100%;
+    min-height: 64px;
+  }
+
+  .arch-workloads {
+    width: 100%;
+    min-height: 64px;
+  }
+
   .arch-workloads span {
-    font-size: 7px;
+    font-size: 8px;
   }
 }
 

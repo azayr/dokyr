@@ -127,9 +127,9 @@ onMounted(() => {
   <main class="landing-shell">
     <section class="hero section-frame" aria-labelledby="hero-title">
       <div class="hero-copy" data-reveal>
-        <a class="release-link" href="https://github.com/azayr/dokyr/releases/tag/v0.2.32">
+        <a class="release-link" href="https://github.com/azayr/dokyr/releases/tag/v0.2.33">
           <Icon :icon="badgeCheckIcon" aria-hidden="true" />
-          <span>v0.2.32</span>
+          <span>v0.2.33</span>
           latest release
           <Icon class="link-icon" :icon="externalLinkIcon" aria-hidden="true" />
         </a>

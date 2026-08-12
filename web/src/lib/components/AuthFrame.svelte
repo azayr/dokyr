@@ -224,8 +224,9 @@
     }
     .auth-side-copy h1 {
       margin: var(--space-3) 0 var(--space-3);
+      font-family: var(--font-display);
       font-size: 30px;
-      font-weight: 700;
+      font-weight: 600;
       line-height: 1.12;
       letter-spacing: -0.035em;
     }
@@ -297,9 +298,10 @@
   }
   :global(.auth-title) {
     margin: var(--space-1) 0 var(--space-1);
+    font-family: var(--font-display);
     font-size: var(--text-xl);
-    font-weight: 700;
-    letter-spacing: -0.025em;
+    font-weight: 600;
+    letter-spacing: -0.04em;
   }
   :global(.auth-lead) {
     margin: 0 0 var(--space-5);
@@ -424,6 +426,7 @@
     border-radius: var(--radius-sm);
     background: var(--color-accent);
     color: var(--color-accent-ink);
+    font-family: var(--font-mono);
     font-size: var(--text-sm);
     font-weight: 600;
     text-decoration: none;
