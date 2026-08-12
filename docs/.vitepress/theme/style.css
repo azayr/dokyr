@@ -291,8 +291,10 @@ body:has(.dokyr-home) {
 .section-frame {
   position: relative;
   z-index: 1;
+  box-sizing: border-box;
   width: min(1120px, calc(100% - 64px));
   margin-inline: auto;
+  border-inline: 1px solid var(--landing-line);
 }
 
 .corner {
@@ -454,6 +456,7 @@ body:has(.dokyr-home) {
 .button-primary {
   border-color: var(--landing-blue);
   background: var(--landing-blue);
+  color: #fff !important;
   box-shadow: 0 6px 18px oklch(59% 0.2 36 / 0.16);
 }
 
@@ -1585,8 +1588,7 @@ body:has(.dokyr-home) {
   }
 
   .section-frame {
-    width: 100%;
-    border-inline: 0;
+    width: calc(100% - 24px);
   }
 
   .hero,
