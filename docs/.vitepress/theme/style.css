@@ -456,8 +456,15 @@ body:has(.dokyr-home) {
 .button-primary {
   border-color: var(--landing-blue);
   background: var(--landing-blue);
-  color: #fff !important;
   box-shadow: 0 6px 18px oklch(59% 0.2 36 / 0.16);
+}
+
+.button-primary,
+.button-primary:visited,
+.button-primary:hover,
+.button-primary:focus-visible,
+.button-primary:active {
+  color: #fff !important;
 }
 
 .button-primary:hover {
