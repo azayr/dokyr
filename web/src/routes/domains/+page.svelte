@@ -366,7 +366,7 @@
   }
 
   async function deleteDomain() {
-    if (!draft || (draft.kind !== 'registry' && editingDomainIndex === -1)) return;
+    if (!draft || (draft.kind !== 'registry' && !draft.managedId && editingDomainIndex === -1)) return;
     deleting = true;
     error = '';
     notice = '';

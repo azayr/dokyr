@@ -310,6 +310,29 @@ func TestGitHubManifestCallbackBypassesProtectedIntegrationsPrefix(t *testing.T)
 	}
 }
 
+func TestManagedDomainItemRoutesAreMountedBehindAuthentication(t *testing.T) {
+	a := &API{auth: &auth.Manager{}}
+	public := http.NewServeMux()
+	protected := newGuardedMux(a)
+	a.registerProtectedRoutes(protected)
+	handler := a.mountRoutes(public, protected)
+
+	for _, request := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/api/domains/mnd_example/verify"},
+		{http.MethodDelete, "/api/domains/mnd_example"},
+	} {
+		req := httptest.NewRequest(request.method, request.path, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s status = %d, want %d", request.method, request.path, rec.Code, http.StatusUnauthorized)
+		}
+	}
+}
+
 // registeredRoutes builds the route table the way Handler does, without needing
 // the dependencies a live API has, so the policy can be asserted in a unit test.
 func registeredRoutes(t *testing.T) map[string]authz.Permission {

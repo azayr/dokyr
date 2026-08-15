@@ -344,6 +344,7 @@ func (a *API) mountRoutes(public *http.ServeMux, protected *guardedMux) http.Han
 	root.Handle("/api/dashboard", a.auth.Require(protected.handler()))
 	root.Handle("/api/databases", a.auth.Require(protected.handler()))
 	root.Handle("/api/domains", a.auth.Require(protected.handler()))
+	root.Handle("/api/domains/", a.auth.Require(protected.handler()))
 	root.Handle("/api/mail", a.auth.Require(protected.handler()))
 	root.Handle("/api/mail/", a.auth.Require(protected.handler()))
 	root.Handle("/api/projects", a.auth.Require(protected.handler()))
