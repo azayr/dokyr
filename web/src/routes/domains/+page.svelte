@@ -17,6 +17,8 @@
   let connected = false;
   let connectionError = '';
   let projects = [];
+  let managedDomains = [];
+  let dnsTarget = { type: 'A', name: '@', value: '127.0.0.1' };
   let registryDomain = { domain: '', httpsEnabled: true, attached: false, registryHosts: [] };
   let controlHosts = [];
   let publicURL = '';
@@ -29,10 +31,27 @@
   let editingProjectId = '';
   let editingDomainIndex = -1;
   let draft = null;
+  let verifyingId = '';
+  let copiedDNS = '';
 
   $: projectDomains = projects.flatMap((project) =>
     project.domains.map((domain, index) => ({ ...domain, kind: 'project', index, projectId: project.id, projectName: project.name, services: project.services }))
   );
+  $: catalogDomains = managedDomains.map((managed) => {
+    const binding = projectDomains.find((item) => item.domain.toLowerCase() === managed.domain.toLowerCase());
+    return {
+      ...managed,
+      ...binding,
+      id: managed.id,
+      kind: 'managed',
+      domain: managed.domain,
+      projectId: binding?.projectId || '',
+      projectName: binding?.projectName || 'Available for a project',
+      services: binding?.services || [],
+      rules: binding?.rules || [],
+      httpsEnabled: Boolean(binding?.httpsEnabled)
+    };
+  });
   $: registryDomains = (registryDomain.registryHosts || []).map((host) => ({
     kind: 'registry',
     domain: host,
@@ -60,12 +79,13 @@
     rules: [{ path: '/*', serviceId: 'control', port: 8080 }],
     url: controlURL(host)
   }));
-  $: domains = [...projectDomains, ...registryDomains, ...controlDomains];
+  $: domains = [...catalogDomains, ...registryDomains, ...controlDomains];
   $: filteredDomains = domains.filter((domain) =>
-    `${domain.domain} ${domain.projectName} ${domain.rules.map((rule) => `${rule.path} ${serviceName(domain.services, rule.serviceId)}`).join(' ')}`
+    `${domain.domain} ${domain.projectName} ${domain.status || ''} ${(domain.rules || []).map((rule) => `${rule.path} ${serviceName(domain.services, rule.serviceId)}`).join(' ')}`
       .toLowerCase()
       .includes(query.trim().toLowerCase())
   );
+  $: verifiedCount = managedDomains.filter((domain) => domain.status === 'verified').length;
   $: secureCount = domains.filter((domain) => domain.httpsEnabled).length;
   $: edgeTargets = new Set(domains.map((domain) => `${domain.kind}:${domain.projectId}`)).size;
   $: eligibleProjects = projects.filter((project) => project.services.length > 0);
@@ -88,6 +108,8 @@
         domains: (project.domains || []).map(normalizeBinding),
         services: project.services || []
       }));
+      managedDomains = payload.managedDomains || [];
+      dnsTarget = payload.dnsTarget || dnsTarget;
       registryDomain = normalizeRegistry(payload.registry);
       controlHosts = payload.controlHosts || [];
       publicURL = payload.publicURL || '';
@@ -157,16 +179,18 @@
 
   function openCreate() {
     const project = eligibleProjects[0];
-    if (!project) return;
-    const service = project.services[0];
+    const service = project?.services[0];
     editingProjectId = '';
     editingDomainIndex = -1;
     draft = {
       kind: 'project',
-      projectId: project.id,
+      projectId: '',
       domain: '',
       httpsEnabled: true,
-      rules: [{ path: '/*', serviceId: service.id, port: service.containerPort }]
+      managedId: '',
+      status: 'pending',
+      dns: null,
+      rules: service ? [{ path: '/*', serviceId: service.id, port: service.containerPort }] : []
     };
     error = '';
     modalOpen = true;
@@ -186,14 +210,19 @@
       modalOpen = true;
       return;
     }
-    editingProjectId = domain.projectId;
-    editingDomainIndex = domain.index;
+    editingProjectId = domain.projectId || '';
+    editingDomainIndex = domain.projectId ? domain.index : -1;
     draft = {
-      kind: 'project',
-      projectId: domain.projectId,
+      kind: domain.kind === 'managed' ? 'project' : domain.kind,
+      projectId: domain.projectId || '',
       domain: domain.domain,
       httpsEnabled: domain.httpsEnabled,
-      rules: domain.rules.map((rule) => ({ ...rule }))
+      managedId: domain.id || '',
+      status: domain.status || 'pending',
+      lastError: domain.lastError || '',
+      observedRecords: domain.observedRecords || '',
+      dns: domain.dns || null,
+      rules: (domain.rules || []).length ? domain.rules.map((rule) => ({ ...rule })) : []
     };
     error = '';
     modalOpen = true;
@@ -207,13 +236,13 @@
     editingDomainIndex = -1;
   }
 
-  function chooseProject(projectId) {
+  function chooseProject(projectId, clearWhenEmpty = true) {
     const project = projects.find((item) => item.id === projectId);
     const service = project?.services[0];
     draft = {
       ...draft,
       projectId,
-      rules: service ? [{ path: '/*', serviceId: service.id, port: service.containerPort }] : []
+      rules: service ? [{ path: '/*', serviceId: service.id, port: service.containerPort }] : clearWhenEmpty ? [] : draft.rules
     };
   }
 
@@ -296,8 +325,28 @@
         editingDomainIndex = -1;
         return;
       }
+      let managed = managedDomains.find((item) => item.id === draft.managedId);
+      if (!managed) {
+        const response = await api('/api/domains', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ domain: draft.domain.trim() })
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Could not add domain');
+        managed = payload.domain;
+        managedDomains = [managed, ...managedDomains];
+        draft = { ...draft, managedId: managed.id, dns: managed.dns, status: managed.status };
+      }
+      if (!draft.projectId) {
+        notice = `${managed.domain} is saved. Add the DNS record, verify it, then attach it to a project whenever you are ready.`;
+        toast.success('Domain saved');
+        modalOpen = false;
+        draft = null;
+        return;
+      }
       const project = projects.find((item) => item.id === draft.projectId);
-      if (!project) throw new Error('Choose a project for this domain');
+      if (!project) throw new Error('Choose a project or keep the domain unassigned');
       const nextBinding = normalizeBinding(draft);
       const bindings = editingDomainIndex === -1
         ? [...project.domains, nextBinding]
@@ -334,12 +383,27 @@
         editingDomainIndex = -1;
         return;
       }
+      if (draft.managedId && !draft.projectId) {
+        const response = await api(`/api/domains/${draft.managedId}`, { method: 'DELETE' });
+        if (!response.ok) {
+          const payload = await response.json();
+          throw new Error(payload.error || 'Could not delete domain');
+        }
+        managedDomains = managedDomains.filter((item) => item.id !== draft.managedId);
+        notice = `${draft.domain} was removed from Dokyr.`;
+        toast.success('Domain deleted');
+        modalOpen = false;
+        draft = null;
+        editingProjectId = '';
+        editingDomainIndex = -1;
+        return;
+      }
       const project = projects.find((item) => item.id === editingProjectId);
       if (!project) throw new Error('Project not found');
       const removedDomain = project.domains[editingDomainIndex]?.domain || draft.domain;
       await persistProjectDomains(project.id, project.domains.filter((_, index) => index !== editingDomainIndex));
-      notice = `${removedDomain} was removed from the edge router.`;
-      toast.success('Domain removed');
+      notice = `${removedDomain} was detached from ${project.name} and remains available in Domains.`;
+      toast.success('Domain detached');
       modalOpen = false;
       draft = null;
       editingProjectId = '';
@@ -418,24 +482,50 @@
     copied = true;
     setTimeout(() => (copied = false), 1500);
   }
+
+  async function verifyDNS(domain = draft) {
+    if (!domain?.managedId && !domain?.id) return;
+    const id = domain.managedId || domain.id;
+    verifyingId = id;
+    error = '';
+    try {
+      const response = await api(`/api/domains/${id}/verify`, { method: 'POST' });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not check DNS');
+      managedDomains = managedDomains.map((item) => item.id === id ? payload.domain : item);
+      if (draft?.managedId === id) draft = { ...draft, ...payload.domain, managedId: id };
+      toast[payload.verified ? 'success' : 'warning'](payload.verified ? 'DNS verified' : 'DNS is still propagating');
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : 'Could not check DNS';
+    } finally {
+      verifyingId = '';
+    }
+  }
+
+  async function copyDNS(domain) {
+    if (!domain?.dns) return;
+    await navigator.clipboard.writeText(`${domain.dns.type}\t${domain.dns.name}\t${domain.dns.value}`);
+    copiedDNS = domain.id || domain.managedId || domain.domain || 'draft';
+    setTimeout(() => (copiedDNS = ''), 1500);
+  }
 </script>
 
-<Shell eyebrow="Infrastructure" title="Domains" subtitle="Public hostnames, service routing, and automatic TLS in one place.">
+<Shell eyebrow="Infrastructure" title="Domains" subtitle="Add once, verify DNS, and connect a hostname to any project when it is ready.">
   <div slot="actions" class="page-actions">
     <div class="connection" class:offline={!connected}>
       <i></i>
       <span><strong>{connected ? 'Edge online' : 'Edge unavailable'}</strong><small>Caddy router</small></span>
     </div>
-    <button class="btn btn-primary" onclick={openCreate} disabled={loading || eligibleProjects.length === 0}>
+    <button class="btn btn-primary" onclick={openCreate} disabled={loading}>
       <Icon name="plus" size={14} /> Add domain
     </button>
   </div>
 
   {#if error && !modalOpen}
-    <div class="alert alert-error page-alert"><Icon name="x-circle" size={15} /><div><strong>Domain routing not changed</strong><span>{error}</span></div></div>
+    <div class="alert alert-error page-alert"><Icon name="x-circle" size={15} /><div><strong>Domain not changed</strong><span>{error}</span></div></div>
   {/if}
   {#if notice}
-    <div class="alert alert-success page-alert"><Icon name="check-circle" size={15} /><div><strong>Routing updated</strong><span>{notice}</span></div></div>
+    <div class="alert alert-success page-alert"><Icon name="check-circle" size={15} /><div><strong>Domains updated</strong><span>{notice}</span></div></div>
   {/if}
   {#if connectionError}
     <div class="alert alert-warning page-alert"><Icon name="alert" size={15} /><div><strong>The edge router is unavailable</strong><span>{connectionError}</span></div></div>
@@ -444,11 +534,11 @@
   <section class="domain-overview" aria-label="Domain summary">
     <article>
       <span class="metric-icon"><Icon name="globe" size={16} /></span>
-      <div><strong>{loading ? '—' : domains.length}</strong><span>Active domains</span></div>
+      <div><strong>{loading ? '—' : managedDomains.length}</strong><span>Saved domains</span></div>
     </article>
     <article>
-      <span class="metric-icon secure"><Icon name="lock" size={16} /></span>
-      <div><strong>{loading ? '—' : secureCount}</strong><span>Automatic SSL</span></div>
+      <span class="metric-icon secure"><Icon name="check-circle" size={16} /></span>
+      <div><strong>{loading ? '—' : verifiedCount}</strong><span>DNS verified</span></div>
     </article>
     <article>
       <span class="metric-icon projects"><Icon name="box" size={16} /></span>
@@ -456,14 +546,14 @@
     </article>
     <div class="flow-note">
       <span>Request flow</span>
-      <code>domain → path → service:port</code>
+      <code>DNS → domain → project → service</code>
     </div>
   </section>
 
   <section class="panel domains-panel" aria-busy={loading}>
     <header class="panel-header domain-toolbar">
       <div>
-        <span class="eyebrow">Managed edge routes</span>
+        <span class="eyebrow">Reusable domain catalog</span>
         <h2>Domain names {#if !loading}<span class="count">{filteredDomains.length}</span>{/if}</h2>
       </div>
       {#if domains.length > 0}
@@ -495,24 +585,34 @@
     {:else}
       <div class="domain-list">
         {#each filteredDomains as domain}
-          <article class="domain-row">
-            <span class="domain-status" class:secure={domain.httpsEnabled}>
-              <Icon name={domain.kind === 'registry' ? 'layers' : domain.httpsEnabled ? 'lock' : 'globe'} size={15} />
+          <article class="domain-row" class:unassigned={domain.kind === 'managed' && !domain.projectId}>
+            <span class="domain-status" class:secure={domain.status === 'verified' || domain.httpsEnabled} class:pending={domain.kind === 'managed' && domain.status !== 'verified'}>
+              <Icon name={domain.kind === 'registry' ? 'layers' : domain.status === 'verified' ? 'check' : domain.httpsEnabled ? 'lock' : 'globe'} size={15} />
             </span>
             <div class="domain-identity">
-              <a href={endpoint(domain)} target="_blank" rel="noreferrer">{domain.domain}<Icon name="external" size={12} /></a>
+              {#if domain.projectId || domain.kind !== 'managed'}
+                <a href={endpoint(domain)} target="_blank" rel="noreferrer">{domain.domain}<Icon name="external" size={12} /></a>
+              {:else}<strong>{domain.domain}</strong>{/if}
               <span><Icon name={domain.kind === 'registry' ? 'layers' : domain.kind === 'control' ? 'shield' : 'box'} size={12} /> {domain.projectName}</span>
             </div>
             <div class="route-stack">
-              {#each domain.rules as rule}
-                <div><code>{rule.path}</code><Icon name="arrow-right" size={12} /><strong>{serviceName(domain.services, rule.serviceId)}</strong><small>:{rule.port}</small></div>
-              {/each}
+              {#if domain.kind === 'managed'}
+                <div class="dns-summary"><code>{domain.dns.type}</code><strong>{domain.dns.name}</strong><Icon name="arrow-right" size={12} /><span>{domain.dns.value}</span></div>
+              {:else}
+                {#each domain.rules as rule}
+                  <div><code>{rule.path}</code><Icon name="arrow-right" size={12} /><strong>{serviceName(domain.services, rule.serviceId)}</strong><small>:{rule.port}</small></div>
+                {/each}
+              {/if}
             </div>
-            <span class="tls-badge" class:http={!domain.httpsEnabled}>{domain.httpsEnabled ? 'Automatic SSL' : 'HTTP only'}</span>
+            {#if domain.kind === 'managed'}
+              <button class="verify-badge" class:verified={domain.status === 'verified'} type="button" onclick={() => verifyDNS(domain)} disabled={verifyingId === domain.id}>
+                <Icon name={domain.status === 'verified' ? 'check-circle' : 'refresh'} size={12} />{verifyingId === domain.id ? 'Checking…' : domain.status === 'verified' ? 'DNS verified' : 'Verify DNS'}
+              </button>
+            {:else}<span class="tls-badge" class:http={!domain.httpsEnabled}>{domain.httpsEnabled ? 'Automatic SSL' : 'HTTP only'}</span>{/if}
             {#if domain.kind === 'control'}
               <span class="system-badge"><Icon name="lock" size={11} /> System</span>
             {:else}
-              <button class="edit-button" type="button" onclick={() => openEdit(domain)}><Icon name="settings" size={13} /> {domain.kind === 'registry' && !domain.attached ? 'Configure' : 'Edit'}</button>
+              <button class="edit-button" type="button" onclick={() => openEdit(domain)}><Icon name="settings" size={13} /> {domain.kind === 'managed' && !domain.projectId ? 'Use domain' : domain.kind === 'registry' && !domain.attached ? 'Configure' : 'Edit'}</button>
             {/if}
           </article>
         {/each}
@@ -521,9 +621,9 @@
   </section>
 
   <section class="edge-guide" aria-label="How domain routing works">
-    <article><span><Icon name="globe" size={15} /></span><div><strong>Point DNS here</strong><p>Create an A or AAAA record for the hostname that points to this server.</p></div></article>
-    <article><span><Icon name="network" size={15} /></span><div><strong>Choose the destination</strong><p>Send each path to a project service and its private container port.</p></div></article>
-    <article><span><Icon name="shield" size={15} /></span><div><strong>Pick transport security</strong><p>Automatic SSL obtains and renews certificates; HTTP stays unencrypted.</p></div></article>
+    <article><span><Icon name="globe" size={15} /></span><div><strong>Add once</strong><p>Save a domain to Dokyr without choosing a project yet.</p></div></article>
+    <article><span><Icon name="network" size={15} /></span><div><strong>Verify DNS</strong><p>Dokyr shows the exact record and checks public DNS propagation.</p></div></article>
+    <article><span><Icon name="shield" size={15} /></span><div><strong>Use anywhere</strong><p>Attach it now or select it later from a project's Domains tab.</p></div></article>
   </section>
 
   <details class="panel advanced-panel">
@@ -559,8 +659,8 @@
     <div class="domain-modal" role="dialog" aria-modal="true" aria-labelledby="domain-modal-title">
       <header>
         <div>
-          <span>{draft.kind === 'registry' ? 'Container registry endpoint' : editingDomainIndex === -1 ? 'New edge route' : 'Edit edge route'}</span>
-          <h2 id="domain-modal-title">{draft.kind === 'registry' ? 'Configure registry domain' : editingDomainIndex === -1 ? 'Add a domain' : draft.domain}</h2>
+          <span>{draft.kind === 'registry' ? 'Container registry endpoint' : draft.managedId ? 'Managed domain' : 'Add to Dokyr'}</span>
+          <h2 id="domain-modal-title">{draft.kind === 'registry' ? 'Configure registry domain' : draft.managedId ? draft.domain : 'Add a domain'}</h2>
         </div>
         <button type="button" aria-label="Close" onclick={closeModal} disabled={saving || deleting}><Icon name="x" size={16} /></button>
       </header>
@@ -581,7 +681,7 @@
               <div class="identity-grid">
                 <label class="field">
                   <span>Domain name</span>
-                  <div class="domain-input"><Icon name="globe" size={14} /><input bind:value={draft.domain} autocomplete="off" spellcheck="false" placeholder="app.example.com" required /></div>
+                  <div class="domain-input"><Icon name="globe" size={14} /><input bind:value={draft.domain} autocomplete="off" spellcheck="false" placeholder="app.example.com" required readonly={Boolean(draft.managedId)} /></div>
                   <small>Hostname only — do not include <code>http://</code> or a path.</small>
                 </label>
                 {#if draft.kind === 'registry'}
@@ -594,12 +694,32 @@
                   <label class="field">
                     <span>Project</span>
                     <select class="select" value={draft.projectId} onchange={(event) => chooseProject(event.currentTarget.value)} disabled={editingDomainIndex !== -1}>
+                      <option value="">Keep unassigned</option>
                       {#each eligibleProjects as project}<option value={project.id}>{project.name}</option>{/each}
                     </select>
-                    <small>{editingDomainIndex === -1 ? 'Services come from this project.' : 'Remove and recreate the domain to move it.'}</small>
+                    <small>{editingDomainIndex === -1 ? 'Attach it now, or save it to use from a project later.' : 'Detach it before moving it to another project.'}</small>
                   </label>
                 {/if}
               </div>
+              {#if draft.kind !== 'registry'}
+                <div class="dns-card" class:verified={draft.status === 'verified'}>
+                  <span class="dns-card-icon"><Icon name={draft.status === 'verified' ? 'check-circle' : 'network'} size={18} /></span>
+                  <div class="dns-card-copy">
+                    <span>{draft.status === 'verified' ? 'DNS verified' : 'Point this hostname to Dokyr'}</span>
+                    <div class="dns-record">
+                      <code>{draft.dns?.type || dnsTarget.type}</code>
+                      <strong>{draft.domain || 'your hostname'}</strong>
+                      <Icon name="arrow-right" size={13} />
+                      <code>{draft.dns?.value || dnsTarget.value}</code>
+                    </div>
+                    {#if draft.lastError}<small>{draft.lastError}</small>{:else}<small>Add this record at your DNS provider. Verification may take a few minutes after propagation.</small>{/if}
+                  </div>
+                  <div class="dns-card-actions">
+                    <button type="button" onclick={() => copyDNS({ ...draft, dns: draft.dns || { ...dnsTarget, name: draft.domain } })}><Icon name={copiedDNS === (draft.managedId || draft.domain || 'draft') ? 'check' : 'copy'} size={13} />{copiedDNS === (draft.managedId || draft.domain || 'draft') ? 'Copied' : 'Copy'}</button>
+                    {#if draft.managedId}<button type="button" onclick={() => verifyDNS(draft)} disabled={verifyingId === draft.managedId}><Icon name="refresh" size={13} />{verifyingId === draft.managedId ? 'Checking…' : 'Verify now'}</button>{/if}
+                  </div>
+                </div>
+              {/if}
             </div>
           </section>
 
@@ -612,7 +732,7 @@
                   <div><code>/api/registry/token</code><Icon name="arrow-right" size={13} /><span><strong>Dokyr token service</strong><small>:8080</small></span></div>
                   <div><code>/*</code><Icon name="arrow-right" size={13} /><span><strong>Docker Registry</strong><small>:5000</small></span></div>
                 </div>
-              {:else}
+              {:else if draft.projectId}
                 <div class="section-heading route-heading">
                   <div><strong>Reverse proxy destinations</strong><span>Rules are evaluated from top to bottom. Use <code>/*</code> as the catch-all.</span></div>
                   <button type="button" onclick={addRule}><Icon name="plus" size={13} /> Add path</button>
@@ -628,10 +748,13 @@
                     </div>
                   {/each}
                 </div>
+              {:else}
+                <div class="unassigned-note"><Icon name="folder" size={18} /><div><strong>Ready for later</strong><span>This domain will stay in Infrastructure → Domains until you select it from a project.</span></div></div>
               {/if}
             </div>
           </section>
 
+          {#if draft.kind === 'registry' || draft.projectId}
           <section class="form-section">
             <div class="section-number">3</div>
             <div class="section-content">
@@ -652,20 +775,21 @@
               </div>
             </div>
           </section>
+          {/if}
         </div>
 
         <footer>
           {#if draft.kind === 'registry' && draft.attached}
             <button class="btn btn-danger" type="button" onclick={deleteDomain} disabled={saving || deleting}><Icon name="trash" size={13} />{deleting ? 'Detaching…' : 'Detach domain'}</button>
-          {:else if draft.kind === 'project' && editingDomainIndex !== -1}
-            <button class="btn btn-danger" type="button" onclick={deleteDomain} disabled={saving || deleting}><Icon name="trash" size={13} />{deleting ? 'Removing…' : 'Remove domain'}</button>
+          {:else if draft.kind === 'project' && draft.managedId}
+            <button class="btn btn-danger" type="button" onclick={deleteDomain} disabled={saving || deleting}><Icon name="trash" size={13} />{deleting ? 'Updating…' : draft.projectId ? 'Detach from project' : 'Delete domain'}</button>
           {:else}
             <span>Changes are applied to Caddy without downtime.</span>
           {/if}
           <div>
             <button class="btn" type="button" onclick={closeModal} disabled={saving || deleting}>Cancel</button>
-            <button class="btn btn-primary" type="submit" disabled={saving || deleting || !draft.domain.trim() || (draft.kind === 'project' && draft.rules.length === 0)}>
-              <Icon name="check" size={13} />{saving ? 'Applying route…' : draft.kind === 'registry' ? 'Save registry domain' : editingDomainIndex === -1 ? 'Add domain' : 'Save route'}
+            <button class="btn btn-primary" type="submit" disabled={saving || deleting || !draft.domain.trim() || (draft.kind === 'project' && draft.projectId && draft.rules.length === 0)}>
+              <Icon name="check" size={13} />{saving ? 'Saving…' : draft.kind === 'registry' ? 'Save registry domain' : draft.projectId ? 'Save & use domain' : 'Save for later'}
             </button>
           </div>
         </footer>
@@ -712,8 +836,10 @@
   .domain-row:last-child { border-bottom: 0; }
   .domain-status { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--color-rule); border-radius: 50%; background: var(--color-surface-subtle); color: var(--color-muted); }
   .domain-status.secure { border-color: color-mix(in srgb, var(--color-success) 28%, var(--color-rule)); background: var(--color-success-soft); color: var(--color-success); }
+  .domain-status.pending { border-style: dashed; border-color: color-mix(in srgb, var(--color-warning) 45%, var(--color-rule)); background: var(--color-warning-soft); color: var(--color-warning); }
   .domain-identity { min-width: 0; display: grid; gap: 4px; }
   .domain-identity > a { min-width: 0; display: flex; align-items: center; gap: 5px; overflow: hidden; color: var(--color-ink); font: 600 var(--text-sm) var(--font-mono); text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
+  .domain-identity > strong { overflow: hidden; color: var(--color-ink); font: 600 var(--text-sm) var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
   .domain-identity > a:hover { color: var(--color-accent); }
   .domain-identity > span { display: flex; align-items: center; gap: 5px; color: var(--color-muted); font-size: var(--text-xs); }
   .route-stack { min-width: 0; padding: var(--space-2) 0; display: grid; gap: 4px; }
@@ -721,6 +847,12 @@
   .route-stack code { max-width: 120px; overflow: hidden; color: var(--color-ink-secondary); text-overflow: ellipsis; white-space: nowrap; }
   .route-stack strong { overflow: hidden; color: var(--color-ink); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
   .route-stack small { color: var(--color-muted); font: var(--text-2xs) var(--font-mono); }
+  .route-stack .dns-summary { grid-template-columns: auto minmax(100px, auto) auto minmax(100px, 1fr); }
+  .dns-summary code:first-child { padding: 3px 6px; border-radius: 4px; background: var(--color-accent-softer); color: var(--color-accent); font-weight: 700; }
+  .dns-summary span { overflow: hidden; color: var(--color-muted); font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+  .verify-badge { min-height: 28px; padding: 0 var(--space-2); display: inline-flex; align-items: center; gap: 5px; border: 1px solid color-mix(in srgb, var(--color-warning) 32%, var(--color-rule)); border-radius: 999px; background: var(--color-warning-soft); color: var(--color-warning); font-size: var(--text-2xs); font-weight: 700; white-space: nowrap; cursor: pointer; }
+  .verify-badge.verified { border-color: color-mix(in srgb, var(--color-success) 28%, var(--color-rule)); background: var(--color-success-soft); color: var(--color-success); }
+  .verify-badge:disabled { opacity: .65; cursor: wait; }
   .tls-badge { min-height: 24px; padding: 0 var(--space-2); display: inline-flex; align-items: center; border: 1px solid color-mix(in srgb, var(--color-success) 28%, var(--color-rule)); border-radius: 999px; background: var(--color-success-soft); color: var(--color-success); font-size: var(--text-2xs); font-weight: 700; white-space: nowrap; }
   .tls-badge.http { border-color: var(--color-rule); background: var(--color-surface-subtle); color: var(--color-muted); }
   .edit-button { min-height: 30px; padding: 0 var(--space-2); display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: transparent; color: var(--color-muted); font-size: var(--text-xs); font-weight: 600; cursor: pointer; }
@@ -780,6 +912,23 @@
   .domain-input { height: 38px; padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-2); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); color: var(--color-muted); }
   .domain-input:focus-within { border-color: var(--color-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-focus) 14%, transparent); }
   .domain-input input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--color-ink); font: var(--text-sm) var(--font-mono); }
+  .domain-input input:read-only { color: var(--color-muted); cursor: default; }
+  .dns-card { padding: var(--space-4); display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); border: 1px solid color-mix(in srgb, var(--color-warning) 35%, var(--color-rule)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-warning-soft) 55%, var(--color-paper-raised)); }
+  .dns-card.verified { border-color: color-mix(in srgb, var(--color-success) 32%, var(--color-rule)); background: color-mix(in srgb, var(--color-success-soft) 55%, var(--color-paper-raised)); }
+  .dns-card-icon { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; background: var(--color-paper-raised); color: var(--color-warning); box-shadow: inset 0 0 0 1px var(--color-rule); }
+  .dns-card.verified .dns-card-icon { color: var(--color-success); }
+  .dns-card-copy { min-width: 0; display: grid; gap: 5px; }
+  .dns-card-copy > span { font-size: var(--text-xs); font-weight: 700; }
+  .dns-card-copy > small { color: var(--color-muted); font-size: var(--text-2xs); line-height: 1.45; }
+  .dns-record { min-width: 0; display: flex; align-items: center; gap: var(--space-2); }
+  .dns-record code:first-child { padding: 3px 6px; border-radius: 4px; background: var(--color-paper-raised); color: var(--color-accent); font-size: var(--text-2xs); font-weight: 800; }
+  .dns-record strong, .dns-record code:last-child { min-width: 0; overflow: hidden; color: var(--color-ink); font: 600 var(--text-xs) var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+  .dns-card-actions { display: grid; gap: 6px; }
+  .dns-card-actions button { min-height: 28px; padding: 0 var(--space-2); display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink-secondary); font-size: var(--text-2xs); font-weight: 700; cursor: pointer; }
+  .unassigned-note { min-height: 74px; padding: var(--space-4); display: flex; align-items: center; gap: var(--space-3); border: 1px dashed var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-surface-subtle); color: var(--color-accent); }
+  .unassigned-note div { display: grid; gap: 3px; }
+  .unassigned-note strong { color: var(--color-ink); font-size: var(--text-sm); }
+  .unassigned-note span { color: var(--color-muted); font-size: var(--text-xs); }
   .registry-destination { min-height: 68px; padding: var(--space-3); display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface-subtle); }
   .registry-mark { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-rule)); border-radius: var(--radius-sm); background: var(--color-accent-softer); color: var(--color-accent); }
   .registry-destination > span:nth-child(2) { min-width: 0; display: grid; gap: 3px; }
@@ -841,6 +990,8 @@
     .domain-toolbar { align-items: stretch; flex-direction: column; }
     .search-field { width: 100%; }
     .identity-grid, .security-picker { grid-template-columns: 1fr; }
+    .dns-card { grid-template-columns: 38px minmax(0, 1fr); }
+    .dns-card-actions { grid-column: 2; display: flex; }
     .registry-destination { grid-template-columns: 34px minmax(0, 1fr); }
     .registry-destination em { grid-column: 2; width: max-content; }
     .registry-routes > div { grid-template-columns: 1fr auto; padding: var(--space-3); }

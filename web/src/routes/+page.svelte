@@ -5,6 +5,7 @@
   import Icon from '$lib/components/Icon.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import { api } from '$lib/auth.js';
+  import { formatRelativeTime } from '$lib/time.js';
 
   let data = { projects: [], deployments: [], docker: {} };
   let metrics = {
@@ -28,6 +29,8 @@
   let metricsRefreshing = false;
   let metricsError = '';
   let pollTimer;
+  let relativeTimeTimer;
+  let relativeNow = Date.now();
 
   $: engineOnline = Boolean(metrics.checkedAt) || Boolean(data.docker.connected);
   $: cpuPercent = clamp(metrics.global.cpuPercent);
@@ -43,12 +46,18 @@
   $: failedDeployment = data.deployments.find((item) => item.status === 'failed');
 
   onMount(async () => {
+    relativeTimeTimer = setInterval(() => {
+      relativeNow = Date.now();
+    }, 1000);
     await Promise.all([loadDashboard(), loadMetrics()]);
     loading = false;
     pollTimer = setInterval(() => loadMetrics(true), 10000);
   });
 
-  onDestroy(() => clearInterval(pollTimer));
+  onDestroy(() => {
+    clearInterval(pollTimer);
+    clearInterval(relativeTimeTimer);
+  });
 
   async function loadDashboard() {
     try {
@@ -79,10 +88,7 @@
   }
 
   function ago(value) {
-    if (!value) return 'not yet';
-    const minutes = Math.max(1, Math.round((Date.now() - new Date(value).getTime()) / 60000));
-    if (minutes >= 60) return `${Math.floor(minutes / 60)}h ago`;
-    return `${minutes}m ago`;
+    return formatRelativeTime(value, { now: relativeNow, empty: 'not yet' });
   }
 
   function formatBytes(value = 0) {
@@ -216,7 +222,7 @@
                   </td>
                   <td><code>{deployment.commit || 'image'}</code></td>
                   <td><span class="muted">{deployment.duration ? `${deployment.duration}s` : '—'}</span></td>
-                  <td><time>{ago(deployment.createdAt)}</time></td>
+                  <td><time datetime={deployment.createdAt}>{ago(deployment.createdAt)}</time></td>
                   <td><Status value={deployment.status} /></td>
                 </tr>
               {/each}
@@ -288,7 +294,7 @@
               <a class="project-row" href={'/projects/' + project.id}>
                 <span class="deployment-icon"><Icon name="box" size={13} /></span>
                 <span class="project-row-text"><strong>{project.name}</strong><small>{project.branch || 'main'} · {project.repository || 'container image'}</small></span>
-                <code>{project.updatedAt ? ago(project.updatedAt) : '—'}</code>
+                <time datetime={project.updatedAt || undefined}>{project.updatedAt ? ago(project.updatedAt) : '—'}</time>
               </a>
             {/each}
           </div>
@@ -676,9 +682,10 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .project-row code {
+  .project-row time {
     color: var(--color-muted);
     font-size: var(--text-xs);
+    font-family: var(--font-mono);
   }
 
   .rows-loading {

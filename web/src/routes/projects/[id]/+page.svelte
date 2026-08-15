@@ -20,6 +20,7 @@
   let platformPort = '';
   let platformHost = 'localhost';
   let domainBindings = [];
+  let managedDomains = [];
   let domainSaving = false;
   let domainError = '';
   let domainNotice = '';
@@ -157,6 +158,7 @@
   $: activeLogTarget = logTargets.find((item) => item.key === logTargetId) || logTargets[0] || null;
   $: if (activeLogTarget?.kind !== 'database' && logView !== 'runtime') logView = 'runtime';
   $: routeTargets = displayApplicationServices.map((item) => ({ ...item, id: item.legacy ? '' : item.id }));
+  $: availableManagedDomains = managedDomains.filter((item) => !item.projectId && !domainBindings.some((binding) => binding.domain.toLowerCase() === item.domain.toLowerCase()));
   $: environmentTargets = displayApplicationServices;
   $: runtimeSettingsService = applicationServices.find((item) => item.id === runtimeSettingsServiceId) || applicationServices[0] || null;
   $: activeEnvironmentTarget = environmentTargets.find((item) => item.id === environmentTargetId) || environmentTargets[0];
@@ -215,6 +217,7 @@
         httpsEnabled: binding.httpsEnabled || false,
         rules: (binding.rules || []).map((rule) => ({ path: rule.path, port: rule.port, serviceId: rule.serviceId || '' }))
       }));
+      managedDomains = payload.managedDomains || [];
       settingsForm = {
         name: payload.project.name || '',
         sourceType: payload.project.sourceType || 'image',
@@ -839,6 +842,12 @@
     if (!domainDraft) return;
     const target = routeTargets.find((item) => item.id === serviceId) || routeTargets[0];
     domainDraft = { ...domainDraft, rules: domainDraft.rules.map((rule, index) => index === ruleIndex ? { ...rule, serviceId, port: target?.containerPort || 80 } : rule) };
+  }
+
+  function chooseManagedDomain(domain) {
+    if (!domainDraft) return;
+    const managed = managedDomains.find((item) => item.domain === domain);
+    domainDraft = { ...domainDraft, domain, httpsEnabled: managed?.status === 'verified' ? true : domainDraft.httpsEnabled };
   }
 
   function openServiceModal() {
@@ -1734,7 +1743,7 @@
       <header><div><span>Traffic</span><h3>Domain routing</h3></div><div class="domain-header-actions">{#if domainBindings.length}<span class="route-state"><i></i> {domainBindings.length} active</span>{/if}<button class="add-domain" type="button" onclick={() => openDomainModal()}>＋ Add domain</button></div></header>
       <div class="domain-layout">
         <div class="domain-form">
-          <div class="domain-editor-head"><div class="form-copy"><h4>Domains, paths, and services</h4><p>Review every hostname and its routing rules. Add or edit a domain in its own focused workspace.</p></div></div>
+          <div class="domain-editor-head"><div class="form-copy"><h4>Domains, paths, and services</h4><p>Select a saved domain from Dokyr or add a new hostname directly to this project.</p></div><a href="/domains">Manage domains →</a></div>
           {#if domainError}<div class="domain-feedback error"><strong>Route not changed</strong><span>{domainError}</span></div>{/if}
           {#if domainNotice}<div class="domain-feedback success"><strong>Route updated</strong><span>{domainNotice}</span></div>{/if}
           {#if domainBindings.length === 0}
@@ -1940,6 +1949,15 @@
         <div class="domain-editor-body">
           <p>Send requests for this hostname to one or more application paths on the private Docker network.</p>
           {#if domainError}<div class="domain-feedback error"><strong>Route not changed</strong><span>{domainError}</span></div>{/if}
+          {#if domainEditingIndex === -1 && availableManagedDomains.length > 0}
+            <div class="managed-domain-picker">
+              <div><Icon name="globe" size={17}/><span><strong>Use a domain already in Dokyr</strong><small>Saved domains stay reusable until they are attached to a project.</small></span></div>
+              <select value={availableManagedDomains.some((item) => item.domain === domainDraft.domain) ? domainDraft.domain : ''} onchange={(event) => chooseManagedDomain(event.currentTarget.value)}>
+                <option value="">Enter a new hostname below</option>
+                {#each availableManagedDomains as item}<option value={item.domain}>{item.domain} · {item.status === 'verified' ? 'DNS verified' : 'DNS pending'}</option>{/each}
+              </select>
+            </div>
+          {/if}
           <div class="domain-draft-head">
             <label class="binding-domain"><span>Domain name</span><input bind:value={domainDraft.domain} placeholder="domain.local" autocomplete="off" spellcheck="false" required /></label>
             <label class="binding-https"><input type="checkbox" bind:checked={domainDraft.httpsEnabled} /><span>HTTPS</span></label>
@@ -2591,6 +2609,7 @@
   .domain-editor-head { margin-bottom: var(--space-4); display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
   .domain-editor-head .form-copy { min-width: 0; }
   .domain-editor-head .form-copy p { margin-bottom: 0; }
+  .domain-editor-head > a { min-height: 30px; padding: 0 var(--space-3); display: inline-flex; align-items: center; flex: none; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); color: var(--color-accent); font-size: var(--text-xs); font-weight: 600; text-decoration: none; }
   .add-domain { min-height: 34px; padding: 0 var(--space-3); flex: 0 0 auto; border: 1px solid var(--color-accent); border-radius: var(--radius-sm); background: var(--color-accent); color: var(--color-accent-ink); font-size: var(--text-sm); font-weight: 600; cursor: pointer; }
   .domain-empty { width: 100%; min-height: 150px; display: grid; place-items: center; align-content: center; gap: var(--space-2); border: 1px dashed var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-surface-subtle); color: var(--color-ink); cursor: pointer; }
   .domain-empty > span { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; background: var(--color-accent-soft); color: var(--color-accent); font-size: var(--text-xl); }
@@ -2650,6 +2669,12 @@
   .domain-editor-form { display: grid; }
   .domain-editor-body { padding: var(--space-5); }
   .domain-editor-body > p { margin: 0 0 var(--space-5); color: var(--color-muted); font-size: var(--text-sm); line-height: 1.6; }
+  .managed-domain-picker { margin-bottom: var(--space-4); padding: var(--space-3); display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, .8fr); align-items: center; gap: var(--space-3); border: 1px solid color-mix(in srgb, var(--color-accent) 30%, var(--color-rule)); border-radius: var(--radius-md); background: var(--color-accent-softer); }
+  .managed-domain-picker > div { min-width: 0; display: flex; align-items: center; gap: var(--space-3); color: var(--color-accent); }
+  .managed-domain-picker > div > span { display: grid; gap: 2px; }
+  .managed-domain-picker strong { color: var(--color-ink); font-size: var(--text-xs); }
+  .managed-domain-picker small { color: var(--color-muted); font-size: var(--text-2xs); }
+  .managed-domain-picker select { width: 100%; min-width: 0; height: 36px; padding: 0 var(--space-3); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-xs); }
   .domain-draft-head { margin-bottom: var(--space-4); display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: var(--space-3); }
   .domain-editor-form > footer { padding: var(--space-4) var(--space-5); display: flex; justify-content: flex-end; gap: var(--space-2); border-top: 1px solid var(--color-rule); }
   .domain-editor-form > footer button { min-height: 36px; padding: 0 var(--space-4); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-sm); font-weight: 600; cursor: pointer; }

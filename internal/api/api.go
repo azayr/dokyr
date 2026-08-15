@@ -14,6 +14,7 @@ import (
 	"html/template"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -224,6 +225,9 @@ func (a *API) registerProtectedRoutes(protected *guardedMux) {
 	protected.handle("POST /api/databases/{id}/grants", authz.PermInfraWrite, a.createDatabaseUserGrant)
 	protected.handle("DELETE /api/databases/{id}/grants/{databaseId}/{userId}", authz.PermInfraWrite, a.deleteDatabaseUserGrant)
 	protected.handle("GET /api/domains", authz.PermProjectRead, a.domainsIndex)
+	protected.handle("POST /api/domains", authz.PermIngressWrite, a.createManagedDomain)
+	protected.handle("POST /api/domains/{id}/verify", authz.PermIngressWrite, a.verifyManagedDomain)
+	protected.handle("DELETE /api/domains/{id}", authz.PermIngressWrite, a.deleteManagedDomain)
 	protected.handle("GET /api/mail", authz.PermProjectRead, a.mailOverview)
 	protected.handle("POST /api/mail/setup/verify-dns", authz.PermPlatformWrite, a.verifyMailSetupDNS)
 	protected.handle("PUT /api/mail/setup", authz.PermPlatformWrite, a.updateMailSetup)
@@ -1342,16 +1346,200 @@ func (a *API) domainsIndex(w http.ResponseWriter, r *http.Request) {
 	if err := a.caddy.Ping(r.Context()); err != nil {
 		connectionError = err.Error()
 	}
+	managedDomains, err := a.store.ManagedDomains(r.Context())
+	if err != nil {
+		problem(w, err)
+		return
+	}
 	write(w, 200, map[string]any{
 		"connected":       connectionError == "",
 		"connectionError": connectionError,
 		"controlHosts":    a.caddy.ControlHosts(),
 		"publicURL":       a.publicURL,
 		"projects":        workspaces,
+		"managedDomains":  a.managedDomainResponses(managedDomains),
+		"dnsTarget":       a.domainDNSInstruction("@"),
 		"registry":        registryDomainResponse(registrySettings, a.effectiveRegistryHosts(r.Context())),
 		"routes":          routes,
 		"configuration":   a.caddy.Render(routes),
 	})
+}
+
+type managedDomainResponse struct {
+	store.ManagedDomain
+	DNS domainDNSInstruction `json:"dns"`
+}
+
+type domainDNSInstruction struct {
+	Type  string `json:"type"`
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+func (a *API) domainDNSInstruction(domain string) domainDNSInstruction {
+	host := "localhost"
+	if parsed, err := url.Parse(a.publicURL); err == nil && parsed.Hostname() != "" {
+		host = strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	}
+	recordType := "CNAME"
+	value := host
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.To4() != nil {
+			recordType = "A"
+			value = ip.String()
+		} else {
+			recordType = "AAAA"
+			value = ip.String()
+		}
+	} else if host == "localhost" {
+		recordType = "A"
+		value = "127.0.0.1"
+	}
+	return domainDNSInstruction{Type: recordType, Name: domain, Value: value}
+}
+
+func (a *API) managedDomainResponses(items []store.ManagedDomain) []managedDomainResponse {
+	responses := make([]managedDomainResponse, 0, len(items))
+	for _, item := range items {
+		responses = append(responses, managedDomainResponse{ManagedDomain: item, DNS: a.domainDNSInstruction(item.Domain)})
+	}
+	return responses
+}
+
+func (a *API) createManagedDomain(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Domain string `json:"domain"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	domain, err := caddy.NormalizeDomain(input.Domain)
+	if err != nil {
+		bad(w, err.Error())
+		return
+	}
+	if a.caddy.IsControlHost(domain) {
+		write(w, http.StatusConflict, map[string]string{"error": controlHostConflictMessage})
+		return
+	}
+	if assigned, err := a.registryDomainMatches(r.Context(), domain); err != nil {
+		problem(w, err)
+		return
+	} else if assigned {
+		write(w, http.StatusConflict, map[string]string{"error": "this domain is assigned to the container registry"})
+		return
+	}
+	claims, _ := auth.FromContext(r.Context())
+	item := store.ManagedDomain{ID: newID("mnd"), Domain: domain}
+	if err := a.store.CreateManagedDomain(r.Context(), item, claims.Subject); errors.Is(err, store.ErrManagedDomainTaken) {
+		write(w, http.StatusConflict, map[string]string{"error": "this domain is already in Dokyr"})
+		return
+	} else if err != nil {
+		problem(w, err)
+		return
+	}
+	item, err = a.store.ManagedDomain(r.Context(), item.ID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	write(w, http.StatusCreated, map[string]any{"domain": managedDomainResponse{ManagedDomain: item, DNS: a.domainDNSInstruction(item.Domain)}})
+}
+
+func (a *API) verifyManagedDomain(w http.ResponseWriter, r *http.Request) {
+	item, err := a.store.ManagedDomain(r.Context(), strings.TrimSpace(r.PathValue("id")))
+	if store.NotFound(err) {
+		write(w, http.StatusNotFound, map[string]string{"error": "domain not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	instruction := a.domainDNSInstruction(item.Domain)
+	verified, observed, verificationErr := verifyDomainDNS(r.Context(), item.Domain, instruction)
+	status := "verified"
+	lastError := ""
+	if !verified {
+		status = "failed"
+		lastError = "DNS does not point to Dokyr yet. Add the expected record, wait for propagation, then check again."
+		if verificationErr != nil {
+			lastError = verificationErr.Error()
+		}
+	}
+	if err := a.store.UpdateManagedDomainVerification(r.Context(), item.ID, status, observed, lastError); err != nil {
+		problem(w, err)
+		return
+	}
+	item, err = a.store.ManagedDomain(r.Context(), item.ID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	write(w, http.StatusOK, map[string]any{"domain": managedDomainResponse{ManagedDomain: item, DNS: instruction}, "verified": verified})
+}
+
+func verifyDomainDNS(ctx context.Context, domain string, instruction domainDNSInstruction) (bool, string, error) {
+	addresses, addressErr := net.DefaultResolver.LookupIPAddr(ctx, domain)
+	observed := make([]string, 0, len(addresses)+1)
+	for _, address := range addresses {
+		observed = append(observed, address.IP.String())
+	}
+	if instruction.Type == "A" || instruction.Type == "AAAA" {
+		for _, address := range addresses {
+			if address.IP.Equal(net.ParseIP(instruction.Value)) {
+				return true, strings.Join(observed, ", "), nil
+			}
+		}
+		if addressErr != nil {
+			return false, strings.Join(observed, ", "), fmt.Errorf("DNS lookup failed: %w", addressErr)
+		}
+		return false, strings.Join(observed, ", "), nil
+	}
+	cname, cnameErr := net.DefaultResolver.LookupCNAME(ctx, domain)
+	cname = strings.TrimSuffix(strings.ToLower(cname), ".")
+	if cname != "" {
+		observed = append([]string{"CNAME " + cname}, observed...)
+	}
+	if cname == strings.TrimSuffix(strings.ToLower(instruction.Value), ".") {
+		return true, strings.Join(observed, ", "), nil
+	}
+	targets, targetErr := net.DefaultResolver.LookupIPAddr(ctx, instruction.Value)
+	for _, address := range addresses {
+		for _, target := range targets {
+			if address.IP.Equal(target.IP) {
+				return true, strings.Join(observed, ", "), nil
+			}
+		}
+	}
+	if addressErr != nil && cnameErr != nil {
+		return false, strings.Join(observed, ", "), fmt.Errorf("DNS lookup failed: %w", addressErr)
+	}
+	if targetErr != nil {
+		return false, strings.Join(observed, ", "), fmt.Errorf("Dokyr target lookup failed: %w", targetErr)
+	}
+	return false, strings.Join(observed, ", "), nil
+}
+
+func (a *API) deleteManagedDomain(w http.ResponseWriter, r *http.Request) {
+	item, err := a.store.ManagedDomain(r.Context(), strings.TrimSpace(r.PathValue("id")))
+	if store.NotFound(err) {
+		write(w, http.StatusNotFound, map[string]string{"error": "domain not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if item.ProjectID != "" {
+		write(w, http.StatusConflict, map[string]string{"error": "remove this domain from its project before deleting it from Dokyr"})
+		return
+	}
+	if err := a.store.DeleteManagedDomain(r.Context(), item.ID); err != nil {
+		problem(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) createProject(w http.ResponseWriter, r *http.Request) {
@@ -1896,6 +2084,12 @@ func (a *API) updateProjectDomain(w http.ResponseWriter, r *http.Request) {
 		write(w, 502, map[string]string{"error": "Caddy could not activate this domain; the previous route was restored"})
 		return
 	}
+	claims, _ := auth.FromContext(r.Context())
+	for _, binding := range cleanBindings {
+		if err := a.store.EnsureManagedDomain(r.Context(), store.ManagedDomain{ID: newID("mnd"), Domain: binding.Domain}, claims.Subject); err != nil {
+			a.log.Warn("add project domain to managed catalog", "domain", binding.Domain, "error", err)
+		}
+	}
 	project.Domain = primaryDomain
 	project.HTTPSEnabled = primaryHTTPS
 	project.ContainerPort = primaryPort
@@ -2361,6 +2555,17 @@ func (a *API) project(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
+	managedDomains, err := a.store.ManagedDomains(r.Context())
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	availableDomains := []managedDomainResponse{}
+	for _, domain := range managedDomains {
+		if domain.ProjectID == "" || domain.ProjectID == id {
+			availableDomains = append(availableDomains, managedDomainResponse{ManagedDomain: domain, DNS: a.domainDNSInstruction(domain.Domain)})
+		}
+	}
 	applicationServices, err := a.store.ApplicationServices(r.Context(), id)
 	if err != nil {
 		problem(w, err)
@@ -2375,7 +2580,7 @@ func (a *API) project(w http.ResponseWriter, r *http.Request) {
 			a.log.Warn("inspect application service", "service", applicationServices[index].ID, "error", runtimeErr)
 		}
 	}
-	write(w, 200, map[string]any{"project": p, "deployments": deployments, "services": services, "applicationServices": applicationServices, "databaseServices": databaseServices, "ingressRules": ingressRules, "ingressDefaultPath": ingressDefaultPath, "domainBindings": domainBindings})
+	write(w, 200, map[string]any{"project": p, "deployments": deployments, "services": services, "applicationServices": applicationServices, "databaseServices": databaseServices, "ingressRules": ingressRules, "ingressDefaultPath": ingressDefaultPath, "domainBindings": domainBindings, "managedDomains": availableDomains})
 }
 
 func (a *API) updateProject(w http.ResponseWriter, r *http.Request) {

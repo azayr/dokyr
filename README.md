@@ -91,7 +91,7 @@ CONTROL_HOSTS="panel.example.com"
 PUBLIC_URL=http://panel.example.com:8888
 ```
 
-Project domains are assigned from each project's **Domains** tab. A hostname that is neither assigned to a project nor listed in `CONTROL_HOSTS` receives Caddy's 404 response.
+Domains can be saved and DNS-verified from **Infrastructure → Domains**, then attached to a project immediately or selected later from that project's **Domains** tab. Adding a hostname directly to a project also saves it in the reusable domain catalog. A hostname that is neither assigned to a project nor listed in `CONTROL_HOSTS` receives Caddy's 404 response.
 
 The published ports are configurable. For a production server where ports 80 and 443 are free:
 

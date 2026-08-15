@@ -32,6 +32,10 @@ var ErrLastOwner = errors.New("the last owner cannot be removed or demoted")
 // Dokyr account. Domain names are globally unique within an installation.
 var ErrMailDomainTaken = errors.New("mail domain is already claimed")
 
+// ErrManagedDomainTaken reports that an ingress domain already exists in the
+// reusable domain catalog.
+var ErrManagedDomainTaken = errors.New("domain is already managed")
+
 // isUniqueViolation reports whether err is Postgres error 23505.
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
@@ -89,6 +93,19 @@ type ProjectDomainBinding struct {
 	HTTPSEnabled bool                       `json:"httpsEnabled"`
 	Position     int                        `json:"-"`
 	Rules        []ProjectDomainBindingRule `json:"rules"`
+}
+type ManagedDomain struct {
+	ID              string     `json:"id"`
+	Domain          string     `json:"domain"`
+	Status          string     `json:"status"`
+	ObservedRecords string     `json:"observedRecords,omitempty"`
+	LastError       string     `json:"lastError,omitempty"`
+	LastCheckedAt   *time.Time `json:"lastCheckedAt,omitempty"`
+	VerifiedAt      *time.Time `json:"verifiedAt,omitempty"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	UpdatedAt       time.Time  `json:"updatedAt"`
+	ProjectID       string     `json:"projectId,omitempty"`
+	ProjectName     string     `json:"projectName,omitempty"`
 }
 type SourceConnection struct {
 	ID                   string    `json:"id"`
@@ -1193,6 +1210,97 @@ func (s *Store) ProjectDomainBindingByDomain(ctx context.Context, domain string)
 		FROM project_domain_bindings WHERE LOWER(domain)=LOWER($1)`, domain).
 		Scan(&binding.ID, &binding.ProjectID, &binding.Domain, &binding.HTTPSEnabled, &binding.Position)
 	return binding, err
+}
+
+func (s *Store) ManagedDomains(ctx context.Context) ([]ManagedDomain, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT managed.id,managed.domain,managed.status,managed.observed_records,managed.last_error,
+		managed.last_checked_at,managed.verified_at,managed.created_at,managed.updated_at,
+		COALESCE(binding.project_id,''),COALESCE(project.name,'')
+		FROM managed_domains managed
+		LEFT JOIN project_domain_bindings binding ON LOWER(binding.domain)=LOWER(managed.domain)
+		LEFT JOIN projects project ON project.id=binding.project_id
+		ORDER BY managed.created_at DESC,managed.domain`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ManagedDomain{}
+	for rows.Next() {
+		var item ManagedDomain
+		if err := rows.Scan(&item.ID, &item.Domain, &item.Status, &item.ObservedRecords, &item.LastError,
+			&item.LastCheckedAt, &item.VerifiedAt, &item.CreatedAt, &item.UpdatedAt, &item.ProjectID, &item.ProjectName); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) ManagedDomain(ctx context.Context, id string) (ManagedDomain, error) {
+	var item ManagedDomain
+	err := s.db.QueryRowContext(ctx, `SELECT managed.id,managed.domain,managed.status,managed.observed_records,managed.last_error,
+		managed.last_checked_at,managed.verified_at,managed.created_at,managed.updated_at,
+		COALESCE(binding.project_id,''),COALESCE(project.name,'')
+		FROM managed_domains managed
+		LEFT JOIN project_domain_bindings binding ON LOWER(binding.domain)=LOWER(managed.domain)
+		LEFT JOIN projects project ON project.id=binding.project_id
+		WHERE managed.id=$1`, id).Scan(&item.ID, &item.Domain, &item.Status, &item.ObservedRecords, &item.LastError,
+		&item.LastCheckedAt, &item.VerifiedAt, &item.CreatedAt, &item.UpdatedAt, &item.ProjectID, &item.ProjectName)
+	return item, err
+}
+
+func (s *Store) CreateManagedDomain(ctx context.Context, item ManagedDomain, createdBy string) error {
+	var owner any
+	if createdBy != "" {
+		owner = createdBy
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO managed_domains(id,domain,status,created_by) VALUES($1,$2,'pending',$3)`, item.ID, item.Domain, owner)
+	if isUniqueViolation(err) {
+		return ErrManagedDomainTaken
+	}
+	return err
+}
+
+func (s *Store) EnsureManagedDomain(ctx context.Context, item ManagedDomain, createdBy string) error {
+	var owner any
+	if createdBy != "" {
+		owner = createdBy
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO managed_domains(id,domain,status,created_by) VALUES($1,$2,'pending',$3)
+		ON CONFLICT (LOWER(domain)) DO NOTHING`, item.ID, item.Domain, owner)
+	return err
+}
+
+func (s *Store) UpdateManagedDomainVerification(ctx context.Context, id, status, observed, lastError string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE managed_domains SET status=$2,observed_records=$3,last_error=$4,last_checked_at=NOW(),
+		verified_at=CASE WHEN $2='verified' THEN NOW() ELSE verified_at END,updated_at=NOW() WHERE id=$1`, id, status, observed, lastError)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) DeleteManagedDomain(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM managed_domains managed WHERE managed.id=$1
+		AND NOT EXISTS (SELECT 1 FROM project_domain_bindings binding WHERE LOWER(binding.domain)=LOWER(managed.domain))`, id)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) ReplaceProjectDomainBindings(ctx context.Context, projectID string, bindings []ProjectDomainBinding) error {

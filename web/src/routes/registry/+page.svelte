@@ -6,6 +6,7 @@
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import { api } from '$lib/auth.js';
   import { toast } from '$lib/toast.js';
+  import { formatRelativeTime } from '$lib/time.js';
 
   const emptySettings = () => ({
     storage: 'filesystem',
@@ -61,7 +62,7 @@
     load();
     const relativeTimeTimer = window.setInterval(() => {
       relativeNow = Date.now();
-    }, 60_000);
+    }, 1000);
     return () => window.clearInterval(relativeTimeTimer);
   });
 
@@ -196,21 +197,7 @@
   }
 
   function formatRelativeDate(value) {
-    if (!value) return 'Not recorded';
-    const timestamp = new Date(value).getTime();
-    if (!Number.isFinite(timestamp)) return 'Not recorded';
-    const elapsed = timestamp - relativeNow;
-    const absolute = Math.abs(elapsed);
-    if (absolute < 60_000) return 'just now';
-    const units = [
-      ['year', 365 * 24 * 60 * 60 * 1000],
-      ['month', 30 * 24 * 60 * 60 * 1000],
-      ['day', 24 * 60 * 60 * 1000],
-      ['hour', 60 * 60 * 1000],
-      ['minute', 60 * 1000]
-    ];
-    const [unit, duration] = units.find(([, size]) => absolute >= size) || units[units.length - 1];
-    return new Intl.RelativeTimeFormat(undefined, { numeric: 'always' }).format(Math.round(elapsed / duration), unit);
+    return formatRelativeTime(value, { now: relativeNow });
   }
 
   function imagesFor(repository) {

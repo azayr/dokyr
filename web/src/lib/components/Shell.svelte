@@ -485,7 +485,7 @@
   .menu button:hover {
     background: var(--color-paper-subtle);
   }
-  .menu button :global(svg:last-child) {
+  .theme-menu button :global(svg:last-child) {
     margin-left: auto;
     color: var(--color-accent);
   }

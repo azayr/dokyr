@@ -38,6 +38,8 @@
   let sendTransport = 'smtp';
   let exampleLanguage = 'curl';
 
+  const mailTabs = new Set(['domains', 'credentials', 'activity']);
+
   $: selected = domains.find((domain) => domain.id === selectedId) || domains[0] || null;
   $: verifiedDomains = domains.filter((domain) => domain.status === 'verified');
   $: canWrite = can($currentPermissions, 'project:write');
@@ -54,8 +56,17 @@
 
   onMount(() => {
     apiBaseURL = window.location.origin;
+    syncTabFromFragment();
+    window.addEventListener('hashchange', syncTabFromFragment);
     load();
+    return () => window.removeEventListener('hashchange', syncTabFromFragment);
   });
+
+  function syncTabFromFragment() {
+    const fragment = window.location.hash.slice(1).toLowerCase();
+    tab = mailTabs.has(fragment) ? fragment : 'domains';
+    if (!mailTabs.has(fragment)) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#domains`);
+  }
 
   async function load() {
     loading = true;
@@ -333,9 +344,9 @@ SMTP_FROM=hello@${domain}`;
     </section>
   {:else}
   <nav class="mail-tabs" aria-label="Mail sections">
-    <button class:active={tab === 'domains'} type="button" onclick={() => (tab = 'domains')}><Icon name="globe" size={14} /> Domains <span>{domains.length}</span></button>
-    <button class:active={tab === 'keys'} type="button" onclick={() => (tab = 'keys')}><Icon name="key" size={14} /> Credentials <span>{apiKeys.length}</span></button>
-    <button class:active={tab === 'activity'} type="button" onclick={() => (tab = 'activity')}><Icon name="logs" size={14} /> Activity <span>{messages.length}</span></button>
+    <a class:active={tab === 'domains'} href="#domains" aria-current={tab === 'domains' ? 'page' : undefined}><Icon name="globe" size={14} /> Domains <span>{domains.length}</span></a>
+    <a class:active={tab === 'credentials'} href="#credentials" aria-current={tab === 'credentials' ? 'page' : undefined}><Icon name="key" size={14} /> Credentials <span>{apiKeys.length}</span></a>
+    <a class:active={tab === 'activity'} href="#activity" aria-current={tab === 'activity' ? 'page' : undefined}><Icon name="logs" size={14} /> Activity <span>{messages.length}</span></a>
   </nav>
 
   {#if tab === 'domains'}
@@ -427,7 +438,7 @@ SMTP_FROM=hello@${domain}`;
         {/if}
       </div>
     {/if}
-  {:else if tab === 'keys'}
+  {:else if tab === 'credentials'}
     <section class="panel keys-panel">
       <header class="section-head"><div><h2>Mail credentials</h2><p>Every credential is locked to one verified domain and works with SMTP and the HTTP API.</p></div>{#if canWriteSecrets}<button class="btn btn-primary" type="button" disabled={verifiedDomains.length === 0} onclick={openKeyDialog}><Icon name="plus" size={13} /> Create credential</button>{/if}</header>
       {#if apiKeys.length === 0}
@@ -529,7 +540,7 @@ SMTP_FROM=hello@${domain}`;
   .signal-orbit span { top: 3px; left: 18px; }.signal-orbit i { right: 1px; top: 29px; }.signal-orbit b { bottom: 5px; left: 13px; }
   .readiness-copy { min-width: 0; display: grid; gap: 3px; }.eyebrow { color: var(--color-accent); font-size: var(--text-2xs); font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }.readiness-copy strong { font-size: var(--text-lg); }.readiness-copy p { max-width: 650px; margin: 0; color: var(--color-muted); font-size: var(--text-sm); }
   .readiness-checks { z-index: 1; min-width: 174px; display: grid; gap: var(--space-2); }.readiness-checks span { display: flex; align-items: center; gap: 8px; color: var(--color-muted); font-size: var(--text-xs); font-weight: 650; }.readiness-checks i { width: 7px; height: 7px; border-radius: 50%; background: var(--color-warning); box-shadow: 0 0 0 3px var(--color-warning-soft); }.readiness-checks .ready i { background: var(--color-success); box-shadow: 0 0 0 3px var(--color-success-soft); }.readiness-checks .ready { color: var(--color-ink-secondary); }
-  .mail-tabs { margin-bottom: var(--space-4); display: flex; gap: 2px; border-bottom: 1px solid var(--color-rule); }.mail-tabs button { min-height: 38px; padding: 0 var(--space-3); display: flex; align-items: center; gap: 7px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--color-muted); font-size: var(--text-sm); font-weight: 650; cursor: pointer; }.mail-tabs button:hover { color: var(--color-ink); }.mail-tabs button.active { border-color: var(--color-accent); color: var(--color-accent); }.mail-tabs span { min-width: 19px; padding: 1px 5px; border-radius: 10px; background: var(--color-paper-subtle); color: var(--color-muted); font-size: var(--text-2xs); text-align: center; }
+  .mail-tabs { margin-bottom: var(--space-4); display: flex; gap: 2px; border-bottom: 1px solid var(--color-rule); }.mail-tabs a { min-height: 38px; padding: 0 var(--space-3); display: flex; align-items: center; gap: 7px; border-bottom: 2px solid transparent; color: var(--color-muted); font-size: var(--text-sm); font-weight: 650; text-decoration: none; }.mail-tabs a:hover { color: var(--color-ink); }.mail-tabs a.active { border-color: var(--color-accent); color: var(--color-accent); }.mail-tabs span { min-width: 19px; padding: 1px 5px; border-radius: 10px; background: var(--color-paper-subtle); color: var(--color-muted); font-size: var(--text-2xs); text-align: center; }
   .domain-workspace { display: grid; grid-template-columns: minmax(220px, .32fr) minmax(0, 1fr); gap: var(--space-4); align-items: start; }.domain-list { padding-bottom: var(--space-2); }.domain-list > header { min-height: 46px; padding: 0 var(--space-4); display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--color-rule); }.domain-list > header span { font-size: var(--text-sm); font-weight: 700; }.domain-list > header small { color: var(--color-muted); font-size: var(--text-2xs); }.domain-list > button { width: calc(100% - 12px); min-height: 60px; margin: 6px 6px 0; padding: 0 10px; display: grid; grid-template-columns: 30px 1fr auto; align-items: center; gap: 9px; border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; color: var(--color-ink); text-align: left; cursor: pointer; }.domain-list > button:hover { background: var(--color-paper-subtle); }.domain-list > button.selected { border-color: color-mix(in srgb, var(--color-accent) 24%, var(--color-rule)); background: var(--color-accent-softer); }.domain-list button > span:nth-child(2) { min-width: 0; display: grid; }.domain-list strong { overflow: hidden; font-family: var(--font-mono); font-size: var(--text-xs); text-overflow: ellipsis; }.domain-list small { font-size: var(--text-2xs); }.domain-list small.success { color: var(--color-success); }.domain-list small.warning { color: var(--color-warning); }.domain-list small.danger { color: var(--color-danger); }.domain-mark { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; background: var(--color-warning-soft); color: var(--color-warning); }.domain-mark.verified { background: var(--color-success-soft); color: var(--color-success); }
   .domain-detail { min-width: 0; }.domain-head { min-height: 100px; padding: var(--space-5); display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); border-bottom: 1px solid var(--color-rule); }.domain-head h2 { margin: 8px 0 2px; font-family: var(--font-mono); font-size: var(--text-lg); }.domain-head p { margin: 0; color: var(--color-muted); font-size: var(--text-xs); }.status-pill { width: fit-content; padding: 3px 7px; display: inline-flex; align-items: center; gap: 5px; border-radius: 12px; font-size: var(--text-2xs); font-weight: 700; }.status-pill.success { background: var(--color-success-soft); color: var(--color-success); }.status-pill.warning { background: var(--color-warning-soft); color: var(--color-warning); }.status-pill.danger { background: var(--color-danger-soft); color: var(--color-danger); }.domain-actions { display: flex; gap: var(--space-2); }.icon-danger { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: transparent; color: var(--color-muted); cursor: pointer; }.icon-danger:hover { border-color: color-mix(in srgb, var(--color-danger) 50%, var(--color-rule)); color: var(--color-danger); }
   .domain-note { margin: var(--space-4) var(--space-5) 0; padding: 10px 12px; display: flex; gap: 8px; border-radius: var(--radius-md); background: var(--color-info-soft); color: var(--color-info); font-size: var(--text-xs); }.domain-note.warning { background: var(--color-warning-soft); color: var(--color-warning); }

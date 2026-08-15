@@ -44,6 +44,9 @@ var routePermissions = map[string]authz.Permission{
 	"GET /api/databases":                                            authz.PermProjectRead,
 	"POST /api/databases":                                           authz.PermInfraWrite,
 	"GET /api/domains":                                              authz.PermProjectRead,
+	"POST /api/domains":                                             authz.PermIngressWrite,
+	"POST /api/domains/{id}/verify":                                 authz.PermIngressWrite,
+	"DELETE /api/domains/{id}":                                      authz.PermIngressWrite,
 	"GET /api/mail":                                                 authz.PermProjectRead,
 	"POST /api/mail/setup/verify-dns":                               authz.PermPlatformWrite,
 	"PUT /api/mail/setup":                                           authz.PermPlatformWrite,
@@ -207,6 +210,9 @@ func TestIngressRoutesAreOwnerOnly(t *testing.T) {
 		"PUT /api/caddy/config",
 		"POST /api/caddy/reset",
 		"PUT /api/projects/{id}/domain",
+		"POST /api/domains",
+		"POST /api/domains/{id}/verify",
+		"DELETE /api/domains/{id}",
 		"PUT /api/registry/domain",
 	} {
 		perm, ok := registered[pattern]
