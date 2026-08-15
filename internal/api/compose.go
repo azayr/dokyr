@@ -140,7 +140,8 @@ func (a *API) importCompose(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, item := range plan.Databases {
 		id := newID("db")
-		serviceHosts[item.Name] = "selfhost-db-" + id
+		alias := databaseNetworkAlias(item.Name)
+		serviceHosts[item.Name] = alias
 		sealed, err := a.box.Encrypt(item.Password)
 		if err != nil {
 			a.databaseMu.Unlock()
@@ -149,7 +150,7 @@ func (a *API) importCompose(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		databases = append(databases, store.DatabaseService{
-			ID: id, ProjectID: projectID, Name: item.Name, Engine: item.Engine, Image: item.Image,
+			ID: id, ProjectID: projectID, Alias: alias, Name: item.Name, Engine: item.Engine, Image: item.Image,
 			InternalPort: item.Port, PublicEnabled: item.PublicEnabled, PublicPort: item.PublicPort,
 			VolumeName: "selfhost-data-" + id, Username: item.Username, DatabaseName: item.DatabaseName,
 			PasswordEncrypted: sealed,
@@ -197,7 +198,13 @@ func (a *API) importCompose(w http.ResponseWriter, r *http.Request) {
 		report := func(stage, eventType, message string) {
 			a.recordDatabaseDeploymentEvent(r.Context(), database.ID, stage, eventType, message)
 		}
-		if _, err := a.docker.DeployDatabase(r.Context(), databaseSpec(database, password), report); err != nil {
+		spec, specErr := a.databaseSpec(r.Context(), database, password)
+		if specErr != nil {
+			rollback()
+			problem(w, specErr)
+			return
+		}
+		if _, err := a.docker.DeployDatabase(r.Context(), spec, report); err != nil {
 			rollback()
 			a.log.Error("import compose database", "database", database.ID, "error", err)
 			write(w, http.StatusBadGateway, map[string]string{"error": "could not deploy database " + database.Name + ": " + err.Error()})

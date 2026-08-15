@@ -232,7 +232,7 @@ func (s *Store) RestoreProjectBackupData(ctx context.Context, d ProjectBackupDat
 	if e != nil {
 		return e
 	}
-	for _, table := range []string{"project_domain_bindings", "project_environment_variables", "application_services", "database_services"} {
+	for _, table := range []string{"project_domain_bindings", "project_environment_variables", "application_services", "project_database_attachments"} {
 		if _, e = tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE project_id=$1`, d.Project.ID); e != nil {
 			return e
 		}
@@ -261,7 +261,39 @@ func (s *Store) RestoreProjectBackupData(ctx context.Context, d ProjectBackupDat
 		if v.PublicEnabled {
 			port = v.PublicPort
 		}
-		_, e = tx.ExecContext(ctx, `INSERT INTO database_services(id,project_id,name,engine,image,internal_port,public_enabled,public_port,volume_name,username,database_name,password_encrypted) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, v.ID, d.Project.ID, v.Name, v.Engine, v.Image, v.InternalPort, v.PublicEnabled, port, v.VolumeName, v.Username, v.DatabaseName, v.PasswordEncrypted)
+		_, e = tx.ExecContext(ctx, `INSERT INTO database_services(id,project_id,name,engine,image,internal_port,public_enabled,public_port,volume_name,username,database_name,password_encrypted,status,last_error) VALUES($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(id) DO NOTHING`, v.ID, v.Name, v.Engine, v.Image, v.InternalPort, v.PublicEnabled, port, v.VolumeName, v.Username, v.DatabaseName, v.PasswordEncrypted, databaseStatus(v.Status), v.LastError)
+		if e != nil {
+			return e
+		}
+		databaseID := v.DatabaseID
+		if databaseID == "" {
+			databaseID = v.ID + "_database"
+		}
+		userID := v.UserID
+		if userID == "" {
+			userID = databaseID + "_user"
+		}
+		_, e = tx.ExecContext(ctx, `INSERT INTO database_cluster_users(id,database_service_id,username,password_encrypted) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO NOTHING`, userID, v.ID, v.Username, v.PasswordEncrypted)
+		if e != nil {
+			return e
+		}
+		_, e = tx.ExecContext(ctx, `INSERT INTO database_cluster_databases(id,database_service_id,name,owner_user_id,username,password_encrypted) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING`, databaseID, v.ID, v.DatabaseName, userID, v.Username, v.PasswordEncrypted)
+		if e != nil {
+			return e
+		}
+		_, e = tx.ExecContext(ctx, `INSERT INTO database_cluster_user_grants(database_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, databaseID, userID)
+		if e != nil {
+			return e
+		}
+		attachmentID := v.AttachmentID
+		if attachmentID == "" {
+			attachmentID = v.ID + "_attachment"
+		}
+		alias := v.Alias
+		if alias == "" {
+			alias = v.Name
+		}
+		_, e = tx.ExecContext(ctx, `INSERT INTO project_database_attachments(id,project_id,database_service_id,database_id,database_user_id,alias) VALUES($1,$2,$3,$4,$5,$6)`, attachmentID, d.Project.ID, v.ID, databaseID, userID, alias)
 		if e != nil {
 			return e
 		}

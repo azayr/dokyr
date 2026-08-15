@@ -21,7 +21,8 @@ flowchart LR
         Dokyr["Dokyr<br/>control plane"]
         Docker["Docker Engine<br/>runtime"]
         Data["PostgreSQL<br/>platform state"]
-        Services["Applications and databases"]
+        Services["Application services"]
+        Databases["Shared database clusters"]
     end
 
     Developer -->|"manage"| Caddy
@@ -31,12 +32,13 @@ flowchart LR
     Dokyr --> Data
     Dokyr --> Docker
     Docker --> Services
+    Docker --> Databases
 ```
 
 The responsibilities are deliberately separated:
 
 - **Dokyr** manages projects, configuration, deployments, domains, credentials, and operational state.
-- **Docker Engine** creates and runs application and database containers.
+- **Docker Engine** creates and runs application services and shared database clusters.
 - **Caddy** terminates TLS and routes each hostname to the correct service.
 - **PostgreSQL** stores control-plane records. Application data remains in its own service volumes.
 
@@ -99,12 +101,37 @@ The Docker and Caddy sockets are the platform's most privileged boundaries. Acce
 
 Application containers remain separate from the control-plane database and do not receive Dokyr's platform credentials.
 
+## Database networking
+
+Database clusters are global infrastructure rather than children of one project. Each cluster has one container and persistent volume, and contains logical databases, users, and grants. A project attachment selects one logical database, one granted user, and a private hostname.
+
+```mermaid
+flowchart LR
+    Cluster["Database cluster<br/>one container and volume"]
+    ProjectA["Project A network"]
+    ProjectB["Project B network"]
+    AppA["Application A"]
+    AppB["Application B"]
+
+    AppA -->|"database:5432"| Cluster
+    AppB -->|"primary-db:5432"| Cluster
+    Cluster --- ProjectA
+    Cluster --- ProjectB
+    AppA --- ProjectA
+    AppB --- ProjectB
+```
+
+Attaching a cluster joins its container to the project's private Docker network with a project-local alias. It does not create another database container. The same cluster can therefore serve several projects while each attachment uses a different logical database, user, and alias.
+
+Cluster creation persists the control-plane record first and returns immediately. Provisioning then pulls the image and creates the container in the background while deployment events record progress. Dokyr resumes incomplete provisioning after a control-plane restart, and failed clusters remain available for inspection and retry. The interface follows deployment events and runtime logs while their views are open.
+
 ## Where to go deeper
 
 | Topic | Documentation |
 |---|---|
 | Install and first run | [Installation](/guide/installation) |
 | Project deployment behavior | [Deployments](/guide/deployments) |
+| Database clusters and private attachments | [Database clusters](/infrastructure/databases) |
 | Domains and HTTPS | [Domains and HTTPS](/infrastructure/domains) |
 | Registry and storage | [Private registry](/infrastructure/registry) · [Object storage](/infrastructure/storage) |
 | Backup and recovery | [Backups and restores](/operations/backups) |

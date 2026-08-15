@@ -746,20 +746,29 @@ Build-only services, `env_file`, application volume mounts, configs, secrets, un
 
 Successful import returns `201` with `{ "services": ApplicationService[], "databases": DatabaseService[], "deployments": Deployment[], "deploymentErrors": [] }`. If a database cannot be deployed, the imported definitions, containers, and newly created volumes are rolled back.
 
-## Database services
+## Database clusters
+
+Database clusters are global infrastructure. A cluster can contain several logical databases and users, and can join several project networks through independent attachments.
+
+### Cluster endpoints
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `POST` | `/api/projects/{projectId}/databases` | Create and deploy database |
-| `GET` | `/api/databases/{databaseId}/credentials` | Reveal connection credentials |
-| `GET` | `/api/databases/{databaseId}/events` | Database deployment events |
-| `GET` | `/api/databases/{databaseId}/logs?lines=300` | Runtime logs |
-| `PUT` | `/api/databases/{databaseId}/exposure` | Change public port exposure |
-| `POST` | `/api/databases/{databaseId}/stop` | Stop database container |
-| `POST` | `/api/databases/{databaseId}/restart` | Restart or start database container |
-| `DELETE` | `/api/databases/{databaseId}` | Remove database |
+| `GET` | `/api/databases` | List all clusters with databases, users, grants, and projects |
+| `POST` | `/api/databases` | Create a global cluster and queue background provisioning |
+| `GET` | `/api/databases/{clusterId}` | Read one complete cluster |
+| `GET` | `/api/databases/{clusterId}/credentials` | Reveal cluster administrator credentials |
+| `GET` | `/api/databases/{clusterId}/events` | Read the latest deployment events |
+| `GET` | `/api/databases/{clusterId}/logs?lines=300` | Read runtime logs |
+| `PUT` | `/api/databases/{clusterId}/exposure` | Change public port exposure |
+| `POST` | `/api/databases/{clusterId}/deploy` | Deploy or retry a cluster |
+| `POST` | `/api/databases/{clusterId}/stop` | Stop the cluster container |
+| `POST` | `/api/databases/{clusterId}/restart` | Restart or start the cluster container |
+| `DELETE` | `/api/databases/{clusterId}` | Remove the cluster and optionally its volume |
 
-### Create a database
+`GET /api/databases` returns `{ "clusters": DatabaseService[] }`. `GET /api/databases/{clusterId}` returns `{ "cluster": DatabaseService }`. Each cluster includes `databases`, `users`, `grants`, `projects`, `projectCount`, `status`, and an optional `lastError`. Runtime statuses include `created`, `deploying`, `healthy`, `degraded`, `stopped`, and `failed`.
+
+### Create a cluster
 
 ```json
 {
@@ -773,13 +782,20 @@ Successful import returns `201` with `{ "services": ApplicationService[], "datab
 }
 ```
 
-`engine` is `postgres`, `mysql`, or `mariadb`. If password is omitted, the server generates one. Private access is the default. A public port is only used when `publicEnabled` is true; it defaults to the engine port.
+`engine` is `postgres`, `mysql`, or `mariadb`. If `password` is omitted, the server generates one. Private access is the default. A public port is used only when `publicEnabled` is true and defaults to the engine port.
 
-Returns `201`:
+The endpoint persists the cluster with status `deploying`, returns `201` immediately, and pulls and creates the container in the background:
 
 ```json
 {
-  "service": { "…": "Database service" },
+  "cluster": {
+    "id": "db_…",
+    "status": "deploying",
+    "databases": [{ "id": "database_…", "name": "app", "primary": true }],
+    "users": [{ "id": "dbuser_…", "username": "app", "admin": true }],
+    "grants": [{ "databaseId": "database_…", "userId": "dbuser_…" }]
+  },
+  "service": { "id": "db_…", "status": "deploying" },
   "credentials": {
     "username": "app",
     "password": "revealed password",
@@ -789,33 +805,68 @@ Returns `201`:
     "connectionUrl": "postgresql://…",
     "publicEnabled": false,
     "publicPort": 0
-  }
+  },
+  "message": "Primary database was created and is provisioning in the background"
 }
 ```
 
-### Database operations
+The initial logical database, administrator user, and grant are included in the `cluster` object. Dokyr resumes persisted provisioning work after a control-plane restart. If provisioning fails, `status` becomes `failed`, `lastError` is retained, and `POST /api/databases/{clusterId}/deploy` retries it.
 
-`GET /api/databases/{databaseId}/credentials` returns the same `credentials` object. Treat this endpoint as sensitive: never cache its response in shared client storage.
+The legacy `POST /api/projects/{projectId}/databases` endpoint accepts the same body, creates a cluster, and immediately adds its initial database and user to that project. New clients should create global clusters and use project attachments explicitly.
 
-`GET /api/databases/{databaseId}/events` returns `{ "events": [{ "id": 1, "stage": "pull", "type": "log", "message": "…", "createdAt": "…" }] }`.
+### Logical databases, users, and grants
 
-`POST /api/databases/{databaseId}/stop` and `/restart` control the existing database container without changing its volume, credentials, or exposure. Both return `{ "service": DatabaseService, "message": "…" }`.
+| Method | Path | Body | Description |
+| --- | --- | --- | --- |
+| `POST` | `/api/databases/{clusterId}/logical-databases` | `{ "name": "orders", "ownerUserId": "dbuser_…" }` | Create a logical database |
+| `DELETE` | `/api/databases/{clusterId}/logical-databases/{databaseId}` | — | Delete an unused, non-primary database |
+| `POST` | `/api/databases/{clusterId}/users` | `{ "username": "orders_app", "password": "optional" }` | Create a database user |
+| `GET` | `/api/databases/{clusterId}/users/{userId}/credentials` | — | Reveal a user's password |
+| `DELETE` | `/api/databases/{clusterId}/users/{userId}` | — | Delete an unused, non-administrator user |
+| `POST` | `/api/databases/{clusterId}/grants` | `{ "databaseId": "database_…", "userId": "dbuser_…" }` | Grant access to a database |
+| `DELETE` | `/api/databases/{clusterId}/grants/{databaseId}/{userId}` | — | Revoke an unused grant |
 
-`PUT /api/databases/{databaseId}/exposure`:
+User passwords are generated when omitted; supplied passwords must contain 12 to 256 characters without control characters. Deletion returns `409` when the resource is primary, administrative, owned, granted, or still used by a project attachment.
+
+### Project attachments
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `POST` | `/api/projects/{projectId}/database-attachments` | Attach an existing cluster to the project network |
+| `DELETE` | `/api/projects/{projectId}/database-attachments/{attachmentId}` | Detach without deleting the cluster or data |
+
+Create an attachment by selecting one logical database and a user already granted access to it:
 
 ```json
-{ "enabled": true, "port": 5432 }
+{
+  "clusterId": "db_…",
+  "databaseId": "database_…",
+  "userId": "dbuser_…",
+  "alias": "database"
+}
 ```
 
-The database is recreated with the requested host port; the previous exposure is restored if Docker fails. Returns `{ "service": DatabaseService }`.
+`alias` is the project-local hostname. It defaults from the cluster name and may contain lowercase letters, numbers, and hyphens. Returns `201` with `{ "attachment": ProjectDatabaseAttachment, "message": "…" }`. A cluster can be attached to several projects, but only once per project.
 
-`DELETE /api/databases/{databaseId}`:
+After attachment, `GET /api/databases/{clusterId}/credentials?projectId={projectId}` returns credentials for that project's selected database, user, and alias. The cluster must be attached to the project or the endpoint returns `404`.
+
+Detaching disconnects the cluster from only that project's Docker network. The cluster, volume, logical database, user, and connections to other projects remain unchanged.
+
+### Logs, lifecycle, exposure, and removal
+
+`GET /api/databases/{clusterId}/events` returns the latest 1,000 persisted events in display order: `{ "events": [{ "id": 1, "stage": "pull", "type": "log", "message": "…", "createdAt": "…" }] }`. `GET /logs` accepts `lines` from 1 to 1,000. Clients can poll these snapshot endpoints while a log view is open to provide live-follow behavior.
+
+`POST /api/databases/{clusterId}/stop` and `/restart` control the existing cluster container without changing its volume, credentials, logical resources, or attachments. Both return `{ "service": DatabaseService, "message": "…" }`.
+
+`PUT /api/databases/{clusterId}/exposure` accepts `{ "enabled": true, "port": 5432 }`. The cluster is recreated with the requested host port; the previous exposure is restored if Docker fails. It returns `{ "service": DatabaseService }`.
+
+`DELETE /api/databases/{clusterId}` accepts:
 
 ```json
-{ "confirmation": "exact database service name", "removeVolume": false }
+{ "confirmation": "exact cluster name", "removeVolume": false }
 ```
 
-Returns `{ "removed": true, "volumeRemoved": false, "retainedVolume": "selfhost-data-db_…" }`. Setting `removeVolume: true` irreversibly removes the database files.
+Deletion returns `409` while the cluster is provisioning or attached to any project. A successful request returns `{ "removed": true, "volumeRemoved": false, "retainedVolume": "selfhost-data-db_…" }`. Setting `removeVolume: true` irreversibly removes every logical database in that volume.
 
 ## Deployments
 

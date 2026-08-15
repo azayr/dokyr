@@ -286,23 +286,79 @@ type DeploymentEvent struct {
 	CreatedAt    time.Time `json:"createdAt"`
 }
 type DatabaseService struct {
+	ID                string                `json:"id"`
+	ProjectID         string                `json:"projectId"`
+	AttachmentID      string                `json:"attachmentId,omitempty"`
+	DatabaseID        string                `json:"databaseId,omitempty"`
+	UserID            string                `json:"userId,omitempty"`
+	Alias             string                `json:"alias,omitempty"`
+	Name              string                `json:"name"`
+	Engine            string                `json:"engine"`
+	Image             string                `json:"image"`
+	InternalPort      int                   `json:"internalPort"`
+	PublicEnabled     bool                  `json:"publicEnabled"`
+	PublicPort        int                   `json:"publicPort,omitempty"`
+	VolumeName        string                `json:"volumeName"`
+	Username          string                `json:"username"`
+	DatabaseName      string                `json:"databaseName"`
+	PasswordEncrypted string                `json:"-"`
+	Status            string                `json:"status"`
+	LastError         string                `json:"lastError,omitempty"`
+	Container         string                `json:"container"`
+	InternalAddress   string                `json:"internalAddress"`
+	Databases         []ClusterDatabase     `json:"databases"`
+	Users             []ClusterDatabaseUser `json:"users"`
+	Grants            []DatabaseUserGrant   `json:"grants"`
+	Projects          []DatabaseProject     `json:"projects"`
+	ProjectCount      int                   `json:"projectCount"`
+	CreatedAt         time.Time             `json:"createdAt"`
+	UpdatedAt         time.Time             `json:"updatedAt"`
+}
+type ClusterDatabase struct {
+	ID                string    `json:"id"`
+	DatabaseServiceID string    `json:"-"`
+	Name              string    `json:"name"`
+	OwnerUserID       string    `json:"ownerUserId"`
+	Username          string    `json:"username"`
+	PasswordEncrypted string    `json:"-"`
+	UserCount         int       `json:"userCount"`
+	ProjectCount      int       `json:"projectCount"`
+	Primary           bool      `json:"primary"`
+	CreatedAt         time.Time `json:"createdAt"`
+}
+type ClusterDatabaseUser struct {
+	ID                string    `json:"id"`
+	DatabaseServiceID string    `json:"-"`
+	Username          string    `json:"username"`
+	PasswordEncrypted string    `json:"-"`
+	DatabaseCount     int       `json:"databaseCount"`
+	ProjectCount      int       `json:"projectCount"`
+	Admin             bool      `json:"admin"`
+	CreatedAt         time.Time `json:"createdAt"`
+}
+type DatabaseUserGrant struct {
+	DatabaseID string    `json:"databaseId"`
+	UserID     string    `json:"userId"`
+	CreatedAt  time.Time `json:"createdAt"`
+}
+type DatabaseProject struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	AttachmentID string `json:"attachmentId"`
+	DatabaseID   string `json:"databaseId"`
+	DatabaseName string `json:"databaseName"`
+	UserID       string `json:"userId"`
+	Username     string `json:"username"`
+	Alias        string `json:"alias"`
+}
+type ProjectDatabaseAttachment struct {
 	ID                string    `json:"id"`
 	ProjectID         string    `json:"projectId"`
-	Name              string    `json:"name"`
-	Engine            string    `json:"engine"`
-	Image             string    `json:"image"`
-	InternalPort      int       `json:"internalPort"`
-	PublicEnabled     bool      `json:"publicEnabled"`
-	PublicPort        int       `json:"publicPort,omitempty"`
-	VolumeName        string    `json:"volumeName"`
-	Username          string    `json:"username"`
-	DatabaseName      string    `json:"databaseName"`
-	PasswordEncrypted string    `json:"-"`
-	Status            string    `json:"status"`
-	Container         string    `json:"container"`
-	InternalAddress   string    `json:"internalAddress"`
+	DatabaseServiceID string    `json:"clusterId"`
+	DatabaseID        string    `json:"databaseId"`
+	DatabaseUserID    string    `json:"userId"`
+	Alias             string    `json:"alias"`
 	CreatedAt         time.Time `json:"createdAt"`
-	UpdatedAt         time.Time `json:"updatedAt"`
 }
 type DatabaseDeploymentEvent struct {
 	ID                int64     `json:"id"`
@@ -1242,8 +1298,22 @@ func (s *Store) CreateImportedServices(ctx context.Context, applications []Appli
 		if service.PublicEnabled {
 			publicPort = service.PublicPort
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO database_services(id,project_id,name,engine,image,internal_port,public_enabled,public_port,volume_name,username,database_name,password_encrypted)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, service.ID, service.ProjectID, service.Name, service.Engine, service.Image, service.InternalPort, service.PublicEnabled, publicPort, service.VolumeName, service.Username, service.DatabaseName, service.PasswordEncrypted); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO database_services(id,project_id,name,engine,image,internal_port,public_enabled,public_port,volume_name,username,database_name,password_encrypted,status,last_error)
+			VALUES($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, service.ID, service.Name, service.Engine, service.Image, service.InternalPort, service.PublicEnabled, publicPort, service.VolumeName, service.Username, service.DatabaseName, service.PasswordEncrypted, databaseStatus(service.Status), service.LastError); err != nil {
+			return err
+		}
+		databaseID := service.ID + "_database"
+		userID := databaseID + "_user"
+		if _, err := tx.ExecContext(ctx, `INSERT INTO database_cluster_users(id,database_service_id,username,password_encrypted) VALUES($1,$2,$3,$4)`, userID, service.ID, service.Username, service.PasswordEncrypted); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO database_cluster_databases(id,database_service_id,name,owner_user_id,username,password_encrypted) VALUES($1,$2,$3,$4,$5,$6)`, databaseID, service.ID, service.DatabaseName, userID, service.Username, service.PasswordEncrypted); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO database_cluster_user_grants(database_id,user_id) VALUES($1,$2)`, databaseID, userID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO project_database_attachments(id,project_id,database_service_id,database_id,database_user_id,alias) VALUES($1,$2,$3,$4,$5,$6)`, service.ID+"_attachment", service.ProjectID, service.ID, databaseID, userID, service.Name); err != nil {
 			return err
 		}
 	}
@@ -1251,9 +1321,9 @@ func (s *Store) CreateImportedServices(ctx context.Context, applications []Appli
 }
 
 // CloneProject creates a project and all of its selected configuration in one
-// transaction. Runtime resources, deployment history, domain bindings, and
-// database contents live outside this configuration and are intentionally not
-// copied.
+// transaction. Runtime resources, deployment history, and domain bindings are
+// not copied. Selected global database clusters are attached to the new
+// project's private network instead of being duplicated.
 func (s *Store) CloneProject(ctx context.Context, project Project, variables []ProjectEnvironmentVariable, applications []ApplicationService, databases []DatabaseService) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1297,9 +1367,11 @@ func (s *Store) CloneProject(ctx context.Context, project Project, variables []P
 	}
 
 	for _, service := range databases {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO database_services(id,project_id,name,engine,image,internal_port,public_enabled,public_port,volume_name,username,database_name,password_encrypted)
-			VALUES($1,$2,$3,$4,$5,$6,FALSE,NULL,$7,$8,$9,$10)`,
-			service.ID, project.ID, service.Name, service.Engine, service.Image, service.InternalPort, service.VolumeName, service.Username, service.DatabaseName, service.PasswordEncrypted); err != nil {
+		attachmentID := service.AttachmentID
+		if attachmentID == "" {
+			attachmentID = service.ID + "_attachment_" + project.ID
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO project_database_attachments(id,project_id,database_service_id,database_id,database_user_id,alias) VALUES($1,$2,$3,$4,$5,$6)`, attachmentID, project.ID, service.ID, service.DatabaseID, service.UserID, service.Alias); err != nil {
 			return err
 		}
 	}
@@ -1940,18 +2012,71 @@ func (s *Store) UpdateProjectStatus(ctx context.Context, id, status string) erro
 }
 
 func (s *Store) CreateDatabaseService(ctx context.Context, service DatabaseService) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	var publicPort any
 	if service.PublicEnabled {
 		publicPort = service.PublicPort
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO database_services(id,project_id,name,engine,image,internal_port,public_enabled,public_port,volume_name,username,database_name,password_encrypted)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, service.ID, service.ProjectID, service.Name, service.Engine, service.Image, service.InternalPort, service.PublicEnabled, publicPort, service.VolumeName, service.Username, service.DatabaseName, service.PasswordEncrypted)
-	return err
+	if _, err := tx.ExecContext(ctx, `INSERT INTO database_services(id,project_id,name,engine,image,internal_port,public_enabled,public_port,volume_name,username,database_name,password_encrypted,status,last_error)
+		VALUES($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, service.ID, service.Name, service.Engine, service.Image, service.InternalPort, service.PublicEnabled, publicPort, service.VolumeName, service.Username, service.DatabaseName, service.PasswordEncrypted, databaseStatus(service.Status), service.LastError); err != nil {
+		return err
+	}
+	databaseID := service.DatabaseID
+	if databaseID == "" {
+		databaseID = service.ID + "_database"
+	}
+	userID := service.UserID
+	if userID == "" {
+		userID = databaseID + "_user"
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO database_cluster_users(id,database_service_id,username,password_encrypted)
+		VALUES($1,$2,$3,$4)`, userID, service.ID, service.Username, service.PasswordEncrypted); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO database_cluster_databases(id,database_service_id,name,owner_user_id,username,password_encrypted)
+		VALUES($1,$2,$3,$4,$5,$6)`, databaseID, service.ID, service.DatabaseName, userID, service.Username, service.PasswordEncrypted); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO database_cluster_user_grants(database_id,user_id) VALUES($1,$2)`, databaseID, userID); err != nil {
+		return err
+	}
+	if service.ProjectID != "" {
+		attachmentID := service.AttachmentID
+		if attachmentID == "" {
+			attachmentID = service.ID + "_attachment"
+		}
+		alias := service.Alias
+		if alias == "" {
+			alias = service.Name
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO project_database_attachments(id,project_id,database_service_id,database_id,database_user_id,alias)
+			VALUES($1,$2,$3,$4,$5,$6)`, attachmentID, service.ProjectID, service.ID, databaseID, userID, alias); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func databaseStatus(status string) string {
+	if strings.TrimSpace(status) == "" {
+		return "created"
+	}
+	return status
 }
 
 func (s *Store) ProjectDatabaseServices(ctx context.Context, projectID string) ([]DatabaseService, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,project_id,name,engine,image,internal_port,public_enabled,COALESCE(public_port,0),volume_name,username,database_name,password_encrypted,created_at,updated_at
-		FROM database_services WHERE project_id=$1 ORDER BY created_at`, projectID)
+	rows, err := s.db.QueryContext(ctx, `SELECT cluster.id,attachment.project_id,attachment.id,database.id,cluster_user.id,attachment.alias,
+		cluster.name,cluster.engine,cluster.image,cluster.internal_port,cluster.public_enabled,COALESCE(cluster.public_port,0),cluster.volume_name,
+		cluster_user.username,database.name,cluster_user.password_encrypted,cluster.status,cluster.last_error,cluster.created_at,cluster.updated_at
+		FROM project_database_attachments attachment
+		JOIN database_services cluster ON cluster.id=attachment.database_service_id
+		JOIN database_cluster_databases database ON database.id=attachment.database_id
+		JOIN database_cluster_users cluster_user ON cluster_user.id=attachment.database_user_id
+		WHERE attachment.project_id=$1 ORDER BY attachment.created_at`, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -1959,7 +2084,7 @@ func (s *Store) ProjectDatabaseServices(ctx context.Context, projectID string) (
 	services := []DatabaseService{}
 	for rows.Next() {
 		var service DatabaseService
-		if err := rows.Scan(&service.ID, &service.ProjectID, &service.Name, &service.Engine, &service.Image, &service.InternalPort, &service.PublicEnabled, &service.PublicPort, &service.VolumeName, &service.Username, &service.DatabaseName, &service.PasswordEncrypted, &service.CreatedAt, &service.UpdatedAt); err != nil {
+		if err := rows.Scan(&service.ID, &service.ProjectID, &service.AttachmentID, &service.DatabaseID, &service.UserID, &service.Alias, &service.Name, &service.Engine, &service.Image, &service.InternalPort, &service.PublicEnabled, &service.PublicPort, &service.VolumeName, &service.Username, &service.DatabaseName, &service.PasswordEncrypted, &service.Status, &service.LastError, &service.CreatedAt, &service.UpdatedAt); err != nil {
 			return nil, err
 		}
 		services = append(services, service)
@@ -1969,9 +2094,284 @@ func (s *Store) ProjectDatabaseServices(ctx context.Context, projectID string) (
 
 func (s *Store) DatabaseService(ctx context.Context, id string) (DatabaseService, error) {
 	var service DatabaseService
-	err := s.db.QueryRowContext(ctx, `SELECT id,project_id,name,engine,image,internal_port,public_enabled,COALESCE(public_port,0),volume_name,username,database_name,password_encrypted,created_at,updated_at
-		FROM database_services WHERE id=$1`, id).Scan(&service.ID, &service.ProjectID, &service.Name, &service.Engine, &service.Image, &service.InternalPort, &service.PublicEnabled, &service.PublicPort, &service.VolumeName, &service.Username, &service.DatabaseName, &service.PasswordEncrypted, &service.CreatedAt, &service.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(project_id,''),name,engine,image,internal_port,public_enabled,COALESCE(public_port,0),volume_name,username,database_name,password_encrypted,status,last_error,created_at,updated_at
+		FROM database_services WHERE id=$1`, id).Scan(&service.ID, &service.ProjectID, &service.Name, &service.Engine, &service.Image, &service.InternalPort, &service.PublicEnabled, &service.PublicPort, &service.VolumeName, &service.Username, &service.DatabaseName, &service.PasswordEncrypted, &service.Status, &service.LastError, &service.CreatedAt, &service.UpdatedAt)
 	return service, err
+}
+
+func (s *Store) DatabaseServices(ctx context.Context) ([]DatabaseService, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,COALESCE(project_id,''),name,engine,image,internal_port,public_enabled,COALESCE(public_port,0),volume_name,username,database_name,password_encrypted,status,last_error,created_at,updated_at
+		FROM database_services ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	services := []DatabaseService{}
+	for rows.Next() {
+		var service DatabaseService
+		if err := rows.Scan(&service.ID, &service.ProjectID, &service.Name, &service.Engine, &service.Image, &service.InternalPort, &service.PublicEnabled, &service.PublicPort, &service.VolumeName, &service.Username, &service.DatabaseName, &service.PasswordEncrypted, &service.Status, &service.LastError, &service.CreatedAt, &service.UpdatedAt); err != nil {
+			return nil, err
+		}
+		services = append(services, service)
+	}
+	return services, rows.Err()
+}
+
+func (s *Store) DatabaseClusterDatabases(ctx context.Context, clusterID string) ([]ClusterDatabase, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT database.id,database.database_service_id,database.name,database.owner_user_id,owner.username,owner.password_encrypted,
+		(SELECT COUNT(*) FROM database_cluster_user_grants grant_row WHERE grant_row.database_id=database.id),
+		(SELECT COUNT(*) FROM project_database_attachments attachment WHERE attachment.database_id=database.id),
+		database.name=cluster.database_name,database.created_at
+		FROM database_cluster_databases database
+		JOIN database_cluster_users owner ON owner.id=database.owner_user_id
+		JOIN database_services cluster ON cluster.id=database.database_service_id
+		WHERE database.database_service_id=$1 ORDER BY database.created_at`, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ClusterDatabase{}
+	for rows.Next() {
+		var item ClusterDatabase
+		if err := rows.Scan(&item.ID, &item.DatabaseServiceID, &item.Name, &item.OwnerUserID, &item.Username, &item.PasswordEncrypted, &item.UserCount, &item.ProjectCount, &item.Primary, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) DatabaseClusterDatabase(ctx context.Context, clusterID, databaseID string) (ClusterDatabase, error) {
+	var item ClusterDatabase
+	err := s.db.QueryRowContext(ctx, `SELECT database.id,database.database_service_id,database.name,database.owner_user_id,owner.username,owner.password_encrypted,
+		(SELECT COUNT(*) FROM database_cluster_user_grants grant_row WHERE grant_row.database_id=database.id),
+		(SELECT COUNT(*) FROM project_database_attachments attachment WHERE attachment.database_id=database.id),
+		database.name=cluster.database_name,database.created_at
+		FROM database_cluster_databases database
+		JOIN database_cluster_users owner ON owner.id=database.owner_user_id
+		JOIN database_services cluster ON cluster.id=database.database_service_id
+		WHERE database.database_service_id=$1 AND database.id=$2`, clusterID, databaseID).
+		Scan(&item.ID, &item.DatabaseServiceID, &item.Name, &item.OwnerUserID, &item.Username, &item.PasswordEncrypted, &item.UserCount, &item.ProjectCount, &item.Primary, &item.CreatedAt)
+	return item, err
+}
+
+func (s *Store) DatabaseClusterUsers(ctx context.Context, clusterID string) ([]ClusterDatabaseUser, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT cluster_user.id,cluster_user.database_service_id,cluster_user.username,cluster_user.password_encrypted,
+		(SELECT COUNT(*) FROM database_cluster_user_grants grant_row WHERE grant_row.user_id=cluster_user.id),
+		(SELECT COUNT(*) FROM project_database_attachments attachment WHERE attachment.database_user_id=cluster_user.id),
+		LOWER(cluster_user.username)=LOWER(cluster.username),cluster_user.created_at
+		FROM database_cluster_users cluster_user
+		JOIN database_services cluster ON cluster.id=cluster_user.database_service_id
+		WHERE cluster_user.database_service_id=$1 ORDER BY cluster_user.created_at`, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ClusterDatabaseUser{}
+	for rows.Next() {
+		var item ClusterDatabaseUser
+		if err := rows.Scan(&item.ID, &item.DatabaseServiceID, &item.Username, &item.PasswordEncrypted, &item.DatabaseCount, &item.ProjectCount, &item.Admin, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) DatabaseClusterUser(ctx context.Context, clusterID, userID string) (ClusterDatabaseUser, error) {
+	var item ClusterDatabaseUser
+	err := s.db.QueryRowContext(ctx, `SELECT cluster_user.id,cluster_user.database_service_id,cluster_user.username,cluster_user.password_encrypted,
+		(SELECT COUNT(*) FROM database_cluster_user_grants grant_row WHERE grant_row.user_id=cluster_user.id),
+		(SELECT COUNT(*) FROM project_database_attachments attachment WHERE attachment.database_user_id=cluster_user.id),
+		LOWER(cluster_user.username)=LOWER(cluster.username),cluster_user.created_at
+		FROM database_cluster_users cluster_user
+		JOIN database_services cluster ON cluster.id=cluster_user.database_service_id
+		WHERE cluster_user.database_service_id=$1 AND cluster_user.id=$2`, clusterID, userID).
+		Scan(&item.ID, &item.DatabaseServiceID, &item.Username, &item.PasswordEncrypted, &item.DatabaseCount, &item.ProjectCount, &item.Admin, &item.CreatedAt)
+	return item, err
+}
+
+func (s *Store) DatabaseClusterGrants(ctx context.Context, clusterID string) ([]DatabaseUserGrant, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT grant_row.database_id,grant_row.user_id,grant_row.created_at
+		FROM database_cluster_user_grants grant_row
+		JOIN database_cluster_databases database ON database.id=grant_row.database_id
+		WHERE database.database_service_id=$1 ORDER BY grant_row.created_at`, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DatabaseUserGrant{}
+	for rows.Next() {
+		var item DatabaseUserGrant
+		if err := rows.Scan(&item.DatabaseID, &item.UserID, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) DatabaseClusterGrantExists(ctx context.Context, clusterID, databaseID, userID string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM database_cluster_user_grants grant_row
+		JOIN database_cluster_databases database ON database.id=grant_row.database_id
+		JOIN database_cluster_users cluster_user ON cluster_user.id=grant_row.user_id
+		WHERE database.database_service_id=$1 AND cluster_user.database_service_id=$1
+		  AND grant_row.database_id=$2 AND grant_row.user_id=$3)`, clusterID, databaseID, userID).Scan(&exists)
+	return exists, err
+}
+
+func (s *Store) CreateDatabaseClusterDatabase(ctx context.Context, database ClusterDatabase) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO database_cluster_databases(id,database_service_id,name,owner_user_id,username,password_encrypted)
+		VALUES($1,$2,$3,$4,$5,$6)`, database.ID, database.DatabaseServiceID, database.Name, database.OwnerUserID, database.Username, database.PasswordEncrypted); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO database_cluster_user_grants(database_id,user_id) VALUES($1,$2)`, database.ID, database.OwnerUserID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) DeleteDatabaseClusterDatabase(ctx context.Context, clusterID, databaseID string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM database_cluster_databases
+		WHERE id=$1 AND database_service_id=$2
+		  AND NOT EXISTS(SELECT 1 FROM project_database_attachments WHERE database_id=$1)`, databaseID, clusterID)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) CreateDatabaseClusterUser(ctx context.Context, user ClusterDatabaseUser) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO database_cluster_users(id,database_service_id,username,password_encrypted)
+		VALUES($1,$2,$3,$4)`, user.ID, user.DatabaseServiceID, user.Username, user.PasswordEncrypted)
+	return err
+}
+
+func (s *Store) DeleteDatabaseClusterUser(ctx context.Context, clusterID, userID string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM database_cluster_users
+		WHERE id=$1 AND database_service_id=$2
+		  AND NOT EXISTS(SELECT 1 FROM project_database_attachments WHERE database_user_id=$1)
+		  AND NOT EXISTS(SELECT 1 FROM database_cluster_user_grants WHERE user_id=$1)`, userID, clusterID)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) CreateDatabaseClusterGrant(ctx context.Context, grant DatabaseUserGrant) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO database_cluster_user_grants(database_id,user_id) VALUES($1,$2)`, grant.DatabaseID, grant.UserID)
+	return err
+}
+
+func (s *Store) DeleteDatabaseClusterGrant(ctx context.Context, clusterID, databaseID, userID string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM database_cluster_user_grants grant_row
+		USING database_cluster_databases database, database_cluster_users cluster_user
+		WHERE grant_row.database_id=database.id AND grant_row.user_id=cluster_user.id
+		  AND database.database_service_id=$1 AND cluster_user.database_service_id=$1
+		  AND grant_row.database_id=$2 AND grant_row.user_id=$3
+		  AND database.owner_user_id<>$3
+		  AND NOT EXISTS(SELECT 1 FROM project_database_attachments attachment WHERE attachment.database_id=$2 AND attachment.database_user_id=$3)`, clusterID, databaseID, userID)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) DatabaseClusterProjects(ctx context.Context, clusterID string) ([]DatabaseProject, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT project.id,project.name,attachment.id,database.id,database.name,cluster_user.id,cluster_user.username,attachment.alias
+		FROM project_database_attachments attachment
+		JOIN projects project ON project.id=attachment.project_id
+		JOIN database_cluster_databases database ON database.id=attachment.database_id
+		JOIN database_cluster_users cluster_user ON cluster_user.id=attachment.database_user_id
+		WHERE attachment.database_service_id=$1 ORDER BY LOWER(project.name)`, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DatabaseProject{}
+	for rows.Next() {
+		var item DatabaseProject
+		if err := rows.Scan(&item.ID, &item.Name, &item.AttachmentID, &item.DatabaseID, &item.DatabaseName, &item.UserID, &item.Username, &item.Alias); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) CreateProjectDatabaseAttachment(ctx context.Context, attachment ProjectDatabaseAttachment) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO project_database_attachments(id,project_id,database_service_id,database_id,database_user_id,alias)
+		VALUES($1,$2,$3,$4,$5,$6)`, attachment.ID, attachment.ProjectID, attachment.DatabaseServiceID, attachment.DatabaseID, attachment.DatabaseUserID, attachment.Alias)
+	return err
+}
+
+func (s *Store) ProjectDatabaseAttachment(ctx context.Context, projectID, attachmentID string) (ProjectDatabaseAttachment, error) {
+	var attachment ProjectDatabaseAttachment
+	err := s.db.QueryRowContext(ctx, `SELECT id,project_id,database_service_id,database_id,database_user_id,alias,created_at
+		FROM project_database_attachments WHERE id=$1 AND project_id=$2`, attachmentID, projectID).
+		Scan(&attachment.ID, &attachment.ProjectID, &attachment.DatabaseServiceID, &attachment.DatabaseID, &attachment.DatabaseUserID, &attachment.Alias, &attachment.CreatedAt)
+	return attachment, err
+}
+
+func (s *Store) DatabaseClusterAttachments(ctx context.Context, clusterID string) ([]ProjectDatabaseAttachment, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,project_id,database_service_id,database_id,database_user_id,alias,created_at
+		FROM project_database_attachments WHERE database_service_id=$1 ORDER BY created_at`, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectDatabaseAttachment{}
+	for rows.Next() {
+		var item ProjectDatabaseAttachment
+		if err := rows.Scan(&item.ID, &item.ProjectID, &item.DatabaseServiceID, &item.DatabaseID, &item.DatabaseUserID, &item.Alias, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) DeleteProjectDatabaseAttachment(ctx context.Context, projectID, attachmentID string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM project_database_attachments WHERE id=$1 AND project_id=$2`, attachmentID, projectID)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) DatabasePublicPortInUse(ctx context.Context, port int) (bool, error) {
@@ -1999,6 +2399,21 @@ func (s *Store) UpdateDatabaseExposure(ctx context.Context, id string, enabled b
 	return nil
 }
 
+func (s *Store) UpdateDatabaseStatus(ctx context.Context, id, status, lastError string) error {
+	result, err := s.db.ExecContext(ctx, "UPDATE database_services SET status=$2,last_error=$3,updated_at=NOW() WHERE id=$1", id, databaseStatus(status), lastError)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *Store) DeleteDatabaseService(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, "DELETE FROM database_services WHERE id=$1", id)
 	return err
@@ -2012,7 +2427,10 @@ func (s *Store) AppendDatabaseDeploymentEvent(ctx context.Context, event Databas
 
 func (s *Store) DatabaseDeploymentEvents(ctx context.Context, serviceID string) ([]DatabaseDeploymentEvent, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,database_service_id,stage,event_type,message,created_at
-		FROM database_deployment_events WHERE database_service_id=$1 ORDER BY id ASC LIMIT 1000`, serviceID)
+		FROM (
+			SELECT id,database_service_id,stage,event_type,message,created_at
+			FROM database_deployment_events WHERE database_service_id=$1 ORDER BY id DESC LIMIT 1000
+		) recent ORDER BY id ASC`, serviceID)
 	if err != nil {
 		return nil, err
 	}

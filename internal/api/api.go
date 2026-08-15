@@ -81,6 +81,16 @@ type domainBindingInput struct {
 	Rules        []domainRuleInput `json:"rules"`
 }
 
+type databaseCreateInput struct {
+	Name          string `json:"name"`
+	Engine        string `json:"engine"`
+	DatabaseName  string `json:"databaseName"`
+	Username      string `json:"username"`
+	Password      string `json:"password"`
+	PublicEnabled bool   `json:"publicEnabled"`
+	PublicPort    int    `json:"publicPort"`
+}
+
 func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integration.Service, registryTokens *registry.TokenIssuer, box *secretbox.Box, caddyClient *caddy.Client, updates *platformupdate.Client, mailGateway *mailgateway.Gateway, publicURL string, registryHosts []string, registryInternalSecret string, log *slog.Logger) *API {
 	// Roles come from the database on every request rather than from the
 	// session token, so removing or re-roling an account takes effect at once
@@ -92,7 +102,7 @@ func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integ
 		}
 		return user.Role, nil
 	})
-	return &API{
+	api := &API{
 		store:                  s,
 		docker:                 d,
 		auth:                   a,
@@ -111,7 +121,39 @@ func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integ
 		backupQueue:            make(chan string, 100),
 		projectBackupQueue:     make(chan string, 100),
 	}
+	go api.resumeDatabaseProvisioning()
+	return api
 }
+
+func (a *API) resumeDatabaseProvisioning() {
+	if a.store == nil || a.docker == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	clusters, err := a.store.DatabaseServices(ctx)
+	if err != nil {
+		a.log.Warn("load queued databases", "error", err)
+		return
+	}
+	for _, cluster := range clusters {
+		if cluster.Status != "deploying" {
+			continue
+		}
+		runtimeState, runtimeErr := a.docker.DatabaseRuntime(ctx, cluster.ID, cluster.InternalPort)
+		if runtimeErr == nil && runtimeState.Status != "stopped" {
+			_ = a.store.UpdateDatabaseStatus(ctx, cluster.ID, runtimeState.Status, "")
+			continue
+		}
+		if runtimeErr != nil && !errors.Is(runtimeErr, runtime.ErrNotFound) {
+			a.log.Warn("inspect queued database", "database", cluster.ID, "error", runtimeErr)
+			continue
+		}
+		a.recordDatabaseDeploymentEvent(ctx, cluster.ID, "queue", "start", "Resuming background provisioning after Dokyr restarted")
+		go a.provisionDatabaseCluster(cluster.ID)
+	}
+}
+
 func (a *API) Handler() http.Handler {
 	public := http.NewServeMux()
 	protected := newGuardedMux(a)
@@ -171,6 +213,16 @@ func (a *API) registerProtectedRoutes(protected *guardedMux) {
 	protected.handle("PUT /api/users/{id}/role", authz.PermUserManage, a.updateUserRole)
 	protected.handle("DELETE /api/users/{id}", authz.PermUserManage, a.deleteUser)
 	protected.handle("GET /api/dashboard", authz.PermProjectRead, a.dashboard)
+	protected.handle("GET /api/databases", authz.PermProjectRead, a.databaseClusters)
+	protected.handle("POST /api/databases", authz.PermInfraWrite, a.createDatabaseCluster)
+	protected.handle("GET /api/databases/{id}", authz.PermProjectRead, a.databaseCluster)
+	protected.handle("POST /api/databases/{id}/logical-databases", authz.PermInfraWrite, a.createLogicalDatabase)
+	protected.handle("DELETE /api/databases/{id}/logical-databases/{databaseId}", authz.PermInfraWrite, a.deleteLogicalDatabase)
+	protected.handle("POST /api/databases/{id}/users", authz.PermInfraWrite, a.createDatabaseClusterUser)
+	protected.handle("GET /api/databases/{id}/users/{userId}/credentials", authz.PermSecretRead, a.databaseClusterUserCredentials)
+	protected.handle("DELETE /api/databases/{id}/users/{userId}", authz.PermInfraWrite, a.deleteDatabaseClusterUser)
+	protected.handle("POST /api/databases/{id}/grants", authz.PermInfraWrite, a.createDatabaseUserGrant)
+	protected.handle("DELETE /api/databases/{id}/grants/{databaseId}/{userId}", authz.PermInfraWrite, a.deleteDatabaseUserGrant)
 	protected.handle("GET /api/domains", authz.PermProjectRead, a.domainsIndex)
 	protected.handle("GET /api/mail", authz.PermProjectRead, a.mailOverview)
 	protected.handle("POST /api/mail/setup/verify-dns", authz.PermPlatformWrite, a.verifyMailSetupDNS)
@@ -201,6 +253,8 @@ func (a *API) registerProtectedRoutes(protected *guardedMux) {
 	protected.handle("GET /api/projects/{id}/environment", authz.PermSecretRead, a.projectEnvironment)
 	protected.handle("PUT /api/projects/{id}/environment", authz.PermSecretWrite, a.updateProjectEnvironment)
 	protected.handle("POST /api/projects/{id}/databases", authz.PermProjectWrite, a.createDatabaseService)
+	protected.handle("POST /api/projects/{id}/database-attachments", authz.PermProjectWrite, a.attachDatabaseCluster)
+	protected.handle("DELETE /api/projects/{id}/database-attachments/{attachmentId}", authz.PermProjectWrite, a.detachDatabaseCluster)
 	protected.handle("POST /api/projects/{id}/services", authz.PermProjectWrite, a.createApplicationService)
 	protected.handle("POST /api/projects/{id}/compose/validate", authz.PermProjectWrite, a.validateCompose)
 	protected.handle("POST /api/projects/{id}/compose", authz.PermProjectWrite, a.importCompose)
@@ -218,12 +272,12 @@ func (a *API) registerProtectedRoutes(protected *guardedMux) {
 	protected.handle("GET /api/databases/{id}/credentials", authz.PermSecretRead, a.databaseCredentials)
 	// Exposure publishes the database on a host port, i.e. to the internet.
 	protected.handle("PUT /api/databases/{id}/exposure", authz.PermInfraWrite, a.updateDatabaseExposure)
-	protected.handle("POST /api/databases/{id}/deploy", authz.PermProjectDeploy, a.deployDatabaseService)
-	protected.handle("POST /api/databases/{id}/stop", authz.PermProjectDeploy, a.stopDatabaseService)
-	protected.handle("POST /api/databases/{id}/restart", authz.PermProjectDeploy, a.restartDatabaseService)
+	protected.handle("POST /api/databases/{id}/deploy", authz.PermInfraWrite, a.deployDatabaseService)
+	protected.handle("POST /api/databases/{id}/stop", authz.PermInfraWrite, a.stopDatabaseService)
+	protected.handle("POST /api/databases/{id}/restart", authz.PermInfraWrite, a.restartDatabaseService)
 	protected.handle("GET /api/databases/{id}/logs", authz.PermProjectRead, a.databaseLogs)
 	protected.handle("GET /api/databases/{id}/events", authz.PermProjectRead, a.databaseDeploymentEvents)
-	protected.handle("DELETE /api/databases/{id}", authz.PermProjectWrite, a.deleteDatabaseService)
+	protected.handle("DELETE /api/databases/{id}", authz.PermInfraWrite, a.deleteDatabaseService)
 	protected.handle("GET /api/deployments", authz.PermProjectRead, a.deployments)
 	protected.handle("GET /api/deployments/{id}", authz.PermProjectRead, a.deployment)
 	protected.handle("POST /api/deployments/{id}/cancel", authz.PermProjectDeploy, a.cancelDeployment)
@@ -284,6 +338,7 @@ func (a *API) mountRoutes(public *http.ServeMux, protected *guardedMux) http.Han
 	root.Handle("/api/users", a.auth.Require(protected.handler()))
 	root.Handle("/api/users/", a.auth.Require(protected.handler()))
 	root.Handle("/api/dashboard", a.auth.Require(protected.handler()))
+	root.Handle("/api/databases", a.auth.Require(protected.handler()))
 	root.Handle("/api/domains", a.auth.Require(protected.handler()))
 	root.Handle("/api/mail", a.auth.Require(protected.handler()))
 	root.Handle("/api/mail/", a.auth.Require(protected.handler()))
@@ -1447,8 +1502,8 @@ type cloneProjectInput struct {
 }
 
 func rewriteClonedDatabaseHosts(value string, replacements map[string]string) string {
-	for sourceID, targetID := range replacements {
-		value = strings.ReplaceAll(value, "selfhost-db-"+sourceID, "selfhost-db-"+targetID)
+	for sourceID, targetHost := range replacements {
+		value = strings.ReplaceAll(value, "selfhost-db-"+sourceID, targetHost)
 	}
 	return value
 }
@@ -1533,14 +1588,9 @@ func (a *API) cloneProject(w http.ResponseWriter, r *http.Request) {
 		}
 		seenDatabases[databaseID] = true
 		sourceDatabaseID := service.ID
-		service.ID = newID("db")
 		service.ProjectID = target.ID
-		service.VolumeName = "selfhost-data-" + service.ID
-		service.PublicEnabled = false
-		service.PublicPort = 0
-		service.Status = "created"
-		service.Container = ""
-		databaseHostReplacements[sourceDatabaseID] = service.ID
+		service.AttachmentID = newID("dba")
+		databaseHostReplacements[sourceDatabaseID] = service.Alias
 		clonedDatabases = append(clonedDatabases, service)
 	}
 
@@ -2499,11 +2549,16 @@ func (a *API) deleteProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, service := range databaseServices {
-		if err := a.docker.RemoveDatabase(deleteContext, service.ID, service.VolumeName, true); err != nil {
-			a.log.Warn("remove project database", "project", project.ID, "database", service.ID, "error", err)
-			write(w, 502, map[string]string{"error": "could not remove all project database resources"})
+		if err := a.docker.DetachDatabaseFromProject(deleteContext, service.ID, project.ID); err != nil {
+			a.log.Warn("detach project database", "project", project.ID, "database", service.ID, "error", err)
+			write(w, 502, map[string]string{"error": "could not detach all project database networks"})
 			return
 		}
+	}
+	if err := a.docker.RemoveProjectNetwork(deleteContext, project.ID); err != nil {
+		a.log.Warn("remove project private network", "project", project.ID, "error", err)
+		write(w, 502, map[string]string{"error": "could not remove the project private network"})
+		return
 	}
 
 	if err := a.store.DeleteProject(deleteContext, project.ID); err != nil {
@@ -2653,12 +2708,19 @@ func (a *API) databaseServices(ctx context.Context, projectID string) ([]store.D
 	}
 	for index := range services {
 		services[index].Container = ""
-		services[index].InternalAddress = "selfhost-db-" + services[index].ID + ":" + strconv.Itoa(services[index].InternalPort)
-		services[index].Status = "created"
+		services[index].InternalAddress = services[index].Alias + ":" + strconv.Itoa(services[index].InternalPort)
+		if services[index].Status == "" {
+			services[index].Status = "created"
+		}
 		runtimeState, runtimeErr := a.docker.DatabaseRuntime(ctx, services[index].ID, services[index].InternalPort)
 		if runtimeErr == nil {
 			services[index].Status = runtimeState.Status
+			services[index].LastError = ""
 			services[index].Container = runtimeState.Container
+			_ = a.store.UpdateDatabaseStatus(ctx, services[index].ID, runtimeState.Status, "")
+			if networkErr := a.docker.AttachDatabaseToProject(ctx, services[index].ID, projectID, services[index].Alias); networkErr != nil {
+				a.log.Warn("reconcile database project network", "database", services[index].ID, "project", projectID, "error", networkErr)
+			}
 		} else if !errors.Is(runtimeErr, runtime.ErrNotFound) {
 			a.log.Warn("inspect database container", "database", services[index].ID, "error", runtimeErr)
 		}
@@ -2666,15 +2728,492 @@ func (a *API) databaseServices(ctx context.Context, projectID string) ([]store.D
 	return services, nil
 }
 
-func (a *API) createDatabaseService(w http.ResponseWriter, r *http.Request) {
+func (a *API) databaseClusters(w http.ResponseWriter, r *http.Request) {
+	clusters, err := a.store.DatabaseServices(r.Context())
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	for index := range clusters {
+		if clusters[index].Status == "" {
+			clusters[index].Status = "created"
+		}
+		clusters[index].Container = ""
+		if databases, loadErr := a.store.DatabaseClusterDatabases(r.Context(), clusters[index].ID); loadErr == nil {
+			clusters[index].Databases = databases
+		} else {
+			problem(w, loadErr)
+			return
+		}
+		if users, loadErr := a.store.DatabaseClusterUsers(r.Context(), clusters[index].ID); loadErr == nil {
+			clusters[index].Users = users
+		} else {
+			problem(w, loadErr)
+			return
+		}
+		if grants, loadErr := a.store.DatabaseClusterGrants(r.Context(), clusters[index].ID); loadErr == nil {
+			clusters[index].Grants = grants
+		} else {
+			problem(w, loadErr)
+			return
+		}
+		if projects, loadErr := a.store.DatabaseClusterProjects(r.Context(), clusters[index].ID); loadErr == nil {
+			clusters[index].Projects = projects
+			clusters[index].ProjectCount = len(projects)
+		} else {
+			problem(w, loadErr)
+			return
+		}
+		runtimeState, runtimeErr := a.docker.DatabaseRuntime(r.Context(), clusters[index].ID, clusters[index].InternalPort)
+		if runtimeErr == nil {
+			clusters[index].Status = runtimeState.Status
+			clusters[index].LastError = ""
+			clusters[index].Container = runtimeState.Container
+			_ = a.store.UpdateDatabaseStatus(r.Context(), clusters[index].ID, runtimeState.Status, "")
+		} else if !errors.Is(runtimeErr, runtime.ErrNotFound) {
+			a.log.Warn("inspect database cluster", "database", clusters[index].ID, "error", runtimeErr)
+		}
+	}
+	write(w, 200, map[string]any{"clusters": clusters})
+}
+
+func (a *API) loadDatabaseCluster(ctx context.Context, id string) (store.DatabaseService, error) {
+	cluster, err := a.store.DatabaseService(ctx, id)
+	if err != nil {
+		return store.DatabaseService{}, err
+	}
+	if cluster.Status == "" {
+		cluster.Status = "created"
+	}
+	cluster.Databases, err = a.store.DatabaseClusterDatabases(ctx, id)
+	if err != nil {
+		return store.DatabaseService{}, err
+	}
+	cluster.Users, err = a.store.DatabaseClusterUsers(ctx, id)
+	if err != nil {
+		return store.DatabaseService{}, err
+	}
+	cluster.Grants, err = a.store.DatabaseClusterGrants(ctx, id)
+	if err != nil {
+		return store.DatabaseService{}, err
+	}
+	cluster.Projects, err = a.store.DatabaseClusterProjects(ctx, id)
+	if err != nil {
+		return store.DatabaseService{}, err
+	}
+	cluster.ProjectCount = len(cluster.Projects)
+	if state, runtimeErr := a.docker.DatabaseRuntime(ctx, cluster.ID, cluster.InternalPort); runtimeErr == nil {
+		cluster.Status = state.Status
+		cluster.LastError = ""
+		cluster.Container = state.Container
+		_ = a.store.UpdateDatabaseStatus(ctx, cluster.ID, state.Status, "")
+	} else if !errors.Is(runtimeErr, runtime.ErrNotFound) {
+		return store.DatabaseService{}, runtimeErr
+	}
+	return cluster, nil
+}
+
+func (a *API) databaseCluster(w http.ResponseWriter, r *http.Request) {
+	cluster, err := a.loadDatabaseCluster(r.Context(), strings.TrimSpace(r.PathValue("id")))
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "database cluster not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	write(w, 200, map[string]any{"cluster": cluster})
+}
+
+func (a *API) createLogicalDatabase(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Name          string `json:"name"`
-		Engine        string `json:"engine"`
-		DatabaseName  string `json:"databaseName"`
-		Username      string `json:"username"`
-		Password      string `json:"password"`
-		PublicEnabled bool   `json:"publicEnabled"`
-		PublicPort    int    `json:"publicPort"`
+		Name        string `json:"name"`
+		OwnerUserID string `json:"ownerUserId"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	in.Name = strings.TrimSpace(in.Name)
+	in.OwnerUserID = strings.TrimSpace(in.OwnerUserID)
+	if !databaseIdentifier(in.Name) {
+		bad(w, "database name may contain letters, numbers, and underscores")
+		return
+	}
+	a.databaseMu.Lock()
+	defer a.databaseMu.Unlock()
+	cluster, err := a.store.DatabaseService(r.Context(), strings.TrimSpace(r.PathValue("id")))
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "database cluster not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	databases, err := a.store.DatabaseClusterDatabases(r.Context(), cluster.ID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	for _, existing := range databases {
+		if strings.EqualFold(existing.Name, in.Name) {
+			write(w, 409, map[string]string{"error": "a database with this name already exists in the cluster"})
+			return
+		}
+	}
+	owner, err := a.store.DatabaseClusterUser(r.Context(), cluster.ID, in.OwnerUserID)
+	if store.NotFound(err) {
+		bad(w, "select an owner that belongs to this cluster")
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	adminPassword, err := a.box.Decrypt(cluster.PasswordEncrypted)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if err := a.docker.CreateLogicalDatabase(r.Context(), cluster.ID, cluster.Engine, cluster.Username, adminPassword, in.Name); err != nil {
+		write(w, 502, map[string]string{"error": "could not create the database: " + err.Error()})
+		return
+	}
+	if err := a.docker.GrantDatabaseUser(r.Context(), cluster.ID, cluster.Engine, cluster.Username, adminPassword, in.Name, owner.Username); err != nil {
+		_ = a.docker.DropLogicalDatabase(r.Context(), cluster.ID, cluster.Engine, cluster.Username, adminPassword, in.Name)
+		write(w, 502, map[string]string{"error": "database created, but owner access could not be granted: " + err.Error()})
+		return
+	}
+	database := store.ClusterDatabase{ID: newID("database"), DatabaseServiceID: cluster.ID, Name: in.Name, OwnerUserID: owner.ID, Username: owner.Username, PasswordEncrypted: owner.PasswordEncrypted}
+	if err := a.store.CreateDatabaseClusterDatabase(r.Context(), database); err != nil {
+		_ = a.docker.DropLogicalDatabase(r.Context(), cluster.ID, cluster.Engine, cluster.Username, adminPassword, in.Name)
+		problem(w, err)
+		return
+	}
+	a.recordDatabaseDeploymentEvent(r.Context(), cluster.ID, "database", "complete", "Created logical database "+in.Name)
+	created, err := a.loadDatabaseCluster(r.Context(), cluster.ID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	write(w, 201, map[string]any{"cluster": created, "database": database, "message": in.Name + " is ready"})
+}
+
+func (a *API) deleteLogicalDatabase(w http.ResponseWriter, r *http.Request) {
+	a.databaseMu.Lock()
+	defer a.databaseMu.Unlock()
+	clusterID := strings.TrimSpace(r.PathValue("id"))
+	database, err := a.store.DatabaseClusterDatabase(r.Context(), clusterID, strings.TrimSpace(r.PathValue("databaseId")))
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "logical database not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if database.Primary {
+		write(w, 409, map[string]string{"error": "the primary database is required by the cluster health check and cannot be deleted"})
+		return
+	}
+	if database.ProjectCount > 0 {
+		write(w, 409, map[string]string{"error": "detach this database from every project before deleting it"})
+		return
+	}
+	cluster, err := a.store.DatabaseService(r.Context(), clusterID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	adminPassword, err := a.box.Decrypt(cluster.PasswordEncrypted)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if err := a.docker.DropLogicalDatabase(r.Context(), cluster.ID, cluster.Engine, cluster.Username, adminPassword, database.Name); err != nil {
+		write(w, 502, map[string]string{"error": "could not delete the database: " + err.Error()})
+		return
+	}
+	if err := a.store.DeleteDatabaseClusterDatabase(r.Context(), cluster.ID, database.ID); err != nil {
+		problem(w, err)
+		return
+	}
+	a.recordDatabaseDeploymentEvent(r.Context(), cluster.ID, "database", "complete", "Deleted logical database "+database.Name)
+	write(w, 200, map[string]string{"message": database.Name + " was deleted"})
+}
+
+func validDatabasePassword(value string) bool {
+	if len(value) < 12 || len(value) > 256 {
+		return false
+	}
+	for _, char := range value {
+		if char < 32 || char == 127 {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *API) createDatabaseClusterUser(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	in.Username = strings.TrimSpace(in.Username)
+	if !databaseIdentifier(in.Username) {
+		bad(w, "user name may contain letters, numbers, and underscores")
+		return
+	}
+	if in.Password == "" {
+		in.Password = randomSecret()
+	} else if !validDatabasePassword(in.Password) {
+		bad(w, "password must contain 12 to 256 characters without control characters")
+		return
+	}
+	a.databaseMu.Lock()
+	defer a.databaseMu.Unlock()
+	cluster, err := a.store.DatabaseService(r.Context(), strings.TrimSpace(r.PathValue("id")))
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "database cluster not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if (cluster.Engine == "mysql" || cluster.Engine == "mariadb") && strings.EqualFold(in.Username, "root") {
+		bad(w, "root is reserved for cluster administration")
+		return
+	}
+	users, err := a.store.DatabaseClusterUsers(r.Context(), cluster.ID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	for _, existing := range users {
+		if strings.EqualFold(existing.Username, in.Username) {
+			write(w, 409, map[string]string{"error": "a user with this name already exists in the cluster"})
+			return
+		}
+	}
+	adminPassword, err := a.box.Decrypt(cluster.PasswordEncrypted)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if err := a.docker.CreateDatabaseUser(r.Context(), cluster.ID, cluster.Engine, cluster.Username, adminPassword, in.Username, in.Password); err != nil {
+		write(w, 502, map[string]string{"error": "could not create the database user: " + err.Error()})
+		return
+	}
+	sealed, err := a.box.Encrypt(in.Password)
+	if err != nil {
+		_ = a.docker.DropDatabaseUser(r.Context(), cluster.ID, cluster.Engine, cluster.Username, adminPassword, in.Username)
+		problem(w, err)
+		return
+	}
+	user := store.ClusterDatabaseUser{ID: newID("dbuser"), DatabaseServiceID: cluster.ID, Username: in.Username, PasswordEncrypted: sealed}
+	if err := a.store.CreateDatabaseClusterUser(r.Context(), user); err != nil {
+		_ = a.docker.DropDatabaseUser(r.Context(), cluster.ID, cluster.Engine, cluster.Username, adminPassword, in.Username)
+		problem(w, err)
+		return
+	}
+	a.recordDatabaseDeploymentEvent(r.Context(), cluster.ID, "access", "complete", "Created database user "+in.Username)
+	write(w, 201, map[string]any{"user": user, "credentials": map[string]string{"username": in.Username, "password": in.Password}, "message": in.Username + " was created"})
+}
+
+func (a *API) databaseClusterUserCredentials(w http.ResponseWriter, r *http.Request) {
+	clusterID := strings.TrimSpace(r.PathValue("id"))
+	user, err := a.store.DatabaseClusterUser(r.Context(), clusterID, strings.TrimSpace(r.PathValue("userId")))
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "database user not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	password, err := a.box.Decrypt(user.PasswordEncrypted)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	write(w, 200, map[string]any{"username": user.Username, "password": password})
+}
+
+func (a *API) deleteDatabaseClusterUser(w http.ResponseWriter, r *http.Request) {
+	a.databaseMu.Lock()
+	defer a.databaseMu.Unlock()
+	clusterID := strings.TrimSpace(r.PathValue("id"))
+	user, err := a.store.DatabaseClusterUser(r.Context(), clusterID, strings.TrimSpace(r.PathValue("userId")))
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "database user not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if user.Admin {
+		write(w, 409, map[string]string{"error": "the cluster administrator cannot be deleted"})
+		return
+	}
+	if user.ProjectCount > 0 || user.DatabaseCount > 0 {
+		write(w, 409, map[string]string{"error": "remove this user from every project and database before deleting it"})
+		return
+	}
+	cluster, err := a.store.DatabaseService(r.Context(), clusterID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	adminPassword, err := a.box.Decrypt(cluster.PasswordEncrypted)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if err := a.docker.DropDatabaseUser(r.Context(), cluster.ID, cluster.Engine, cluster.Username, adminPassword, user.Username); err != nil {
+		write(w, 502, map[string]string{"error": "could not delete the database user: " + err.Error()})
+		return
+	}
+	if err := a.store.DeleteDatabaseClusterUser(r.Context(), cluster.ID, user.ID); err != nil {
+		problem(w, err)
+		return
+	}
+	a.recordDatabaseDeploymentEvent(r.Context(), cluster.ID, "access", "complete", "Deleted database user "+user.Username)
+	write(w, 200, map[string]string{"message": user.Username + " was deleted"})
+}
+
+func (a *API) createDatabaseUserGrant(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		DatabaseID string `json:"databaseId"`
+		UserID     string `json:"userId"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	a.databaseMu.Lock()
+	defer a.databaseMu.Unlock()
+	clusterID := strings.TrimSpace(r.PathValue("id"))
+	database, err := a.store.DatabaseClusterDatabase(r.Context(), clusterID, strings.TrimSpace(in.DatabaseID))
+	if store.NotFound(err) {
+		bad(w, "select a database that belongs to this cluster")
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	user, err := a.store.DatabaseClusterUser(r.Context(), clusterID, strings.TrimSpace(in.UserID))
+	if store.NotFound(err) {
+		bad(w, "select a user that belongs to this cluster")
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	exists, err := a.store.DatabaseClusterGrantExists(r.Context(), clusterID, database.ID, user.ID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if exists {
+		write(w, 409, map[string]string{"error": "this user already has access to the database"})
+		return
+	}
+	cluster, err := a.store.DatabaseService(r.Context(), clusterID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	adminPassword, err := a.box.Decrypt(cluster.PasswordEncrypted)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if err := a.docker.GrantDatabaseUser(r.Context(), cluster.ID, cluster.Engine, cluster.Username, adminPassword, database.Name, user.Username); err != nil {
+		write(w, 502, map[string]string{"error": "could not grant database access: " + err.Error()})
+		return
+	}
+	grant := store.DatabaseUserGrant{DatabaseID: database.ID, UserID: user.ID}
+	if err := a.store.CreateDatabaseClusterGrant(r.Context(), grant); err != nil {
+		_ = a.docker.RevokeDatabaseUser(r.Context(), cluster.ID, cluster.Engine, cluster.Username, adminPassword, database.Name, user.Username)
+		problem(w, err)
+		return
+	}
+	a.recordDatabaseDeploymentEvent(r.Context(), cluster.ID, "access", "complete", "Granted "+user.Username+" access to "+database.Name)
+	write(w, 201, map[string]any{"grant": grant, "message": user.Username + " can now access " + database.Name})
+}
+
+func (a *API) deleteDatabaseUserGrant(w http.ResponseWriter, r *http.Request) {
+	a.databaseMu.Lock()
+	defer a.databaseMu.Unlock()
+	clusterID := strings.TrimSpace(r.PathValue("id"))
+	database, err := a.store.DatabaseClusterDatabase(r.Context(), clusterID, strings.TrimSpace(r.PathValue("databaseId")))
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "database grant not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	user, err := a.store.DatabaseClusterUser(r.Context(), clusterID, strings.TrimSpace(r.PathValue("userId")))
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "database grant not found"})
+		return
+	}
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if database.OwnerUserID == user.ID {
+		write(w, 409, map[string]string{"error": "the database owner must retain access"})
+		return
+	}
+	projects, err := a.store.DatabaseClusterProjects(r.Context(), clusterID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	for _, project := range projects {
+		if project.DatabaseID == database.ID && project.UserID == user.ID {
+			write(w, 409, map[string]string{"error": "detach the project using this database user before revoking access"})
+			return
+		}
+	}
+	cluster, err := a.store.DatabaseService(r.Context(), clusterID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	adminPassword, err := a.box.Decrypt(cluster.PasswordEncrypted)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if err := a.docker.RevokeDatabaseUser(r.Context(), cluster.ID, cluster.Engine, cluster.Username, adminPassword, database.Name, user.Username); err != nil {
+		write(w, 502, map[string]string{"error": "could not revoke database access: " + err.Error()})
+		return
+	}
+	if err := a.store.DeleteDatabaseClusterGrant(r.Context(), clusterID, database.ID, user.ID); err != nil {
+		problem(w, err)
+		return
+	}
+	a.recordDatabaseDeploymentEvent(r.Context(), cluster.ID, "access", "complete", "Revoked "+user.Username+" access to "+database.Name)
+	write(w, 200, map[string]string{"message": user.Username + " no longer has access to " + database.Name})
+}
+
+func (a *API) attachDatabaseCluster(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		ClusterID  string `json:"clusterId"`
+		DatabaseID string `json:"databaseId"`
+		UserID     string `json:"userId"`
+		Alias      string `json:"alias"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -2687,6 +3226,131 @@ func (a *API) createDatabaseService(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
+	cluster, err := a.store.DatabaseService(r.Context(), strings.TrimSpace(in.ClusterID))
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "database cluster not found"})
+		return
+	} else if err != nil {
+		problem(w, err)
+		return
+	}
+	databases, err := a.store.DatabaseClusterDatabases(r.Context(), cluster.ID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	var database store.ClusterDatabase
+	for _, candidate := range databases {
+		if candidate.ID == strings.TrimSpace(in.DatabaseID) {
+			database = candidate
+			break
+		}
+	}
+	if database.ID == "" {
+		bad(w, "select a database that belongs to this cluster")
+		return
+	}
+	userID := strings.TrimSpace(in.UserID)
+	if userID == "" {
+		userID = database.OwnerUserID
+	}
+	user, err := a.store.DatabaseClusterUser(r.Context(), cluster.ID, userID)
+	if store.NotFound(err) {
+		bad(w, "select a user that belongs to this cluster")
+		return
+	} else if err != nil {
+		problem(w, err)
+		return
+	}
+	granted, err := a.store.DatabaseClusterGrantExists(r.Context(), cluster.ID, database.ID, user.ID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if !granted {
+		bad(w, "select a user with access to this database")
+		return
+	}
+	in.Alias = strings.ToLower(strings.TrimSpace(in.Alias))
+	if in.Alias == "" {
+		in.Alias = databaseNetworkAlias(cluster.Name)
+	}
+	if !databaseAlias(in.Alias) {
+		bad(w, "network alias must use lowercase letters, numbers, and hyphens")
+		return
+	}
+	attachment := store.ProjectDatabaseAttachment{ID: newID("dba"), ProjectID: projectID, DatabaseServiceID: cluster.ID, DatabaseID: database.ID, DatabaseUserID: user.ID, Alias: in.Alias}
+	a.databaseMu.Lock()
+	defer a.databaseMu.Unlock()
+	if err := a.store.CreateProjectDatabaseAttachment(r.Context(), attachment); err != nil {
+		if strings.Contains(err.Error(), "project_database_attachments_project_id_database_service_id_key") {
+			write(w, 409, map[string]string{"error": "this cluster is already attached to the project"})
+			return
+		}
+		if strings.Contains(err.Error(), "project_database_attachments_alias_unique") {
+			write(w, 409, map[string]string{"error": "this network alias is already used in the project"})
+			return
+		}
+		problem(w, err)
+		return
+	}
+	if err := a.docker.AttachDatabaseToProject(r.Context(), cluster.ID, projectID, attachment.Alias); err != nil {
+		_ = a.store.DeleteProjectDatabaseAttachment(r.Context(), projectID, attachment.ID)
+		write(w, 502, map[string]string{"error": err.Error()})
+		return
+	}
+	write(w, 201, map[string]any{"attachment": attachment, "message": cluster.Name + " is now reachable at " + attachment.Alias})
+}
+
+func (a *API) detachDatabaseCluster(w http.ResponseWriter, r *http.Request) {
+	projectID := strings.TrimSpace(r.PathValue("id"))
+	attachmentID := strings.TrimSpace(r.PathValue("attachmentId"))
+	attachment, err := a.store.ProjectDatabaseAttachment(r.Context(), projectID, attachmentID)
+	if store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "database attachment not found"})
+		return
+	} else if err != nil {
+		problem(w, err)
+		return
+	}
+	a.databaseMu.Lock()
+	defer a.databaseMu.Unlock()
+	if err := a.docker.DetachDatabaseFromProject(r.Context(), attachment.DatabaseServiceID, projectID); err != nil {
+		write(w, 502, map[string]string{"error": "could not detach the database network: " + err.Error()})
+		return
+	}
+	if err := a.store.DeleteProjectDatabaseAttachment(r.Context(), projectID, attachmentID); err != nil {
+		problem(w, err)
+		return
+	}
+	write(w, 200, map[string]string{"message": "Database detached from this project. The cluster and its other project connections are unchanged."})
+}
+
+func (a *API) createDatabaseService(w http.ResponseWriter, r *http.Request) {
+	var in databaseCreateInput
+	if !decode(w, r, &in) {
+		return
+	}
+	projectID := strings.TrimSpace(r.PathValue("id"))
+	if _, err := a.store.Project(r.Context(), projectID); store.NotFound(err) {
+		write(w, 404, map[string]string{"error": "project not found"})
+		return
+	} else if err != nil {
+		problem(w, err)
+		return
+	}
+	a.createDatabaseClusterResource(w, r, in, projectID)
+}
+
+func (a *API) createDatabaseCluster(w http.ResponseWriter, r *http.Request) {
+	var in databaseCreateInput
+	if !decode(w, r, &in) {
+		return
+	}
+	a.createDatabaseClusterResource(w, r, in, "")
+}
+
+func (a *API) createDatabaseClusterResource(w http.ResponseWriter, r *http.Request, in databaseCreateInput, projectID string) {
 	in.Engine = strings.ToLower(strings.TrimSpace(in.Engine))
 	preset, ok := runtime.DatabaseEngine(in.Engine)
 	if !ok {
@@ -2740,30 +3404,21 @@ func (a *API) createDatabaseService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	serviceID := newID("db")
-	service := store.DatabaseService{ID: serviceID, ProjectID: projectID, Name: in.Name, Engine: in.Engine, Image: preset.Image, InternalPort: preset.Port, PublicEnabled: in.PublicEnabled, PublicPort: in.PublicPort, VolumeName: "selfhost-data-" + serviceID, Username: in.Username, DatabaseName: in.DatabaseName, PasswordEncrypted: sealed}
+	service := store.DatabaseService{ID: serviceID, ProjectID: projectID, AttachmentID: newID("dba"), DatabaseID: newID("database"), UserID: newID("dbuser"), Alias: databaseNetworkAlias(in.Name), Name: in.Name, Engine: in.Engine, Image: preset.Image, InternalPort: preset.Port, PublicEnabled: in.PublicEnabled, PublicPort: in.PublicPort, VolumeName: "selfhost-data-" + serviceID, Username: in.Username, DatabaseName: in.DatabaseName, PasswordEncrypted: sealed, Status: "deploying"}
 
 	a.databaseMu.Lock()
-	defer a.databaseMu.Unlock()
-	if err := a.store.CreateDatabaseService(r.Context(), service); err != nil {
+	err = a.store.CreateDatabaseService(r.Context(), service)
+	a.databaseMu.Unlock()
+	if err != nil {
 		if strings.Contains(err.Error(), "database_services_public_port_unique") {
 			write(w, 409, map[string]string{"error": "this public port is already assigned to another database"})
 			return
 		}
-		if strings.Contains(err.Error(), "database_services_project_name_unique") {
-			write(w, 409, map[string]string{"error": "a database service with this name already exists"})
+		if strings.Contains(err.Error(), "project_database_attachments_alias_unique") {
+			write(w, 409, map[string]string{"error": "this network alias is already used in the project"})
 			return
 		}
 		problem(w, err)
-		return
-	}
-	report := func(stage, eventType, message string) {
-		a.recordDatabaseDeploymentEvent(r.Context(), service.ID, stage, eventType, message)
-	}
-	if _, err := a.docker.DeployDatabase(r.Context(), databaseSpec(service, in.Password), report); err != nil {
-		_ = a.docker.RemoveDatabase(r.Context(), service.ID, service.VolumeName, true)
-		_ = a.store.DeleteDatabaseService(r.Context(), service.ID)
-		a.log.Error("deploy database", "database", service.ID, "error", err)
-		write(w, 502, map[string]string{"error": err.Error()})
 		return
 	}
 	created, err := a.store.DatabaseService(r.Context(), service.ID)
@@ -2771,10 +3426,67 @@ func (a *API) createDatabaseService(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
-	created.Container = "selfhost-db-" + created.ID
-	created.InternalAddress = created.Container + ":" + strconv.Itoa(created.InternalPort)
+	created.Container = ""
+	created.InternalAddress = "selfhost-db-" + created.ID + ":" + strconv.Itoa(created.InternalPort)
 	created.Status = "deploying"
-	write(w, 201, map[string]any{"service": created, "credentials": credentialsFor(created, in.Password)})
+	created.Databases = []store.ClusterDatabase{{ID: service.DatabaseID, Name: in.DatabaseName, OwnerUserID: service.UserID, Username: in.Username, UserCount: 1, Primary: true}}
+	created.Users = []store.ClusterDatabaseUser{{ID: service.UserID, Username: in.Username, DatabaseCount: 1, Admin: true}}
+	created.Grants = []store.DatabaseUserGrant{{DatabaseID: service.DatabaseID, UserID: service.UserID}}
+	a.recordDatabaseDeploymentEvent(r.Context(), service.ID, "queue", "start", "Cluster saved; provisioning queued in the background")
+	go a.provisionDatabaseCluster(service.ID)
+	write(w, http.StatusCreated, map[string]any{"cluster": created, "service": created, "credentials": credentialsFor(created, in.Password), "message": created.Name + " was created and is provisioning in the background"})
+}
+
+func (a *API) provisionDatabaseCluster(serviceID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	service, err := a.store.DatabaseService(ctx, serviceID)
+	if err != nil {
+		a.log.Error("load queued database", "database", serviceID, "error", err)
+		return
+	}
+	password, err := a.box.Decrypt(service.PasswordEncrypted)
+	if err != nil {
+		a.failDatabaseProvisioning(service, err)
+		return
+	}
+	spec, err := a.databaseSpec(ctx, service, password)
+	if err != nil {
+		a.failDatabaseProvisioning(service, err)
+		return
+	}
+	report := func(stage, eventType, message string) {
+		a.recordDatabaseDeploymentEvent(ctx, service.ID, stage, eventType, message)
+	}
+	runtimeState, err := a.docker.DeployDatabase(ctx, spec, report)
+	if err != nil {
+		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_ = a.docker.RemoveDatabase(cleanupContext, service.ID, service.VolumeName, false)
+		cleanupCancel()
+		a.failDatabaseProvisioning(service, err)
+		return
+	}
+	status := runtimeState.Status
+	if status == "" {
+		status = "deploying"
+	}
+	updateContext, updateCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := a.store.UpdateDatabaseStatus(updateContext, service.ID, status, ""); err != nil {
+		a.log.Warn("save database deployment status", "database", service.ID, "error", err)
+	}
+	updateCancel()
+}
+
+func (a *API) failDatabaseProvisioning(service store.DatabaseService, cause error) {
+	message := cause.Error()
+	updateContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.store.UpdateDatabaseStatus(updateContext, service.ID, "failed", message); err != nil {
+		a.log.Warn("save failed database status", "database", service.ID, "error", err)
+	}
+	a.recordDatabaseDeploymentEvent(updateContext, service.ID, "provision", "error", message)
+	a.log.Error("provision database", "database", service.ID, "error", cause)
 }
 
 func (a *API) databaseCredentials(w http.ResponseWriter, r *http.Request) {
@@ -2786,6 +3498,28 @@ func (a *API) databaseCredentials(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		problem(w, err)
 		return
+	}
+	if projectID := strings.TrimSpace(r.URL.Query().Get("projectId")); projectID != "" {
+		attached, loadErr := a.store.ProjectDatabaseServices(r.Context(), projectID)
+		if loadErr != nil {
+			problem(w, loadErr)
+			return
+		}
+		found := false
+		for _, candidate := range attached {
+			if candidate.ID == service.ID {
+				service.Alias = candidate.Alias
+				service.DatabaseName = candidate.DatabaseName
+				service.Username = candidate.Username
+				service.PasswordEncrypted = candidate.PasswordEncrypted
+				found = true
+				break
+			}
+		}
+		if !found {
+			write(w, 404, map[string]string{"error": "database is not attached to this project"})
+			return
+		}
 	}
 	password, err := a.box.Decrypt(service.PasswordEncrypted)
 	if err != nil {
@@ -2858,24 +3592,19 @@ func (a *API) deployDatabaseService(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
-	password, err := a.box.Decrypt(service.PasswordEncrypted)
-	if err != nil {
+	if service.Status == "deploying" {
+		write(w, http.StatusAccepted, map[string]any{"service": service, "message": service.Name + " is already provisioning"})
+		return
+	}
+	if err := a.store.UpdateDatabaseStatus(r.Context(), service.ID, "deploying", ""); err != nil {
 		problem(w, err)
 		return
 	}
-	report := func(stage, eventType, message string) {
-		a.recordDatabaseDeploymentEvent(r.Context(), service.ID, stage, eventType, message)
-	}
-	runtimeState, err := a.docker.DeployDatabase(r.Context(), databaseSpec(service, password), report)
-	if err != nil {
-		a.log.Error("deploy existing database", "database", service.ID, "error", err)
-		write(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
-	}
-	service.Container = runtimeState.Container
-	service.InternalAddress = service.Container + ":" + strconv.Itoa(service.InternalPort)
-	service.Status = runtimeState.Status
-	write(w, http.StatusAccepted, map[string]any{"service": service, "message": service.Name + " deployment started"})
+	service.Status = "deploying"
+	service.LastError = ""
+	a.recordDatabaseDeploymentEvent(r.Context(), service.ID, "queue", "start", "Provisioning retry queued in the background")
+	go a.provisionDatabaseCluster(service.ID)
+	write(w, http.StatusAccepted, map[string]any{"service": service, "message": service.Name + " is provisioning in the background"})
 }
 
 func (a *API) stopDatabaseService(w http.ResponseWriter, r *http.Request) {
@@ -2909,8 +3638,10 @@ func (a *API) stopDatabaseService(w http.ResponseWriter, r *http.Request) {
 		a.recordDatabaseDeploymentEvent(r.Context(), service.ID, "control", "complete", "Database container stopped manually")
 	}
 	service.Status = "stopped"
+	service.LastError = ""
 	service.Container = runtimeState.Container
 	service.InternalAddress = service.Container + ":" + strconv.Itoa(service.InternalPort)
+	_ = a.store.UpdateDatabaseStatus(r.Context(), service.ID, "stopped", "")
 	write(w, 200, map[string]any{"service": service, "message": service.Name + " stopped"})
 }
 
@@ -2942,8 +3673,10 @@ func (a *API) restartDatabaseService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	service.Status = runtimeState.Status
+	service.LastError = ""
 	service.Container = runtimeState.Container
 	service.InternalAddress = service.Container + ":" + strconv.Itoa(service.InternalPort)
+	_ = a.store.UpdateDatabaseStatus(r.Context(), service.ID, runtimeState.Status, "")
 	a.recordDatabaseDeploymentEvent(r.Context(), service.ID, "control", "complete", "Database container restarted manually")
 	write(w, 200, map[string]any{"service": service, "message": service.Name + " restarted"})
 }
@@ -2968,8 +3701,21 @@ func (a *API) deleteDatabaseService(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
+	if service.Status == "deploying" {
+		write(w, 409, map[string]string{"error": "wait for cluster provisioning to finish before deleting it"})
+		return
+	}
 	if in.Confirmation != service.Name {
-		bad(w, "type the database service name exactly to confirm removal")
+		bad(w, "type the database cluster name exactly to confirm removal")
+		return
+	}
+	projects, err := a.store.DatabaseClusterProjects(r.Context(), service.ID)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if len(projects) > 0 {
+		write(w, 409, map[string]string{"error": "detach this cluster from every project before deleting it"})
 		return
 	}
 	if err := a.docker.RemoveDatabase(r.Context(), service.ID, service.VolumeName, in.RemoveVolume); err != nil {
@@ -3032,10 +3778,15 @@ func (a *API) updateDatabaseExposure(w http.ResponseWriter, r *http.Request) {
 	report := func(stage, eventType, message string) {
 		a.recordDatabaseDeploymentEvent(r.Context(), service.ID, stage, eventType, message)
 	}
-	if _, err := a.docker.DeployDatabase(r.Context(), databaseSpec(service, password), report); err != nil {
+	spec, err := a.databaseSpec(r.Context(), service, password)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	if _, err := a.docker.DeployDatabase(r.Context(), spec, report); err != nil {
 		_ = a.store.UpdateDatabaseExposure(r.Context(), service.ID, oldEnabled, oldPort)
 		service.PublicEnabled, service.PublicPort = oldEnabled, oldPort
-		_, _ = a.docker.DeployDatabase(r.Context(), databaseSpec(service, password))
+		_, _ = a.docker.DeployDatabase(r.Context(), spec)
 		a.log.Error("update database exposure", "database", service.ID, "error", err)
 		write(w, 502, map[string]string{"error": "Docker could not apply this port; the previous exposure was restored"})
 		return
@@ -3046,8 +3797,16 @@ func (a *API) updateDatabaseExposure(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, map[string]any{"service": service})
 }
 
-func databaseSpec(service store.DatabaseService, password string) runtime.DatabaseSpec {
-	return runtime.DatabaseSpec{ID: service.ID, ProjectID: service.ProjectID, Engine: service.Engine, Image: service.Image, Port: service.InternalPort, VolumeName: service.VolumeName, Username: service.Username, DatabaseName: service.DatabaseName, Password: password, PublicEnabled: service.PublicEnabled, PublicPort: service.PublicPort}
+func (a *API) databaseSpec(ctx context.Context, service store.DatabaseService, password string) (runtime.DatabaseSpec, error) {
+	attachments, err := a.store.DatabaseClusterAttachments(ctx, service.ID)
+	if err != nil {
+		return runtime.DatabaseSpec{}, err
+	}
+	networks := make([]runtime.DatabaseNetwork, 0, len(attachments))
+	for _, attachment := range attachments {
+		networks = append(networks, runtime.DatabaseNetwork{ProjectID: attachment.ProjectID, Alias: attachment.Alias})
+	}
+	return runtime.DatabaseSpec{ID: service.ID, Engine: service.Engine, Image: service.Image, Port: service.InternalPort, VolumeName: service.VolumeName, Username: service.Username, DatabaseName: service.DatabaseName, Password: password, PublicEnabled: service.PublicEnabled, PublicPort: service.PublicPort, Networks: networks}, nil
 }
 
 func (a *API) recordDatabaseDeploymentEvent(ctx context.Context, serviceID, stage, eventType, message string) {
@@ -3058,6 +3817,9 @@ func (a *API) recordDatabaseDeploymentEvent(ctx context.Context, serviceID, stag
 
 func credentialsFor(service store.DatabaseService, password string) map[string]any {
 	host := "selfhost-db-" + service.ID
+	if service.Alias != "" {
+		host = service.Alias
+	}
 	scheme := "mysql"
 	if service.Engine == "postgres" {
 		scheme = "postgresql"
@@ -3073,6 +3835,37 @@ func databaseIdentifier(value string) bool {
 	}
 	for _, char := range value {
 		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func databaseNetworkAlias(value string) string {
+	var alias strings.Builder
+	lastHyphen := false
+	for _, char := range strings.ToLower(strings.TrimSpace(value)) {
+		valid := (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9')
+		if valid {
+			alias.WriteRune(char)
+			lastHyphen = false
+		} else if alias.Len() > 0 && !lastHyphen {
+			alias.WriteByte('-')
+			lastHyphen = true
+		}
+		if alias.Len() >= 63 {
+			break
+		}
+	}
+	return strings.Trim(alias.String(), "-")
+}
+
+func databaseAlias(value string) bool {
+	if len(value) < 1 || len(value) > 63 || value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' {
 			return false
 		}
 	}

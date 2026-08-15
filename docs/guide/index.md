@@ -25,7 +25,7 @@ Dokyr works well for:
 | --- | --- |
 | Applications | Image-based services, Compose imports, encrypted environment variables, health checks, logs, and release history |
 | Traffic | Caddy routes, hostnames, path rules, HTTP-only or automatic HTTPS ingress |
-| Data | Private PostgreSQL, MySQL, and MariaDB services with persistent volumes |
+| Data | Shared PostgreSQL, MySQL, and MariaDB clusters with logical databases, users, grants, persistent volumes, and private project attachments |
 | Images | A private Docker Distribution registry with scoped access tokens |
 | Storage | Reusable S3-compatible connections for registry data and server backups |
 | Mail | Verified sending domains and domain-scoped SMTP/HTTP credentials through Stalwart |
@@ -41,5 +41,6 @@ Access to the Docker socket is equivalent to administrative access to the host. 
 
 1. [Install Dokyr on a VPS](/guide/installation).
 2. [Create your first project](/guide/first-project).
-3. [Attach a domain and enable HTTPS](/infrastructure/domains).
-4. Read the [complete architecture](/ARCHITECTURE) when you need implementation details.
+3. [Create or attach a database cluster](/infrastructure/databases).
+4. [Attach a domain and enable HTTPS](/infrastructure/domains).
+5. Read the [complete architecture](/ARCHITECTURE) when you need implementation details.

@@ -91,6 +91,12 @@ type DatabaseSpec struct {
 	Password      string
 	PublicEnabled bool
 	PublicPort    int
+	Networks      []DatabaseNetwork
+}
+
+type DatabaseNetwork struct {
+	ProjectID string
+	Alias     string
 }
 
 type DatabaseRuntime struct {
@@ -98,6 +104,138 @@ type DatabaseRuntime struct {
 	Container string `json:"container"`
 	HostPort  int    `json:"hostPort,omitempty"`
 	Health    string `json:"health,omitempty"`
+}
+
+func projectNetworkName(projectID string) string {
+	return "selfhost-project-" + projectID
+}
+
+func (d *Docker) ensureProjectNetwork(ctx context.Context, projectID string) (string, error) {
+	name := projectNetworkName(projectID)
+	var existing struct {
+		ID string `json:"Id"`
+	}
+	if err := d.get(ctx, "/networks/"+url.PathEscape(name), &existing); err == nil {
+		return name, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return "", err
+	}
+	response, err := d.request(ctx, http.MethodPost, "/networks/create", map[string]any{
+		"Name":           name,
+		"Driver":         "bridge",
+		"CheckDuplicate": true,
+		"Labels":         map[string]string{"selfhost.managed": "true", "selfhost.project.id": projectID, "selfhost.network.kind": "project"},
+	}, nil)
+	if err != nil {
+		return "", err
+	}
+	response.Body.Close()
+	return name, nil
+}
+
+func (d *Docker) ensureDatabaseNetwork(ctx context.Context) error {
+	const name = "selfhost-databases"
+	var existing struct {
+		ID string `json:"Id"`
+	}
+	if err := d.get(ctx, "/networks/"+name, &existing); err == nil {
+		return nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	response, err := d.request(ctx, http.MethodPost, "/networks/create", map[string]any{
+		"Name": name, "Driver": "bridge", "CheckDuplicate": true,
+		"Labels": map[string]string{"selfhost.managed": "true", "selfhost.network.kind": "databases"},
+	}, nil)
+	if err != nil {
+		return err
+	}
+	response.Body.Close()
+	return nil
+}
+
+func (d *Docker) connectProjectNetwork(ctx context.Context, projectID, container string, aliases []string) error {
+	name, err := d.ensureProjectNetwork(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("prepare project network: %w", err)
+	}
+	response, err := d.request(ctx, http.MethodPost, "/networks/"+url.PathEscape(name)+"/connect", map[string]any{
+		"Container":      container,
+		"EndpointConfig": map[string]any{"Aliases": aliases},
+	}, nil)
+	if err != nil {
+		// Connecting an already attached container is idempotent for callers.
+		if strings.Contains(strings.ToLower(err.Error()), "already exists") {
+			return nil
+		}
+		return err
+	}
+	response.Body.Close()
+	return nil
+}
+
+func (d *Docker) AttachDatabaseToProject(ctx context.Context, databaseID, projectID, alias string) error {
+	if err := d.connectProjectNetwork(ctx, projectID, databaseContainerName(databaseID), []string{alias}); err != nil {
+		return fmt.Errorf("attach database to project network: %w", err)
+	}
+	// Versions before database clusters placed every database on the shared
+	// ingress network. Remove that legacy path once a private attachment exists.
+	if response, err := d.request(ctx, http.MethodPost, "/networks/selfhost-proxy/disconnect", map[string]any{"Container": databaseContainerName(databaseID), "Force": true}, nil); err == nil {
+		response.Body.Close()
+	} else if !errors.Is(err, ErrNotFound) && !strings.Contains(strings.ToLower(err.Error()), "not connected") {
+		return fmt.Errorf("remove legacy database network: %w", err)
+	}
+	return d.attachProjectContainers(ctx, projectID)
+}
+
+func (d *Docker) attachProjectContainers(ctx context.Context, projectID string) error {
+	filters, _ := json.Marshal(map[string][]string{"label": {"selfhost.project.id=" + projectID}})
+	var containers []struct {
+		ID     string            `json:"Id"`
+		Names  []string          `json:"Names"`
+		Labels map[string]string `json:"Labels"`
+	}
+	if err := d.get(ctx, "/containers/json?all=1&filters="+url.QueryEscape(string(filters)), &containers); err != nil {
+		return err
+	}
+	for _, container := range containers {
+		if container.Labels["selfhost.service.kind"] == "database" {
+			continue
+		}
+		name := container.ID
+		if len(container.Names) > 0 {
+			name = strings.TrimPrefix(container.Names[0], "/")
+		}
+		if err := d.connectProjectNetwork(ctx, projectID, name, nil); err != nil {
+			return fmt.Errorf("attach project container %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func (d *Docker) DetachDatabaseFromProject(ctx context.Context, databaseID, projectID string) error {
+	response, err := d.request(ctx, http.MethodPost, "/networks/"+url.PathEscape(projectNetworkName(projectID))+"/disconnect", map[string]any{
+		"Container": databaseContainerName(databaseID),
+		"Force":     true,
+	}, nil)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	if response != nil {
+		response.Body.Close()
+	}
+	return nil
+}
+
+func (d *Docker) RemoveProjectNetwork(ctx context.Context, projectID string) error {
+	response, err := d.request(ctx, http.MethodDelete, "/networks/"+url.PathEscape(projectNetworkName(projectID)), nil, nil)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	if response != nil {
+		response.Body.Close()
+	}
+	return nil
 }
 
 func DatabaseEngine(engine string) (DatabasePreset, bool) {
@@ -382,6 +520,9 @@ func (d *Docker) DeployImage(ctx context.Context, projectID, image string, conta
 		return Service{}, fmt.Errorf("create container: %w", err)
 	}
 	created.Body.Close()
+	if err := d.connectProjectNetwork(ctx, projectID, name, nil); err != nil {
+		return Service{}, fmt.Errorf("attach project network: %w", err)
+	}
 	if progress != nil {
 		progress("create", "complete", "Container created on selfhost-proxy")
 		progress("start", "start", "Starting "+name)
@@ -685,6 +826,9 @@ func (d *Docker) deployApplicationContainer(ctx context.Context, serviceID, proj
 			}
 		}
 	}()
+	if err := d.connectProjectNetwork(ctx, projectID, candidateName, nil); err != nil {
+		return Service{}, fmt.Errorf("attach project network: %w", err)
+	}
 	if progress != nil {
 		if len(commandArguments) > 0 {
 			progress("create", "log", "Container command: "+command)
@@ -1221,6 +1365,9 @@ func (d *Docker) DeployDatabase(ctx context.Context, spec DatabaseSpec, progress
 	if !ok {
 		return DatabaseRuntime{}, fmt.Errorf("unsupported database engine %q", spec.Engine)
 	}
+	if err := d.ensureDatabaseNetwork(ctx); err != nil {
+		return DatabaseRuntime{}, fmt.Errorf("prepare database network: %w", err)
+	}
 	if report != nil {
 		report("pull", "start", "Pulling "+spec.Image)
 	}
@@ -1276,7 +1423,7 @@ func (d *Docker) DeployDatabase(ctx context.Context, spec DatabaseSpec, progress
 		healthTest = []string{"CMD-SHELL", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""}
 	}
 	hostConfig := map[string]any{
-		"NetworkMode":     "selfhost-proxy",
+		"NetworkMode":     "selfhost-databases",
 		"PublishAllPorts": false,
 		"RestartPolicy":   map[string]string{"Name": "unless-stopped"},
 		"SecurityOpt":     []string{"no-new-privileges:true"},
@@ -1310,6 +1457,11 @@ func (d *Docker) DeployDatabase(ctx context.Context, spec DatabaseSpec, progress
 		return DatabaseRuntime{}, fmt.Errorf("create database container: %w", err)
 	}
 	created.Body.Close()
+	for _, network := range spec.Networks {
+		if err := d.connectProjectNetwork(ctx, network.ProjectID, name, []string{network.Alias}); err != nil {
+			return DatabaseRuntime{}, fmt.Errorf("attach project network: %w", err)
+		}
+	}
 	if report != nil {
 		report("create", "complete", "Database container created")
 		report("start", "start", "Starting database container")

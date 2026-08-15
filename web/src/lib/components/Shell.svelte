@@ -31,6 +31,7 @@
       label: 'Infrastructure',
       items: [
         { href: '/servers', icon: 'server', label: 'Servers' },
+        { href: '/databases', icon: 'database', label: 'Databases' },
         { href: '/domains', icon: 'globe', label: 'Domains' },
         { href: '/mail', icon: 'mail', label: 'Mail', badge: 'Beta' },
         ...(manageRegistry ? [{ href: '/object-storage', icon: 'cloud', label: 'Object storage' }] : []),

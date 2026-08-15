@@ -99,7 +99,9 @@
   let databaseModal = false;
   let databaseSaving = false;
   let databaseError = '';
-  let databaseForm = { engine: 'mysql', name: 'MySQL', databaseName: 'app', username: 'app', password: '', publicEnabled: false, publicPort: 3306 };
+  let databaseClusters = [];
+  let databaseClustersLoading = false;
+  let databaseForm = { clusterId: '', databaseId: '', userId: '', alias: '' };
   let credentialsModal = false;
   let credentialsLoading = false;
   let credentials = null;
@@ -109,8 +111,6 @@
   let exposurePort = 3306;
   let exposureSaving = false;
   let databaseDeleteService = null;
-  let databaseDeleteConfirmation = '';
-  let databaseDeleteVolume = false;
   let databaseDeleteBusy = false;
   let databaseDeleteError = '';
   let integrations = { connections: [], registries: [] };
@@ -143,6 +143,10 @@
   $: project = data.project;
   $: service = data.services[0];
   $: databaseServices = data.databaseServices || [];
+	$: selectedDatabaseCluster = databaseClusters.find((cluster) => cluster.id === databaseForm.clusterId);
+	$: selectedClusterDatabases = selectedDatabaseCluster?.databases || [];
+  $: selectedLogicalDatabase = selectedClusterDatabases.find((database) => database.id === databaseForm.databaseId);
+  $: selectedDatabaseUsers = (selectedDatabaseCluster?.users || []).filter((user) => (selectedDatabaseCluster?.grants || []).some((grant) => grant.databaseId === databaseForm.databaseId && grant.userId === user.id));
   $: applicationServices = data.applicationServices || [];
   $: legacyService = project.sourceType === 'empty' ? null : { id: 'main', name: project.name, imageUrl: project.sourceType === 'image' ? project.imageUrl : project.repository, containerPort: project.containerPort || 80, status: service?.status || project.status, container: service?.container || '', legacy: true };
   $: displayApplicationServices = [...(legacyService ? [legacyService] : []), ...applicationServices];
@@ -1269,36 +1273,58 @@
     return `${protocol}//${binding.domain}${port}`;
   }
 
-  function openDatabaseModal() {
+  async function openDatabaseModal() {
     databaseError = '';
-    databaseForm = { engine: 'mysql', name: 'MySQL', databaseName: 'app', username: 'app', password: '', publicEnabled: false, publicPort: 3306 };
+    databaseForm = { clusterId: '', databaseId: '', userId: '', alias: '' };
     databaseModal = true;
+    databaseClustersLoading = true;
+    try {
+      const response = await api('/api/databases');
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not load database clusters');
+      const attached = new Set(databaseServices.map((item) => item.id));
+      databaseClusters = (payload.clusters || []).filter((cluster) => !attached.has(cluster.id));
+      if (databaseClusters.length) chooseDatabaseCluster(databaseClusters[0].id);
+    } catch (cause) {
+      databaseError = cause instanceof Error ? cause.message : 'Could not load database clusters';
+    } finally {
+      databaseClustersLoading = false;
+    }
   }
 
-  function selectDatabaseEngine(engine) {
-    const previousLabel = databasePresets[databaseForm.engine].label;
-    const next = databasePresets[engine];
-    databaseForm = { ...databaseForm, engine, name: databaseForm.name === previousLabel ? next.label : databaseForm.name, publicPort: next.port };
+  function chooseDatabaseCluster(clusterId) {
+    const cluster = databaseClusters.find((item) => item.id === clusterId);
+    const database = cluster?.databases?.[0];
+    const userId = database?.ownerUserId || cluster?.grants?.find((grant) => grant.databaseId === database?.id)?.userId || '';
+    databaseForm = {
+      clusterId,
+      databaseId: database?.id || '',
+      userId,
+      alias: cluster?.name?.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || ''
+    };
   }
 
-  async function createDatabase() {
+  function chooseLogicalDatabase(databaseId) {
+    const database = selectedClusterDatabases.find((item) => item.id === databaseId);
+    const userId = database?.ownerUserId || selectedDatabaseCluster?.grants?.find((grant) => grant.databaseId === databaseId)?.userId || '';
+    databaseForm = { ...databaseForm, databaseId, userId };
+  }
+
+  async function attachDatabase() {
     databaseSaving = true;
     databaseError = '';
     try {
-      const response = await api('/api/projects/' + page.params.id + '/databases', {
+      const response = await api('/api/projects/' + page.params.id + '/database-attachments', {
         method: 'POST',
         body: JSON.stringify(databaseForm)
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || 'Could not deploy database');
+      if (!response.ok) throw new Error(payload.error || 'Could not attach database');
       databaseModal = false;
-      credentials = payload.credentials;
-      credentialsService = payload.service;
-      credentialsModal = true;
-      notice = `${payload.service.name} is starting with private networking${payload.service.publicEnabled ? ` and public port ${payload.service.publicPort}` : ''}.`;
+      notice = payload.message || 'Database attached to this project network.';
       await loadProject();
     } catch (cause) {
-      databaseError = cause instanceof Error ? cause.message : 'Could not deploy database';
+      databaseError = cause instanceof Error ? cause.message : 'Could not attach database';
     } finally {
       databaseSaving = false;
     }
@@ -1311,7 +1337,7 @@
     credentials = null;
     copiedField = '';
     try {
-      const response = await api('/api/databases/' + item.id + '/credentials');
+      const response = await api('/api/databases/' + item.id + '/credentials?projectId=' + encodeURIComponent(page.params.id));
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Could not reveal credentials');
       credentials = payload;
@@ -1359,8 +1385,6 @@
 
   function openDatabaseDelete(item) {
     databaseDeleteService = item;
-    databaseDeleteConfirmation = '';
-    databaseDeleteVolume = false;
     databaseDeleteError = '';
   }
 
@@ -1369,17 +1393,14 @@
     databaseDeleteBusy = true;
     databaseDeleteError = '';
     try {
-      const response = await api(`/api/databases/${databaseDeleteService.id}`, {
-        method: 'DELETE',
-        body: JSON.stringify({ confirmation: databaseDeleteConfirmation, removeVolume: databaseDeleteVolume })
-      });
+      const response = await api(`/api/projects/${page.params.id}/database-attachments/${databaseDeleteService.attachmentId}`, { method: 'DELETE' });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || 'Could not remove database');
-      notice = payload.volumeRemoved ? `${databaseDeleteService.name} and its persistent data were removed.` : `${databaseDeleteService.name} was removed. Volume ${payload.retainedVolume} was retained.`;
+      if (!response.ok) throw new Error(payload.error || 'Could not detach database');
+      notice = payload.message || `${databaseDeleteService.name} was detached from this project.`;
       databaseDeleteService = null;
       await loadProject();
     } catch (cause) {
-      databaseDeleteError = cause instanceof Error ? cause.message : 'Could not remove database';
+      databaseDeleteError = cause instanceof Error ? cause.message : 'Could not detach database';
     } finally {
       databaseDeleteBusy = false;
     }
@@ -1488,14 +1509,8 @@
             <div class="database-state"><Status value={item.status} /><em class:public={item.publicEnabled}>{item.publicEnabled ? `Public · ${item.publicPort}` : 'Private'}</em></div>
             <div class="database-actions">
               <button onclick={() => showCredentials(item)}><Icon name="key" size={13}/> Credentials</button>
-              {#if item.container}
-                {#if item.status !== 'stopped'}<button class="lifecycle-stop" onclick={() => controlWorkload(item, 'database', 'stop')} disabled={item.status === 'deploying' || lifecycleBusy !== ''}><Icon name="stop" size={12}/>{workloadActionBusy(item, 'database', 'stop') ? 'Stopping…' : 'Stop'}</button>{/if}
-                <button class="lifecycle-restart" onclick={() => controlWorkload(item, 'database', 'restart')} disabled={item.status === 'deploying' || lifecycleBusy !== ''}><Icon name={item.status === 'stopped' ? 'play' : 'refresh'} size={13}/>{workloadActionBusy(item, 'database', 'restart') ? (item.status === 'stopped' ? 'Starting…' : 'Restarting…') : (item.status === 'stopped' ? 'Start' : 'Restart')}</button>
-                {#if item.publicEnabled}<button class="danger-text" onclick={() => makePrivate(item)} disabled={exposureSaving}><Icon name="network" size={13}/> Private</button>{:else}<button onclick={() => openExposure(item)}><Icon name="network" size={13}/> Expose</button>{/if}
-              {:else}
-                <button class="database-deploy" onclick={() => controlWorkload(item, 'database', 'deploy')} disabled={lifecycleBusy !== ''}><Icon name="rocket" size={13}/>{workloadActionBusy(item, 'database', 'deploy') ? 'Deploying…' : 'Deploy'}</button>
-              {/if}
-              <button class="danger-text icon-only" title="Remove database" aria-label={'Remove ' + item.name} onclick={() => openDatabaseDelete(item)}><Icon name="trash" size={14}/></button>
+              <a class="database-manage-link" href="/databases"><Icon name="external" size={13}/> Manage cluster</a>
+              <button class="danger-text icon-only" title="Detach database" aria-label={'Detach ' + item.name} onclick={() => openDatabaseDelete(item)}><Icon name="x" size={14}/></button>
             </div>
           </article>
         {/each}
@@ -1505,7 +1520,7 @@
         <header><div><span>Container</span><h3>Runtime details</h3></div></header>
         <dl>
           <div><dt>Engine</dt><dd>Docker</dd></div>
-          <div><dt>Network</dt><dd>selfhost-proxy</dd></div>
+          <div><dt>Network</dt><dd>Ingress + project private</dd></div>
           <div><dt>Containers</dt><dd>{data.services.length + applicationServices.filter((item) => item.container).length} application</dd></div>
           <div><dt>Exposure</dt><dd>{project.domain ? 'Caddy ingress' : 'Internal only'}</dd></div>
         </dl>
@@ -1561,9 +1576,9 @@
     {/if}
   {:else if activeTab === 'databases'}
     <section class="panel database-manager">
-      <header><div><span>Persistent services</span><h3>Databases</h3></div><button class="deploy-small" onclick={openDatabaseModal}><Icon name="plus" size={14}/> Add database</button></header>
+      <header><div><span>Private network attachments</span><h3>Databases</h3></div><button class="deploy-small" onclick={openDatabaseModal}><Icon name="plus" size={14}/> Add database</button></header>
       {#if databaseServices.length === 0}
-        <div class="empty"><div class="empty-icon"><Icon name="database" size={22} /></div><div><h4>No databases deployed</h4><p>Add PostgreSQL, MySQL, or MariaDB with private networking and persistent storage.</p></div></div>
+        <div class="empty"><div class="empty-icon"><Icon name="database" size={22} /></div><div><h4>No databases attached</h4><p>Connect an existing cluster to this project’s private network.</p></div></div>
       {:else}
         <div class="database-manager-list">
           {#each databaseServices as item}
@@ -1571,22 +1586,17 @@
               <div class="database-card-heading"><span class="service-icon database"><Icon name="database" size={18} /></span><div><strong>{item.name}</strong><small>{databasePresets[item.engine]?.label || item.engine} · {item.image}</small></div><Status value={item.status} /></div>
               <dl>
                 <div><dt>Internal address</dt><dd><code>{item.internalAddress}</code></dd></div>
-                <div><dt>Container</dt><dd><code>{item.container}</code></dd></div>
-                <div><dt>Network access</dt><dd><span class:public={item.publicEnabled}>{item.publicEnabled ? `Public on ${item.publicPort}` : 'Private only'}</span></dd></div>
-                <div><dt>Persistent volume</dt><dd><code>{item.volumeName}</code></dd></div>
+                <div><dt>Logical database</dt><dd><code>{item.databaseName}</code></dd></div>
+                <div><dt>Database user</dt><dd><code>{item.username}</code></dd></div>
+                <div><dt>Network scope</dt><dd><span>Project private network</span></dd></div>
+                <div><dt>Cluster</dt><dd><a href="/databases">Managed globally</a></dd></div>
               </dl>
               <div class="database-card-actions">
                 <button onclick={() => openWorkloadLogs(item, 'database', 'runtime')} disabled={!item.container}><Icon name="activity" size={14} /> Runtime logs</button>
                 <button onclick={() => openWorkloadLogs(item, 'database', 'deployment')}><Icon name="rocket" size={14} /> Deployment logs</button>
-                {#if item.container}
-                  {#if item.status !== 'stopped'}<button class="lifecycle-stop" onclick={() => controlWorkload(item, 'database', 'stop')} disabled={item.status === 'deploying' || lifecycleBusy !== ''}><Icon name="stop" size={12}/>{workloadActionBusy(item, 'database', 'stop') ? 'Stopping…' : 'Stop'}</button>{/if}
-                  <button class="lifecycle-restart" onclick={() => controlWorkload(item, 'database', 'restart')} disabled={item.status === 'deploying' || lifecycleBusy !== ''}><Icon name={item.status === 'stopped' ? 'play' : 'refresh'} size={13}/>{workloadActionBusy(item, 'database', 'restart') ? (item.status === 'stopped' ? 'Starting…' : 'Restarting…') : (item.status === 'stopped' ? 'Start' : 'Restart')}</button>
-                {:else}
-                  <button class="database-deploy" onclick={() => controlWorkload(item, 'database', 'deploy')} disabled={lifecycleBusy !== ''}><Icon name="rocket" size={13}/>{workloadActionBusy(item, 'database', 'deploy') ? 'Deploying…' : 'Deploy database'}</button>
-                {/if}
                 <button onclick={() => showCredentials(item)}><Icon name="key" size={14}/> Credentials</button>
-                {#if item.container}{#if item.publicEnabled}<button onclick={() => makePrivate(item)} disabled={exposureSaving}><Icon name="network" size={14}/> Make private</button>{:else}<button onclick={() => openExposure(item)}><Icon name="network" size={14}/> Networking</button>{/if}{/if}
-                <button class="delete-database" onclick={() => openDatabaseDelete(item)}><Icon name="trash" size={14}/> Delete database</button>
+                <a href="/databases"><Icon name="external" size={14}/> Manage cluster</a>
+                <button class="delete-database" onclick={() => openDatabaseDelete(item)}><Icon name="x" size={14}/> Detach from project</button>
               </div>
             </article>
           {/each}
@@ -1973,13 +1983,11 @@
 {#if databaseDeleteService}
   <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget && !databaseDeleteBusy) databaseDeleteService = null; }}>
     <div class="modal database-delete-modal" role="dialog" aria-modal="true" aria-labelledby="database-delete-title">
-      <header><div><span>Database removal</span><h2 id="database-delete-title">Remove {databaseDeleteService.name}?</h2></div><button aria-label="Close" onclick={() => databaseDeleteService = null} disabled={databaseDeleteBusy}>×</button></header>
+      <header><div><span>Private network</span><h2 id="database-delete-title">Detach {databaseDeleteService.name}?</h2></div><button aria-label="Close" onclick={() => databaseDeleteService = null} disabled={databaseDeleteBusy}>×</button></header>
       <form onsubmit={(event) => { event.preventDefault(); deleteDatabase(); }}>
-        <div class="deletion-warning"><strong>The container will be removed immediately</strong><p>You can retain the Docker volume for manual recovery, or permanently delete all database data.</p></div>
-        <label class="volume-choice"><input type="checkbox" bind:checked={databaseDeleteVolume} /><span><strong>Delete persistent volume and all data</strong><small>Leave unchecked to retain <code>{databaseDeleteService.volumeName}</code> as an unmanaged Docker volume.</small></span></label>
-        {#if databaseDeleteError}<div class="domain-feedback error"><strong>Database not removed</strong><span>{databaseDeleteError}</span></div>{/if}
-        <label class="confirm-field"><span>Type <code>{databaseDeleteService.name}</code> to confirm</span><input bind:value={databaseDeleteConfirmation} autocomplete="off" spellcheck="false" placeholder={databaseDeleteService.name} /></label>
-        <footer><button type="button" onclick={() => databaseDeleteService = null} disabled={databaseDeleteBusy}>Cancel</button><button class="destructive" type="submit" disabled={databaseDeleteBusy || databaseDeleteConfirmation !== databaseDeleteService.name}>{databaseDeleteBusy ? 'Removing…' : databaseDeleteVolume ? 'Delete database and data' : 'Remove and retain volume'}</button></footer>
+        <div class="deletion-warning"><strong>Only this project connection will be removed</strong><p>The cluster, persistent data, and connections to other projects remain unchanged. Services in this project will no longer resolve <code>{databaseDeleteService.alias}</code>.</p></div>
+        {#if databaseDeleteError}<div class="domain-feedback error"><strong>Database not detached</strong><span>{databaseDeleteError}</span></div>{/if}
+        <footer><button type="button" onclick={() => databaseDeleteService = null} disabled={databaseDeleteBusy}>Cancel</button><button class="destructive" type="submit" disabled={databaseDeleteBusy}>{databaseDeleteBusy ? 'Detaching…' : 'Detach from project'}</button></footer>
       </form>
     </div>
   </div>
@@ -2198,30 +2206,23 @@
 {#if databaseModal}
   <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget && !databaseSaving) databaseModal = false; }}>
     <div class="modal database-modal" role="dialog" aria-modal="true" aria-labelledby="database-modal-title">
-      <header><div><span>Persistent service</span><h2 id="database-modal-title">Add a database</h2></div><button aria-label="Close" onclick={() => databaseModal = false} disabled={databaseSaving}>×</button></header>
-      <form onsubmit={(event) => { event.preventDefault(); createDatabase(); }}>
-        <div class="engine-picker" aria-label="Database engine">
-          {#each Object.entries(databasePresets) as [key, preset]}
-            <button type="button" class:active={databaseForm.engine === key} onclick={() => selectDatabaseEngine(key)}>
-              <span class="engine-mark">{preset.label.slice(0, 2).toUpperCase()}</span><strong>{preset.label}</strong><small>{preset.version} · {preset.port}</small>
-            </button>
-          {/each}
-        </div>
-        {#if databaseError}<div class="domain-feedback error"><strong>Database not created</strong><span>{databaseError}</span></div>{/if}
-        <div class="form-grid">
-          <label><span>Service name</span><input bind:value={databaseForm.name} required maxlength="50" placeholder="Primary database" /></label>
-          <label><span>Database name</span><input bind:value={databaseForm.databaseName} required maxlength="63" placeholder="app" /></label>
-          <label><span>Application user</span><input bind:value={databaseForm.username} required maxlength="63" placeholder="app" /></label>
-          <label><span>Password <em>optional</em></span><input bind:value={databaseForm.password} type="password" minlength="12" autocomplete="new-password" placeholder="Generated securely if empty" /></label>
-        </div>
-        <label class="exposure-choice">
-          <input bind:checked={databaseForm.publicEnabled} type="checkbox" />
-          <span><strong>Expose publicly</strong><small>Off by default. Private services are reachable only by containers on <code>selfhost-proxy</code>.</small></span>
-        </label>
-        {#if databaseForm.publicEnabled}
-          <label class="port-field"><span>Public host port</span><input bind:value={databaseForm.publicPort} type="number" min="1" max="65535" required /><small>Default for {databasePresets[databaseForm.engine].label}: {databasePresets[databaseForm.engine].port}</small></label>
+      <header><div><span>Project private network</span><h2 id="database-modal-title">Add a database</h2></div><button aria-label="Close" onclick={() => databaseModal = false} disabled={databaseSaving}>×</button></header>
+      <form onsubmit={(event) => { event.preventDefault(); attachDatabase(); }}>
+        <div class="database-attach-intro"><span><Icon name="network" size={18} /></span><div><strong>Connect shared infrastructure</strong><p>The cluster will join this project’s private network. Every service in the project can reach it through the alias below.</p></div></div>
+        {#if databaseError}<div class="domain-feedback error"><strong>Database not attached</strong><span>{databaseError}</span></div>{/if}
+        {#if databaseClustersLoading}
+          <div class="credential-loading"><span class="spinner"></span>Loading database clusters…</div>
+        {:else if databaseClusters.length === 0}
+          <div class="database-cluster-empty"><Icon name="database" size={22} /><div><strong>No available clusters</strong><p>Create a cluster first, then return here to attach it.</p></div><a class="btn btn-primary" href="/databases?create=1">Create cluster</a></div>
+        {:else}
+          <div class="form-grid">
+            <label class="wide"><span>Database cluster</span><div class="select-shortcut"><select value={databaseForm.clusterId} onchange={(event) => chooseDatabaseCluster(event.currentTarget.value)} required>{#each databaseClusters as cluster}<option value={cluster.id}>{cluster.name} · {databasePresets[cluster.engine]?.label || cluster.engine}</option>{/each}</select><a href="/databases?create=1">Create new</a></div><small>Clusters can be shared safely across multiple project networks.</small></label>
+            <label><span>Database</span><select value={databaseForm.databaseId} onchange={(event) => chooseLogicalDatabase(event.currentTarget.value)} required>{#each selectedClusterDatabases as database}<option value={database.id}>{database.name}</option>{/each}</select></label>
+            <label><span>Database user</span><select bind:value={databaseForm.userId} required>{#each selectedDatabaseUsers as user}<option value={user.id}>{user.username}{user.admin ? ' · administrator' : ''}</option>{/each}</select><small>Only users granted access to <code>{selectedLogicalDatabase?.name || 'this database'}</code> are available.</small></label>
+            <label><span>Internal service name</span><input bind:value={databaseForm.alias} required maxlength="63" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?" placeholder="main-db" spellcheck="false" /><small>Containers connect to <code>{databaseForm.alias || 'main-db'}:{selectedDatabaseCluster?.internalPort || 5432}</code>.</small></label>
+          </div>
         {/if}
-        <footer><button type="button" onclick={() => databaseModal = false} disabled={databaseSaving}>Cancel</button><button class="primary" type="submit" disabled={databaseSaving}>{databaseSaving ? 'Pulling image…' : 'Create database'}</button></footer>
+        <footer><button type="button" onclick={() => databaseModal = false} disabled={databaseSaving}>Cancel</button>{#if databaseClusters.length}<button class="primary" type="submit" disabled={databaseSaving || databaseClustersLoading || !databaseForm.databaseId || !databaseForm.userId}>{databaseSaving ? 'Connecting network…' : 'Attach database'}</button>{/if}</footer>
       </form>
     </div>
   </div>
@@ -2262,7 +2263,7 @@
     <div class="modal delete-project-modal" role="dialog" aria-modal="true" aria-labelledby="delete-project-title">
       <header><div><span>Permanent action</span><h2 id="delete-project-title">Delete {project.name}?</h2></div><button aria-label="Close" onclick={() => deleteModal = false} disabled={deleteBusy}>×</button></header>
       <form onsubmit={(event) => { event.preventDefault(); deleteProject(); }}>
-        <div class="deletion-warning"><strong>This cannot be undone</strong><p>The application container, {databaseServices.length} database service{databaseServices.length === 1 ? '' : 's'} and their persistent data, deployment history, and Caddy route will be removed.</p></div>
+        <div class="deletion-warning"><strong>This cannot be undone</strong><p>The application containers, deployment history, and Caddy routes will be removed. {databaseServices.length} shared database connection{databaseServices.length === 1 ? '' : 's'} will be detached, but their clusters and data remain available.</p></div>
         {#if deleteError}<div class="domain-feedback error"><strong>Project not deleted</strong><span>{deleteError}</span></div>{/if}
         <label class="confirm-field"><span>Type <code>{project.name}</code> to confirm</span><input bind:value={deleteConfirmation} autocomplete="off" spellcheck="false" placeholder={project.name} /></label>
         <footer><button type="button" onclick={() => deleteModal = false} disabled={deleteBusy}>Cancel</button><button class="destructive" type="submit" disabled={deleteBusy || deleteConfirmation !== project.name}>{deleteBusy ? 'Deleting resources…' : 'Delete project permanently'}</button></footer>
@@ -2338,12 +2339,11 @@
   .services article small { overflow: hidden; color: var(--color-muted); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
   .application-service-row, .database-row { border-top: 1px solid var(--color-rule); }
   .application-service-actions, .database-actions { display: flex !important; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-1) !important; }
-  .application-service-actions button, .database-actions button { min-height: 32px; padding: 0 var(--space-2); display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: transparent; color: var(--color-ink); font-size: var(--text-xs); font-weight: 600; cursor: pointer; }
+  .application-service-actions button, .database-actions button, .database-manage-link { min-height: 32px; padding: 0 var(--space-2); display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: transparent; color: var(--color-ink); font-size: var(--text-xs); font-weight: 600; text-decoration: none; cursor: pointer; }
   .application-service-actions button:hover:not(:disabled), .database-actions button:hover:not(:disabled) { background: var(--color-paper-subtle); }
   .application-service-actions .danger-text, .database-actions .danger-text { color: var(--color-danger); }
-  .application-service-actions .lifecycle-stop, .database-actions .lifecycle-stop, .database-card-actions .lifecycle-stop { border-color: color-mix(in srgb, var(--color-warning) 36%, var(--color-rule)); color: var(--color-warning); }
-  .application-service-actions .lifecycle-restart, .database-actions .lifecycle-restart, .database-card-actions .lifecycle-restart { border-color: color-mix(in srgb, var(--color-info) 34%, var(--color-rule)); color: var(--color-info); }
-  .database-actions .database-deploy, .database-card-actions .database-deploy { border-color: var(--color-accent); background: var(--color-accent); color: var(--color-accent-ink); }
+  .application-service-actions .lifecycle-stop { border-color: color-mix(in srgb, var(--color-warning) 36%, var(--color-rule)); color: var(--color-warning); }
+  .application-service-actions .lifecycle-restart { border-color: color-mix(in srgb, var(--color-info) 34%, var(--color-rule)); color: var(--color-info); }
   .application-service-actions .terminal-action { border-color: color-mix(in srgb, var(--color-accent) 34%, var(--color-rule)); color: var(--color-accent); }
   .application-service-actions .icon-only, .database-actions .icon-only { width: 32px; padding: 0; }
   .database-state { justify-items: end; gap: var(--space-1) !important; }
@@ -2467,9 +2467,8 @@
   .database-manager-card dd { margin: 0; min-width: 0; font-size: var(--text-xs); }
   .database-manager-card dd code { display: block; overflow: hidden; font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
   .database-manager-card dd span { color: var(--color-success); font-size: var(--text-2xs); font-weight: 600; text-transform: uppercase; }
-  .database-manager-card dd span.public { color: var(--color-warning); }
   .database-card-actions { padding: var(--space-3) var(--space-4); display: flex; flex-wrap: wrap; gap: var(--space-2); }
-  .database-card-actions button { min-height: 32px; padding: 0 var(--space-3); display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-xs); font-weight: 600; cursor: pointer; }
+  .database-card-actions button, .database-card-actions > a { min-height: 32px; padding: 0 var(--space-3); display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-xs); font-weight: 600; text-decoration: none; cursor: pointer; }
   .database-card-actions button:hover:not(:disabled) { background: var(--color-paper-subtle); }
   .database-card-actions button:disabled { opacity: .5; cursor: not-allowed; }
   .database-card-actions .delete-database { margin-left: auto; border-color: color-mix(in srgb, var(--color-danger) 35%, var(--color-rule)); color: var(--color-danger); }
@@ -2806,12 +2805,6 @@
   .compose-warnings > div { padding: 0 var(--space-4) var(--space-3); }
   .compose-modal > footer { min-height: 62px; padding: var(--space-3) var(--space-5); display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); border-top: 1px solid var(--color-rule); background: var(--color-surface-subtle); }
   .compose-modal > footer > span { margin-right: auto; color: var(--color-muted); font-size: var(--text-xs); }
-  .engine-picker { margin-bottom: var(--space-4); display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); }
-  .engine-picker button { min-height: 84px; padding: var(--space-3); display: grid; grid-template-columns: 32px minmax(0, 1fr); grid-template-rows: auto auto; align-items: center; gap: 0 var(--space-2); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-paper-raised); color: var(--color-ink); text-align: left; cursor: pointer; }
-  .engine-picker button.active { border-color: color-mix(in srgb, var(--color-accent) 50%, var(--color-rule)); background: var(--color-accent-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 16%, transparent); }
-  .engine-mark { width: 32px; height: 32px; grid-row: 1 / 3; display: grid; place-items: center; border-radius: var(--radius-sm); background: var(--color-paper-subtle); color: var(--color-accent); font: 600 var(--text-2xs) var(--font-mono); }
-  .engine-picker strong { font-size: var(--text-sm); }
-  .engine-picker small { color: var(--color-muted); font-size: var(--text-xs); }
   .form-grid { display: grid; gap: var(--space-4); }
   .form-grid .wide { grid-column: 1 / -1; }
   .form-grid label, .port-field { display: grid; gap: var(--space-2); }
@@ -2875,12 +2868,6 @@
   .command-field input { background: var(--color-log-bg); color: var(--color-log-text); font-family: var(--font-mono); }
   .command-field small { color: var(--color-muted); font-size: var(--text-xs); line-height: 1.5; }
   .command-field code { color: var(--color-accent); font-family: var(--font-mono); }
-  .exposure-choice { margin-top: var(--space-4); padding: var(--space-4); display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start; gap: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface-subtle); cursor: pointer; }
-  .exposure-choice input { margin-top: 2px; accent-color: var(--color-accent); }
-  .exposure-choice span { display: grid; gap: var(--space-1); }
-  .exposure-choice strong { font-size: var(--text-sm); }
-  .exposure-choice small { color: var(--color-muted); font-size: var(--text-xs); line-height: 1.5; }
-  .database-modal .port-field { margin-top: var(--space-4); }
   .port-field small { color: var(--color-muted); font-size: var(--text-xs); }
   .modal footer button { min-height: 36px; padding: 0 var(--space-4); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); background: var(--color-paper-raised); color: var(--color-ink); font-size: var(--text-sm); font-weight: 600; cursor: pointer; }
   .modal footer .primary { border-color: var(--color-accent); background: var(--color-accent); color: var(--color-accent-ink); }
@@ -2898,14 +2885,18 @@
   .credential-list code { overflow: hidden; font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
   .credential-list button { min-height: 28px; border: 1px solid var(--color-rule); border-radius: var(--radius-sm); background: transparent; color: var(--color-accent); font-size: var(--text-xs); font-weight: 600; cursor: pointer; }
   .secret-note { margin: var(--space-2) var(--space-5) var(--space-5); padding: var(--space-3); border-radius: var(--radius-sm); background: var(--color-surface-subtle); color: var(--color-muted); font-size: var(--text-xs); line-height: 1.5; }
+  .database-attach-intro { margin-bottom: var(--space-5); padding: var(--space-4); display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: var(--space-3); border: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-rule)); border-radius: var(--radius-md); background: var(--color-accent-softer); }
+  .database-attach-intro > span { width: 38px; height: 38px; display: grid; place-items: center; border-radius: var(--radius-sm); background: var(--color-accent); color: var(--color-accent-ink); }
+  .database-attach-intro strong { font-size: var(--text-sm); }
+  .database-attach-intro p { margin: var(--space-1) 0 0; color: var(--color-muted); font-size: var(--text-xs); line-height: 1.55; }
+  .select-shortcut { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); }
+  .select-shortcut a { min-width: 86px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); color: var(--color-accent); font-size: var(--text-xs); font-weight: 700; text-decoration: none; }
+  .database-cluster-empty { min-height: 180px; padding: var(--space-6); display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: var(--space-4); }
+  .database-cluster-empty p { margin: var(--space-1) 0 0; color: var(--color-muted); font-size: var(--text-sm); }
 
   /* ---------- Delete dialogs ---------- */
   .database-delete-modal form, .delete-project-modal form { padding: var(--space-5); }
   .database-delete-modal form > footer, .delete-project-modal form > footer { margin: var(--space-5) calc(var(--space-5) * -1) calc(var(--space-5) * -1); padding: var(--space-3) var(--space-5); display: flex; justify-content: flex-end; gap: var(--space-2); border-top: 1px solid var(--color-rule); background: var(--color-surface-subtle); }
-  .volume-choice { margin: var(--space-4) 0; padding: var(--space-4); display: flex; align-items: flex-start; gap: var(--space-3); border: 1px solid color-mix(in srgb, var(--color-danger) 28%, var(--color-rule)); border-radius: var(--radius-md); }
-  .volume-choice input { margin-top: 2px; accent-color: var(--color-danger); }
-  .volume-choice span { display: grid; gap: var(--space-1); }
-  .volume-choice small { color: var(--color-muted); line-height: 1.5; }
   .deletion-warning { margin-bottom: var(--space-4); padding: var(--space-4); border-left: 3px solid var(--color-danger); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: color-mix(in srgb, var(--color-danger) 7%, var(--color-paper-raised)); }
   .deletion-warning strong { color: var(--color-danger); font-size: var(--text-sm); }
   .deletion-warning p { margin: var(--space-2) 0 0; color: var(--color-muted); font-size: var(--text-sm); line-height: 1.6; }
@@ -2921,7 +2912,7 @@
   @media (max-width: 41.99rem) { .service-source-picker { grid-template-columns: 1fr; } .compose-intro { grid-template-columns: 40px minmax(0, 1fr); } .compose-upload { grid-column: 1 / -1; max-width: none; } .compose-modal > footer { align-items: stretch; flex-direction: column; } .compose-modal > footer > span { margin-right: 0; } }
   @media (min-width: 50rem) { .project-hero { flex-direction: row; align-items: center; } .overview-grid { grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr); } .domain-layout { grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr); } .route-guide { border-top: 0; border-left: 1px solid var(--color-rule); } }
   @media (max-width: 48rem) { .recent > a, .deployment-row { grid-template-columns: 104px minmax(0, 1fr) 20px; } .recent code, .deployment-row code, .recent time, .deployment-row time { display: none; } .services article { grid-template-columns: 40px minmax(0, 1fr) auto; } }
-  @media (max-width: 32rem) { .hero-actions { width: 100%; } .hero-actions button { flex: 1; padding-inline: var(--space-3); } .services article { grid-template-columns: 40px minmax(0, 1fr); } .services article :global(.status) { grid-column: 2; } .database-state, .database-actions { grid-column: 2; justify-items: start; } .feedback { grid-template-columns: 1fr auto; } .feedback span { grid-row: 2; grid-column: 1 / -1; } .engine-picker, .service-source-picker { grid-template-columns: 1fr; } .credential-list > div { grid-template-columns: 1fr 54px; padding: var(--space-2) 0; } .credential-list span { grid-column: 1 / -1; } .settings-grid { grid-template-columns: 1fr; } .settings-grid .wide { grid-column: auto; } .danger-zone, .project-editor form > footer, .runtime-settings-form > footer, .deployment-triggers > footer, .application-service-modal form > footer { align-items: stretch; flex-direction: column; } .application-service-modal form > footer > span { margin-right: 0; } .application-service-modal form > footer button { width: 100%; } .internal-registry-summary { grid-template-columns: 34px minmax(0, 1fr); } .internal-registry-summary button { grid-column: 1 / -1; width: 100%; } .runtime-settings-panel > header { align-items: flex-start; flex-direction: column; } .runtime-settings-panel > header > p { margin-left: 0; text-align: left; } .runtime-settings-form > footer > div, .runtime-settings-form > footer button, .deployment-triggers > footer button { width: 100%; } .runtime-settings-empty { grid-template-columns: 42px minmax(0, 1fr); } .runtime-settings-empty button { grid-column: 1 / -1; width: 100%; } .trigger-row { grid-template-columns: 36px minmax(0, 1fr); } .trigger-row .switch { grid-column: 2; } .webhook-endpoint { grid-template-columns: 1fr; } .webhook-endpoint button { width: 100%; } }
+  @media (max-width: 32rem) { .hero-actions { width: 100%; } .hero-actions button { flex: 1; padding-inline: var(--space-3); } .services article { grid-template-columns: 40px minmax(0, 1fr); } .services article :global(.status) { grid-column: 2; } .database-state, .database-actions { grid-column: 2; justify-items: start; } .feedback { grid-template-columns: 1fr auto; } .feedback span { grid-row: 2; grid-column: 1 / -1; } .service-source-picker { grid-template-columns: 1fr; } .credential-list > div { grid-template-columns: 1fr 54px; padding: var(--space-2) 0; } .credential-list span { grid-column: 1 / -1; } .settings-grid { grid-template-columns: 1fr; } .settings-grid .wide { grid-column: auto; } .danger-zone, .project-editor form > footer, .runtime-settings-form > footer, .deployment-triggers > footer, .application-service-modal form > footer { align-items: stretch; flex-direction: column; } .application-service-modal form > footer > span { margin-right: 0; } .application-service-modal form > footer button { width: 100%; } .internal-registry-summary { grid-template-columns: 34px minmax(0, 1fr); } .internal-registry-summary button { grid-column: 1 / -1; width: 100%; } .runtime-settings-panel > header { align-items: flex-start; flex-direction: column; } .runtime-settings-panel > header > p { margin-left: 0; text-align: left; } .runtime-settings-form > footer > div, .runtime-settings-form > footer button, .deployment-triggers > footer button { width: 100%; } .runtime-settings-empty { grid-template-columns: 42px minmax(0, 1fr); } .runtime-settings-empty button { grid-column: 1 / -1; width: 100%; } .trigger-row { grid-template-columns: 36px minmax(0, 1fr); } .trigger-row .switch { grid-column: 2; } .webhook-endpoint { grid-template-columns: 1fr; } .webhook-endpoint button { width: 100%; } }
   @media (max-width: 48rem) { .project-identity-layout { grid-template-columns: 1fr; } }
   @media (max-width: 44rem) { .log-panel > header { align-items: flex-start; flex-direction: column; } .log-actions { width: 100%; justify-content: flex-start; } .log-actions small { width: 100%; } .log-toolbar { align-items: stretch; flex-direction: column; } .log-filter-group { align-items: stretch; flex-direction: column; } .log-toolbar label { width: 100%; } .log-line { grid-template-columns: 34px 62px minmax(0, 1fr); } .log-line time { display: none; } .terminal-modal-backdrop { padding: var(--space-2); } .service-terminal-modal { height: calc(100vh - 16px); } .terminal-modal-toolbar { grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; } .terminal-modal-toolbar > div, .terminal-modal-toolbar > small { grid-column: 1 / -1; } .terminal-modal-toolbar > small { white-space: normal; } .terminal-prompt { grid-template-columns: auto minmax(0, 1fr); } .terminal-prompt time { display: none; } .terminal-command-form { grid-template-columns: 18px minmax(0, 1fr); } .terminal-command-form button { grid-column: 1 / -1; justify-content: center; } .environment-panel > header { align-items: flex-start; flex-direction: column; gap: var(--space-3); } .environment-columns { display: none; } .variable-row { grid-template-columns: 1fr 64px 34px; padding: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-md); } .variable-row > label:first-child, .value-field { grid-column: 1 / -1; } .environment-editor > footer { align-items: stretch; flex-direction: column; } .environment-editor > footer button { width: 100%; } .domain-editor-head { align-items: stretch; flex-direction: column; } .add-domain { width: 100%; } .binding-domain { grid-column: 1 / -1; } .binding-preview { grid-template-columns: minmax(0, 1fr) auto; } .binding-preview code { grid-row: 2; grid-column: 1 / -1; } .route-rules-footer { align-items: stretch; flex-direction: column; } }
   @media (max-width: 78rem) { .project-metric-grid { grid-template-columns: repeat(3, 1fr); } .project-metric-grid article:nth-child(3) { border-right: 0; } .project-metric-grid article:nth-child(-n+3) { border-bottom: 1px solid var(--color-rule); } .workload-columns, .workload-row { grid-template-columns: minmax(210px, 1.35fr) minmax(74px, 0.5fr) minmax(105px, 0.7fr) minmax(100px, 0.65fr); } .workload-columns span:nth-child(n+5), .workload-row > :nth-child(n+5) { display: none; } }

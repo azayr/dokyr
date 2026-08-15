@@ -70,7 +70,7 @@ export default withMermaid(defineConfig({
             downloadUrl: `${repository}/pkgs/container/dokyr`,
             license: `${repository}/blob/main/LICENSE`,
             description,
-            softwareVersion: '0.2.33',
+            softwareVersion: '0.2.34',
             offers: {
               '@type': 'Offer',
               price: '0',
@@ -154,11 +154,11 @@ export default withMermaid(defineConfig({
     siteTitle: 'Dokyr',
     nav: [
       { text: 'Guide', link: '/guide/' },
-      { text: 'Infrastructure', link: '/infrastructure/domains' },
+      { text: 'Infrastructure', link: '/infrastructure/databases' },
       { text: 'Operations', link: '/operations/upgrades' },
       { text: 'API', link: '/API' },
       { text: 'Architecture', link: '/ARCHITECTURE' },
-      { text: 'v0.2.33', link: 'https://github.com/azayr/dokyr/releases/tag/v0.2.33' }
+      { text: 'v0.2.34', link: 'https://github.com/azayr/dokyr/releases/tag/v0.2.34' }
     ],
     sidebar: {
       '/guide/': [
@@ -176,6 +176,7 @@ export default withMermaid(defineConfig({
         {
           text: 'Infrastructure',
           items: [
+            { text: 'Database clusters', link: '/infrastructure/databases' },
             { text: 'Domains and HTTPS', link: '/infrastructure/domains' },
             { text: 'Private registry', link: '/infrastructure/registry' },
             { text: 'Object storage', link: '/infrastructure/storage' },

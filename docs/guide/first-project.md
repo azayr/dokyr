@@ -5,7 +5,7 @@ description: Deploy a container image with Dokyr, configure environment variable
 
 # Create your first project
 
-A project groups application services, databases, domains, and deployment history. Start with an image that already exposes an HTTP port.
+A project groups application services, domains, database connections, and deployment history. Database clusters are global infrastructure that can connect privately to one or more projects. Start with an image that already exposes an HTTP port.
 
 ## 1. Choose the image source
 
@@ -50,7 +50,7 @@ See [Deployments](/guide/deployments) for the lifecycle and troubleshooting sign
 
 ## 5. Add data and traffic
 
-- Add PostgreSQL, MySQL, or MariaDB from the project database area. Database containers remain private unless you deliberately publish a host port.
+- Create PostgreSQL, MySQL, or MariaDB under **Infrastructure → Databases**. In the project's **Databases** tab, select **Add database**, then choose the cluster, logical database, granted user, and private service name. The same cluster can connect to several projects without becoming owned by any one of them.
 - Attach a hostname from **Infrastructure → Domains**, choose the target service and path, then enable automatic HTTPS.
 
-Continue with [Domains and HTTPS](/infrastructure/domains).
+Continue with [Database clusters](/infrastructure/databases) or [Domains and HTTPS](/infrastructure/domains).
