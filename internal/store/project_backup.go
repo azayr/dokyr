@@ -245,6 +245,13 @@ func (s *Store) RestoreProjectBackupData(ctx context.Context, d ProjectBackupDat
 	}
 	for _, v := range d.Applications {
 		var rid, cid any
+		if v.SourceType != "image" && v.BuildStrategy != "dockerfile" {
+			// Older backups exposed automatic builders as separate strategies.
+			// They all migrate to the single Railpack-backed Auto mode.
+			v.BuildStrategy = "auto"
+		} else {
+			v.BuildStrategy = "dockerfile"
+		}
 		if v.RegistryID != "" {
 			rid = v.RegistryID
 		}

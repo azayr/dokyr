@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -33,13 +34,18 @@ type Config struct {
 	GitLabClientID     string
 	GitLabClientSecret string
 	GitLabBaseURL      string
+	GiteaClientID      string
+	GiteaClientSecret  string
+	GiteaBaseURL       string
 }
 
 type Service struct {
-	store *store.Store
-	box   *secretbox.Box
-	cfg   Config
-	http  *http.Client
+	store      *store.Store
+	box        *secretbox.Box
+	cfg        Config
+	http       *http.Client
+	lookupIPv4 func(context.Context, string) (string, error)
+	oauth      sync.Mutex
 }
 
 type Repository struct {
@@ -70,6 +76,22 @@ type githubOAuthCredentials struct {
 	clientSecret string
 }
 
+type oauthCredential struct {
+	AccessToken  string    `json:"accessToken"`
+	RefreshToken string    `json:"refreshToken,omitempty"`
+	ExpiresAt    time.Time `json:"expiresAt,omitempty"`
+}
+
+type oauthTokenResponse struct {
+	AccessToken      string `json:"access_token"`
+	RefreshToken     string `json:"refresh_token"`
+	Scope            string `json:"scope"`
+	ExpiresIn        int64  `json:"expires_in"`
+	CreatedAt        int64  `json:"created_at"`
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
+}
+
 type githubInstallationRemote struct {
 	ID                  int64             `json:"id"`
 	RepositorySelection string            `json:"repository_selection"`
@@ -95,7 +117,23 @@ const (
 func New(s *store.Store, box *secretbox.Box, cfg Config) *Service {
 	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
 	cfg.GitLabBaseURL = strings.TrimRight(cfg.GitLabBaseURL, "/")
-	return &Service{store: s, box: box, cfg: cfg, http: &http.Client{Timeout: 15 * time.Second}}
+	cfg.GiteaBaseURL = strings.TrimRight(cfg.GiteaBaseURL, "/")
+	return &Service{
+		store: s,
+		box:   box,
+		cfg:   cfg,
+		http:  &http.Client{Timeout: 15 * time.Second},
+		lookupIPv4: func(ctx context.Context, host string) (string, error) {
+			addresses, err := net.DefaultResolver.LookupIP(ctx, "ip4", host)
+			if err != nil {
+				return "", err
+			}
+			if len(addresses) == 0 {
+				return "", fmt.Errorf("no IPv4 address found for %s", host)
+			}
+			return addresses[0].String(), nil
+		},
+	}
 }
 
 func (s *Service) ProviderStatus(ctx context.Context) (map[string]any, error) {
@@ -122,6 +160,7 @@ func (s *Service) ProviderStatus(ctx context.Context) (map[string]any, error) {
 			"callbackUrl":     s.installationCallbackURL(),
 		},
 		"gitlab": map[string]any{"configured": s.cfg.GitLabClientID != "" && s.cfg.GitLabClientSecret != "", "callbackUrl": s.callbackURL("gitlab"), "baseUrl": s.cfg.GitLabBaseURL},
+		"gitea":  map[string]any{"configured": s.cfg.GiteaClientID != "" && s.cfg.GiteaClientSecret != "", "callbackUrl": s.callbackURL("gitea"), "baseUrl": s.cfg.GiteaBaseURL},
 	}, nil
 }
 
@@ -205,7 +244,7 @@ func (s *Service) CompleteGitHubAccountOAuth(ctx context.Context, stateValue, co
 	if err != nil {
 		return store.AuthOAuthState{}, GitHubIdentity{}, err
 	}
-	profile, err := s.profile(ctx, "github", token)
+	profile, err := s.profile(ctx, "github", token.AccessToken)
 	if err != nil {
 		return store.AuthOAuthState{}, GitHubIdentity{}, err
 	}
@@ -507,10 +546,10 @@ func (s *Service) githubOAuthCredentials(ctx context.Context, providerApp string
 }
 
 func (s *Service) Start(ctx context.Context, userID, provider string) (string, error) {
-	if provider != "gitlab" {
+	if provider != "gitlab" && provider != "gitea" {
 		return "", errors.New("unsupported source provider")
 	}
-	clientID, clientSecret := s.cfg.GitLabClientID, s.cfg.GitLabClientSecret
+	clientID, clientSecret := s.providerOAuthCredentials(provider)
 	if clientID == "" || clientSecret == "" {
 		return "", fmt.Errorf("%s OAuth is not configured", provider)
 	}
@@ -529,6 +568,9 @@ func (s *Service) Start(ctx context.Context, userID, provider string) (string, e
 	case "gitlab":
 		endpoint = s.cfg.GitLabBaseURL + "/oauth/authorize"
 		values.Set("scope", "read_api read_repository")
+	case "gitea":
+		endpoint = s.cfg.GiteaBaseURL + "/login/oauth/authorize"
+		values.Set("scope", "read:user read:repository")
 	default:
 		return "", errors.New("unsupported source provider")
 	}
@@ -536,7 +578,7 @@ func (s *Service) Start(ctx context.Context, userID, provider string) (string, e
 }
 
 func (s *Service) Complete(ctx context.Context, provider, stateValue, code string) error {
-	if provider != "gitlab" {
+	if provider != "gitlab" && provider != "gitea" {
 		return errors.New("unsupported source provider")
 	}
 	if stateValue == "" || code == "" {
@@ -547,15 +589,19 @@ func (s *Service) Complete(ctx context.Context, provider, stateValue, code strin
 	if err != nil {
 		return errors.New("OAuth state is invalid or expired")
 	}
-	token, scopes, err := s.exchange(ctx, provider, code)
+	credential, scopes, err := s.exchange(ctx, provider, code)
 	if err != nil {
 		return err
 	}
-	profile, err := s.profile(ctx, provider, token)
+	profile, err := s.profile(ctx, provider, credential.AccessToken)
 	if err != nil {
 		return err
 	}
-	sealed, err := s.box.Encrypt(token)
+	credentialJSON, err := json.Marshal(credential)
+	if err != nil {
+		return err
+	}
+	sealed, err := s.box.Encrypt(string(credentialJSON))
 	if err != nil {
 		return err
 	}
@@ -566,7 +612,7 @@ func (s *Service) Repositories(ctx context.Context, connection store.SourceConne
 	if connection.Provider == "github" && connection.InstallationID > 0 {
 		return s.githubInstallationRepositories(ctx, connection.InstallationID)
 	}
-	token, err := s.box.Decrypt(connection.AccessTokenEncrypted)
+	token, err := s.sourceAccessToken(ctx, connection)
 	if err != nil {
 		return nil, err
 	}
@@ -575,6 +621,9 @@ func (s *Service) Repositories(ctx context.Context, connection store.SourceConne
 	}
 	if connection.Provider == "gitlab" {
 		return s.gitlabRepositories(ctx, connection.BaseURL, token)
+	}
+	if connection.Provider == "gitea" {
+		return s.giteaRepositories(ctx, connection.BaseURL, token)
 	}
 	return nil, errors.New("unsupported source provider")
 }
@@ -596,7 +645,7 @@ func (s *Service) RepositoryToken(ctx context.Context, connection store.SourceCo
 	if connection.Provider == "github" && connection.InstallationID > 0 {
 		return s.githubInstallationToken(ctx, connection.InstallationID, true)
 	}
-	return s.box.Decrypt(connection.AccessTokenEncrypted)
+	return s.sourceAccessToken(ctx, connection)
 }
 
 type lineWriter struct {
@@ -627,8 +676,8 @@ func (s *Service) CloneRepository(ctx context.Context, connection store.SourceCo
 	if err != nil {
 		return fmt.Errorf("create repository credential: %w", err)
 	}
-	if !strings.HasPrefix(repository.CloneURL, "https://") {
-		return errors.New("only HTTPS repository clone URLs are supported")
+	if !secureCloneURL(connection, repository.CloneURL) {
+		return errors.New("repository clone URL must use HTTPS or the configured local Gitea HTTP origin")
 	}
 	credentialsDir, err := os.MkdirTemp("", "selfhost-git-credentials-")
 	if err != nil {
@@ -643,12 +692,22 @@ func (s *Service) CloneRepository(ctx context.Context, connection store.SourceCo
 	username := "oauth2"
 	if connection.Provider == "github" {
 		username = "x-access-token"
+	} else if connection.Provider == "gitea" {
+		username = connection.AccountName
 	}
 	if progress != nil {
 		progress("Cloning " + repository.FullName + " at " + branch)
 	}
 	output := &lineWriter{progress: progress}
-	command := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--single-branch", "--branch", branch, repository.CloneURL, destination)
+	args := []string{"clone", "--depth", "1", "--single-branch", "--branch", branch, repository.CloneURL, destination}
+	resolveOption, err := s.giteaHTTPCloneResolveOption(ctx, connection, repository.CloneURL)
+	if err != nil {
+		return err
+	}
+	if resolveOption != "" {
+		args = append([]string{"-c", resolveOption}, args...)
+	}
+	command := exec.CommandContext(ctx, "git", args...)
 	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS="+askPassPath, "SELFHOST_GIT_USERNAME="+username, "SELFHOST_GIT_TOKEN="+token)
 	command.Stdout = output
 	command.Stderr = output
@@ -658,43 +717,162 @@ func (s *Service) CloneRepository(ctx context.Context, connection store.SourceCo
 	return nil
 }
 
-type profile struct{ id, name, avatar string }
-
-func (s *Service) exchange(ctx context.Context, provider, code string) (string, string, error) {
-	return s.exchangeWithCredentials(ctx, provider, code, s.callbackURL(provider), s.cfg.GitLabClientID, s.cfg.GitLabClientSecret)
+func (s *Service) giteaHTTPCloneResolveOption(ctx context.Context, connection store.SourceConnection, cloneURL string) (string, error) {
+	if connection.Provider != "gitea" {
+		return "", nil
+	}
+	clone, err := url.Parse(cloneURL)
+	if err != nil || clone.Scheme != "http" {
+		return "", nil
+	}
+	host := clone.Hostname()
+	if host == "" || net.ParseIP(host) != nil {
+		return "", nil
+	}
+	address, err := s.lookupIPv4(ctx, host)
+	if err != nil {
+		return "", fmt.Errorf("resolve local Gitea host %s: %w", host, err)
+	}
+	parsedAddress := net.ParseIP(address)
+	if parsedAddress == nil || parsedAddress.To4() == nil {
+		return "", fmt.Errorf("resolve local Gitea host %s: invalid IPv4 address %q", host, address)
+	}
+	port := clone.Port()
+	if port == "" {
+		port = "80"
+	}
+	return "http.curloptResolve=" + host + ":" + port + ":" + parsedAddress.String(), nil
 }
 
-func (s *Service) exchangeWithCredentials(ctx context.Context, provider, code, callback, clientID, clientSecret string) (string, string, error) {
+func secureCloneURL(connection store.SourceConnection, cloneURL string) bool {
+	clone, err := url.Parse(cloneURL)
+	if err != nil || clone.Host == "" {
+		return false
+	}
+	if clone.Scheme == "https" {
+		return true
+	}
+	if connection.Provider != "gitea" || clone.Scheme != "http" {
+		return false
+	}
+	base, err := url.Parse(connection.BaseURL)
+	return err == nil && base.Scheme == "http" && strings.EqualFold(base.Host, clone.Host)
+}
+
+type profile struct{ id, name, avatar string }
+
+func (s *Service) exchange(ctx context.Context, provider, code string) (oauthCredential, string, error) {
+	clientID, clientSecret := s.providerOAuthCredentials(provider)
+	return s.exchangeWithCredentials(ctx, provider, code, s.callbackURL(provider), clientID, clientSecret)
+}
+
+func (s *Service) exchangeWithCredentials(ctx context.Context, provider, code, callback, clientID, clientSecret string) (oauthCredential, string, error) {
 	values := url.Values{"client_id": {clientID}, "client_secret": {clientSecret}, "code": {code}, "redirect_uri": {callback}, "grant_type": {"authorization_code"}}
-	endpoint := "https://github.com/login/oauth/access_token"
-	if provider == "gitlab" {
-		endpoint = s.cfg.GitLabBaseURL + "/oauth/token"
+	out, err := s.requestOAuthToken(ctx, provider, values)
+	if err != nil {
+		return oauthCredential{}, "", err
+	}
+	return oauthCredentialFromResponse(out), out.Scope, nil
+}
+
+func (s *Service) requestOAuthToken(ctx context.Context, provider string, values url.Values) (oauthTokenResponse, error) {
+	endpoint := s.providerTokenEndpoint(provider)
+	if endpoint == "" {
+		return oauthTokenResponse{}, errors.New("unsupported OAuth provider")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(values.Encode()))
 	if err != nil {
-		return "", "", err
+		return oauthTokenResponse{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	var out struct {
-		AccessToken      string `json:"access_token"`
-		Scope            string `json:"scope"`
-		Error            string `json:"error"`
-		ErrorDescription string `json:"error_description"`
-	}
+	var out oauthTokenResponse
 	if err := s.doJSON(req, &out); err != nil {
-		return "", "", err
+		return oauthTokenResponse{}, err
 	}
 	if out.AccessToken == "" {
-		return "", "", fmt.Errorf("OAuth token exchange failed: %s %s", out.Error, out.ErrorDescription)
+		return oauthTokenResponse{}, fmt.Errorf("OAuth token exchange failed: %s %s", out.Error, out.ErrorDescription)
 	}
-	return out.AccessToken, out.Scope, nil
+	return out, nil
+}
+
+func oauthCredentialFromResponse(out oauthTokenResponse) oauthCredential {
+	credential := oauthCredential{AccessToken: out.AccessToken, RefreshToken: out.RefreshToken}
+	if out.ExpiresIn > 0 {
+		issuedAt := time.Now()
+		if out.CreatedAt > 0 {
+			issuedAt = time.Unix(out.CreatedAt, 0)
+		}
+		credential.ExpiresAt = issuedAt.Add(time.Duration(out.ExpiresIn) * time.Second)
+	}
+	return credential
+}
+
+func (s *Service) sourceAccessToken(ctx context.Context, connection store.SourceConnection) (string, error) {
+	if connection.Provider != "gitlab" && connection.Provider != "gitea" {
+		return s.box.Decrypt(connection.AccessTokenEncrypted)
+	}
+	s.oauth.Lock()
+	defer s.oauth.Unlock()
+
+	if connection.ID != "" {
+		current, err := s.store.SourceConnection(ctx, connection.ID)
+		if err != nil {
+			return "", err
+		}
+		connection = current
+	}
+	plain, err := s.box.Decrypt(connection.AccessTokenEncrypted)
+	if err != nil {
+		return "", err
+	}
+	var credential oauthCredential
+	if err := json.Unmarshal([]byte(plain), &credential); err != nil || credential.AccessToken == "" {
+		// Connections created before refresh-token support contain only the
+		// encrypted access token. Keep them usable until the provider expires it.
+		return plain, nil
+	}
+	if credential.ExpiresAt.IsZero() || time.Now().Add(time.Minute).Before(credential.ExpiresAt) {
+		return credential.AccessToken, nil
+	}
+	if credential.RefreshToken == "" {
+		return "", fmt.Errorf("%s OAuth access expired; reconnect the source", connection.Provider)
+	}
+	clientID, clientSecret := s.providerOAuthCredentials(connection.Provider)
+	values := url.Values{
+		"client_id":     {clientID},
+		"client_secret": {clientSecret},
+		"refresh_token": {credential.RefreshToken},
+		"grant_type":    {"refresh_token"},
+	}
+	out, err := s.requestOAuthToken(ctx, connection.Provider, values)
+	if err != nil {
+		return "", fmt.Errorf("refresh %s OAuth access: %w", connection.Provider, err)
+	}
+	refreshed := oauthCredentialFromResponse(out)
+	if refreshed.RefreshToken == "" {
+		refreshed.RefreshToken = credential.RefreshToken
+	}
+	encoded, err := json.Marshal(refreshed)
+	if err != nil {
+		return "", err
+	}
+	sealed, err := s.box.Encrypt(string(encoded))
+	if err != nil {
+		return "", err
+	}
+	if err := s.store.UpdateSourceConnectionToken(ctx, connection.ID, sealed); err != nil {
+		return "", err
+	}
+	return refreshed.AccessToken, nil
 }
 
 func (s *Service) profile(ctx context.Context, provider, token string) (profile, error) {
 	endpoint := "https://api.github.com/user"
 	if provider == "gitlab" {
 		endpoint = s.cfg.GitLabBaseURL + "/api/v4/user"
+	} else if provider == "gitea" {
+		endpoint = s.cfg.GiteaBaseURL + "/api/v1/user"
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -928,6 +1106,55 @@ func (s *Service) gitlabRepositories(ctx context.Context, baseURL, token string)
 	return items, nil
 }
 
+func (s *Service) giteaRepositories(ctx context.Context, baseURL, token string) ([]Repository, error) {
+	const pageSize = 50
+	items := []Repository{}
+	for page := 1; page <= 100; page++ {
+		values := url.Values{
+			"private": {"true"},
+			"sort":    {"updated"},
+			"order":   {"desc"},
+			"limit":   {strconv.Itoa(pageSize)},
+			"page":    {strconv.Itoa(page)},
+		}
+		endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/repos/search?" + values.Encode()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		s.bearer(req, token, "gitea")
+		var out struct {
+			Data []struct {
+				ID            int64  `json:"id"`
+				Name          string `json:"name"`
+				FullName      string `json:"full_name"`
+				CloneURL      string `json:"clone_url"`
+				DefaultBranch string `json:"default_branch"`
+				Private       bool   `json:"private"`
+				UpdatedAt     string `json:"updated_at"`
+			} `json:"data"`
+		}
+		if err := s.doJSON(req, &out); err != nil {
+			return nil, err
+		}
+		if len(out.Data) == 0 {
+			break
+		}
+		for _, repository := range out.Data {
+			items = append(items, Repository{
+				ID:            strconv.FormatInt(repository.ID, 10),
+				Name:          repository.Name,
+				FullName:      repository.FullName,
+				CloneURL:      repository.CloneURL,
+				DefaultBranch: repository.DefaultBranch,
+				Private:       repository.Private,
+				UpdatedAt:     repository.UpdatedAt,
+			})
+		}
+	}
+	return items, nil
+}
+
 func (s *Service) doJSON(req *http.Request, out any) error {
 	resp, err := s.http.Do(req)
 	if err != nil {
@@ -975,7 +1202,34 @@ func (s *Service) providerBase(provider string) string {
 	if provider == "github" {
 		return "https://github.com"
 	}
-	return s.cfg.GitLabBaseURL
+	if provider == "gitlab" {
+		return s.cfg.GitLabBaseURL
+	}
+	return s.cfg.GiteaBaseURL
+}
+
+func (s *Service) providerOAuthCredentials(provider string) (string, string) {
+	switch provider {
+	case "gitlab":
+		return s.cfg.GitLabClientID, s.cfg.GitLabClientSecret
+	case "gitea":
+		return s.cfg.GiteaClientID, s.cfg.GiteaClientSecret
+	default:
+		return "", ""
+	}
+}
+
+func (s *Service) providerTokenEndpoint(provider string) string {
+	switch provider {
+	case "github":
+		return "https://github.com/login/oauth/access_token"
+	case "gitlab":
+		return s.cfg.GitLabBaseURL + "/oauth/token"
+	case "gitea":
+		return s.cfg.GiteaBaseURL + "/login/oauth/access_token"
+	default:
+		return ""
+	}
 }
 
 func randomToken(n int) (string, error) {

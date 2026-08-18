@@ -45,3 +45,17 @@ func TestControlUpstreamDefaultsToLegacyServiceAndAcceptsDokyr(t *testing.T) {
 		t.Fatalf("configured control upstream = %q", loaded.ControlUpstream)
 	}
 }
+
+func TestGiteaConfigurationSupportsLocalNetworkOrigin(t *testing.T) {
+	t.Setenv("GITEA_CLIENT_ID", "dokyr-local")
+	t.Setenv("GITEA_CLIENT_SECRET", "secret")
+	t.Setenv("GITEA_BASE_URL", "http://192.168.1.20:3000")
+
+	loaded := Load()
+	if loaded.GiteaClientID != "dokyr-local" || loaded.GiteaClientSecret != "secret" {
+		t.Fatalf("unexpected Gitea OAuth credentials: %+v", loaded)
+	}
+	if loaded.GiteaBaseURL != "http://192.168.1.20:3000" {
+		t.Fatalf("Gitea base URL = %q", loaded.GiteaBaseURL)
+	}
+}

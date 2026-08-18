@@ -1821,12 +1821,12 @@
                   <label class="settings-field"><span>Git account</span><select bind:value={runtimeSettingsForm.connectionId} required>{#each integrations.connections || [] as connection}<option value={connection.id}>{connection.provider} · {connection.accountName}</option>{/each}</select></label>
                   <label class="settings-field"><span>Repository</span><input bind:value={runtimeSettingsForm.repository} required spellcheck="false" /></label>
                   <label class="settings-field"><span>Branch</span><input bind:value={runtimeSettingsForm.branch} required spellcheck="false" /></label>
-                  <label class="settings-field"><span>Build strategy</span><select bind:value={runtimeSettingsForm.buildStrategy}><option value="dockerfile">Dockerfile</option><option value="railpack">Railpack</option><option value="nixpacks">Nixpacks</option></select></label>
+                  <label class="settings-field"><span>Build strategy</span><select bind:value={runtimeSettingsForm.buildStrategy}><option value="dockerfile">Dockerfile</option><option value="auto">Auto</option></select></label>
                   {#if runtimeSettingsForm.buildStrategy === 'dockerfile'}
                     <label class="settings-field"><span>Dockerfile path</span><input bind:value={runtimeSettingsForm.dockerfilePath} required spellcheck="false" /></label>
                     <label class="settings-field"><span>Build context</span><input bind:value={runtimeSettingsForm.buildContext} required spellcheck="false" /></label>
                   {:else}
-                    <div class="settings-field build-pack-help"><strong>{runtimeSettingsForm.buildStrategy === 'railpack' ? 'Railpack' : 'Nixpacks'} will detect the language and build plan.</strong><small>No Dockerfile is required. Commit <code>railpack.json</code> or <code>nixpacks.toml</code> to customize the build.</small></div>
+                    <div class="settings-field build-pack-help"><strong>Auto detects the language and generates a Railpack build plan.</strong><small>No Dockerfile is required. Commit <code>railpack.json</code> to customize the build.</small></div>
                   {/if}
                 {:else}
                   {#if runtimeSettingsForm.internalRegistry}
@@ -2035,12 +2035,12 @@
             <label><span>Git account</span><select bind:value={serviceSettingsForm.connectionId} required>{#each integrations.connections || [] as connection}<option value={connection.id}>{connection.provider} · {connection.accountName}</option>{/each}</select></label>
             <label><span>Repository</span><input bind:value={serviceSettingsForm.repository} required spellcheck="false" /></label>
             <label><span>Branch</span><input bind:value={serviceSettingsForm.branch} required spellcheck="false" /></label>
-            <label><span>Build strategy</span><select bind:value={serviceSettingsForm.buildStrategy}><option value="dockerfile">Dockerfile</option><option value="railpack">Railpack</option><option value="nixpacks">Nixpacks</option></select></label>
+            <label><span>Build strategy</span><select bind:value={serviceSettingsForm.buildStrategy}><option value="dockerfile">Dockerfile</option><option value="auto">Auto</option></select></label>
             {#if serviceSettingsForm.buildStrategy === 'dockerfile'}
               <label><span>Dockerfile path</span><input bind:value={serviceSettingsForm.dockerfilePath} required spellcheck="false" /></label>
               <label><span>Build context</span><input bind:value={serviceSettingsForm.buildContext} required spellcheck="false" /></label>
             {:else}
-              <div class="wide build-pack-help"><strong>{serviceSettingsForm.buildStrategy === 'railpack' ? 'Railpack' : 'Nixpacks'} automatically detects and builds the repository.</strong><small>No Dockerfile is required. Add <code>railpack.json</code> or <code>nixpacks.toml</code> to control the build.</small></div>
+              <div class="wide build-pack-help"><strong>Auto detects and builds the repository with Railpack.</strong><small>No Dockerfile is required. Add <code>railpack.json</code> to control the build.</small></div>
             {/if}
           {:else}
             {#if serviceSettingsForm.internalRegistry}
@@ -2132,7 +2132,7 @@
             <span class="source-icon"><Icon name="box" size={18}/></span><span><strong>Docker image</strong><small>Pull a public or private registry image</small></span><i></i>
           </button>
           <button type="button" class:active={serviceForm.sourceType === 'repository'} onclick={() => chooseServiceSource('repository')}>
-            <span class="source-icon"><Icon name="git" size={18}/></span><span><strong>Git repository</strong><small>Clone from a connected GitHub or GitLab account</small></span><i></i>
+            <span class="source-icon"><Icon name="git" size={18}/></span><span><strong>Git repository</strong><small>Clone from a connected GitHub, GitLab, or Gitea account</small></span><i></i>
           </button>
         </fieldset>
         {#if serviceError}<div class="domain-feedback error"><strong>Service not added</strong><span>{serviceError}</span></div>{/if}
@@ -2157,7 +2157,7 @@
               <label><span>Container image</span><input bind:value={serviceForm.imageUrl} required placeholder="adminer:latest" spellcheck="false" /></label>
             {/if}
           {:else}
-            <label><span>Git account</span><select bind:value={serviceForm.connectionId} onchange={changeServiceConnection} required><option value="">Select GitHub or GitLab</option>{#each integrations.connections || [] as connection}<option value={connection.id}>{connection.provider === 'github' ? 'GitHub' : 'GitLab'} · {connection.accountName}</option>{/each}</select></label>
+            <label><span>Git account</span><select bind:value={serviceForm.connectionId} onchange={changeServiceConnection} required><option value="">Select a Git provider</option>{#each integrations.connections || [] as connection}<option value={connection.id}>{connection.provider === 'github' ? 'GitHub' : connection.provider === 'gitlab' ? 'GitLab' : 'Gitea'} · {connection.accountName}</option>{/each}</select></label>
             <label class="repository-search"><span>Repository</span>
               <div class:open={serviceRepositoryPickerOpen} class="repository-combobox">
                 <input
@@ -2190,17 +2190,17 @@
               </div>
               <small class="field-help">{serviceForm.repository ? `Selected: ${serviceForm.repository}` : 'Search by repository or owner name.'}</small>
             </label>
-            {#if (integrations.connections || []).length === 0}<div class="wide source-empty-note"><Icon name="link" size={16}/><span><strong>No Git account connected</strong><small>Link GitHub or GitLab under Sources before deploying a repository.</small></span><a href="/integrations">Open Sources</a></div>{/if}
+            {#if (integrations.connections || []).length === 0}<div class="wide source-empty-note"><Icon name="link" size={16}/><span><strong>No Git account connected</strong><small>Link GitHub, GitLab, or Gitea under Sources before deploying a repository.</small></span><a href="/integrations">Open Sources</a></div>{/if}
             {#if serviceForm.connectionId && !serviceRepositoriesLoading && !serviceRepositoriesError && serviceRepositories.length === 0}<div class="wide source-empty-note"><Icon name="git" size={16}/><span><strong>No repositories authorized</strong><small>Choose which repositories this Git account can deploy.</small></span><a href="/integrations">Manage access</a></div>{/if}
             {#if serviceForm.connectionId && githubContentsPermissionMissing()}<div class="wide source-empty-note permission-note"><Icon name="lock" size={16}/><span><strong>GitHub Contents permission is missing</strong><small>Repository names are visible, but private clone and deployment will fail until the App has read-only Contents access.</small></span><a href={selectedServiceConnection()?.manageUrl || '/integrations'}>Fix permission</a></div>{/if}
             {#if serviceRepositoriesError}<div class="wide domain-feedback error"><strong>Repositories unavailable</strong><span>{serviceRepositoriesError}</span></div>{/if}
             <label><span>Branch</span><input bind:value={serviceForm.branch} required placeholder="main" spellcheck="false" /></label>
-            <label><span>Build strategy</span><select bind:value={serviceForm.buildStrategy}><option value="dockerfile">Dockerfile</option><option value="railpack">Railpack</option><option value="nixpacks">Nixpacks</option></select><small class="field-help">Use a build pack when the repository has no Dockerfile.</small></label>
+            <label><span>Build strategy</span><select bind:value={serviceForm.buildStrategy}><option value="dockerfile">Dockerfile</option><option value="auto">Auto</option></select><small class="field-help">Auto analyzes repositories that do not include a Dockerfile.</small></label>
             {#if serviceForm.buildStrategy === 'dockerfile'}
               <label><span>Dockerfile path</span><input bind:value={serviceForm.dockerfilePath} required placeholder="Dockerfile" spellcheck="false" /></label>
               <label><span>Build context</span><input bind:value={serviceForm.buildContext} required placeholder="." spellcheck="false" /><small class="field-help">Directory sent to Docker, relative to the repository root.</small></label>
             {:else}
-              <div class="wide build-pack-help"><strong>{serviceForm.buildStrategy === 'railpack' ? 'Railpack' : 'Nixpacks'} will inspect this repository and create the container image.</strong><small>No Dockerfile is required. You can configure it in the repository with <code>{serviceForm.buildStrategy === 'railpack' ? 'railpack.json' : 'nixpacks.toml'}</code>.</small></div>
+              <div class="wide build-pack-help"><strong>Auto will inspect this repository and create the container image with Railpack.</strong><small>No Dockerfile is required. You can configure the build with <code>railpack.json</code>.</small></div>
             {/if}
           {/if}
           <label class="wide command-field"><span>Container command <em>optional</em></span><input bind:value={serviceForm.command} maxlength="4096" placeholder="start-dev" spellcheck="false" /><small>Arguments passed to the image ENTRYPOINT. For Keycloak, enter <code>start-dev</code>.</small></label>

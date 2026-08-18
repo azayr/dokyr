@@ -649,9 +649,11 @@ Git service:
 
 `environment` is a newline-separated `KEY=value` string on service creation. Later use the structured environment endpoint. `healthCheckType` is `none`, `http`, or `command`. HTTP checks require an absolute `healthCheckPath`; command checks require `healthCheckCommand`. `healthCheckTimeoutSeconds` accepts 5–600 seconds and defaults to 60. With `none`, promotion verifies that the candidate container remains running.
 
-Git repositories must be visible to the selected GitHub/GitLab connection. `buildStrategy` is `dockerfile` (default), `railpack`, or `nixpacks`. Dockerfile builds require `dockerfilePath` and `buildContext`, both of which must remain inside the repository; absolute paths and parent traversal are rejected. Railpack and Nixpacks inspect the repository and do not require a Dockerfile.
+Git repositories must be visible to the selected GitHub, GitLab, or Gitea connection. `buildStrategy` is `dockerfile` (default) or `auto`. Dockerfile builds require `dockerfilePath` and `buildContext`, both of which must remain inside the repository; absolute paths and parent traversal are rejected. Auto uses Railpack to inspect the repository and does not require a Dockerfile.
 
-Nixpacks uses the control plane's existing Docker socket. Railpack requires a BuildKit daemon; set `SELFHOST_BUILDKIT_HOST` to its reachable `tcp://host:port` endpoint before selecting Railpack. This is intentionally opt-in so the control-plane compose stack does not introduce a privileged builder daemon automatically.
+Auto builds run `railpack prepare` to generate `railpack-plan.json`, then send the source and plan to the rootless BuildKit service included in `compose.yaml` through `SELFHOST_BUILDKIT_HOST=tcp://buildkit:1234`. The daemon is isolated on the dedicated build network and its port is not published to the host. Set `SELFHOST_BUILDKIT_HOST` to another reachable `tcp://host:port` endpoint to use an externally managed BuildKit deployment instead. Set `SELFHOST_BUILDKIT_CACHE_REF` to a registry cache reference such as `registry.example.com/dokyr/{service}:cache`; `{service}` is replaced with the service ID, and Dokyr imports and exports that cache for each build.
+
+The bundled builder reads DNS servers from `buildkitd.toml`. Adjust that file when production builds must resolve private package mirrors or internal hostnames instead of the public defaults.
 
 `POST` returns `201` with `{ "service": ApplicationService }`. `PUT` returns `{ "service": ApplicationService, "message": "Service configuration saved; deploy the service to apply it" }`.
 
@@ -897,7 +899,7 @@ A frontend can poll every 1–3 seconds while `deployment.status` is `deploying`
 | `GET` | `/api/integrations` | Provider state, connected accounts, registries |
 | `GET` | `/api/integrations/github/install/start` | Start GitHub App install redirect |
 | `POST` | `/api/integrations/github/installations/sync` | Recover an already-installed personal GitHub App installation |
-| `GET` | `/api/integrations/oauth/{provider}/start` | Start GitLab OAuth redirect |
+| `GET` | `/api/integrations/oauth/{provider}/start` | Start GitLab or Gitea OAuth redirect |
 | `GET` | `/api/integrations/sources/{sourceId}/repositories` | Repositories allowed for source |
 | `DELETE` | `/api/integrations/sources/{sourceId}` | Unlink a Git source; running containers remain untouched |
 | `POST` | `/api/integrations/registries` | Add private Docker registry |
@@ -909,8 +911,8 @@ App yet, `GET /api/integrations/github/install/start` first starts the App
 Manifest flow and then continues to repository selection. Each user still
 chooses all repositories or only selected repositories, and the App requests
 read-only contents access. The returned installation has a `manageUrl`; use this
-to change repository selection in GitHub. GitLab currently uses OAuth and
-requires provider configuration on the server.
+to change repository selection in GitHub. GitLab and Gitea use OAuth and
+require provider configuration on the server.
 
 Source connections are server-wide resources. `GET /api/integrations` and the
 repository listing endpoint return every configured source to any role with

@@ -93,7 +93,7 @@ func TestCleanApplicationServiceInputClearsRepositoryFieldsForImage(t *testing.T
 		Branch:         "main",
 		DockerfilePath: "Dockerfile",
 		BuildContext:   ".",
-		BuildStrategy:  "railpack",
+		BuildStrategy:  "auto",
 		ContainerPort:  80,
 	})
 	if err != nil {
@@ -104,6 +104,27 @@ func TestCleanApplicationServiceInputClearsRepositoryFieldsForImage(t *testing.T
 	}
 	if clean.BuildStrategy != "dockerfile" {
 		t.Fatalf("build strategy = %q, want dockerfile", clean.BuildStrategy)
+	}
+}
+
+func TestCleanApplicationServiceInputAcceptsOnlyDockerfileOrAuto(t *testing.T) {
+	base := applicationServiceInput{
+		Name: "api", SourceType: "repository", ConnectionID: "src_test",
+		Repository: "owner/api", Branch: "main", ContainerPort: 8080,
+	}
+	for _, strategy := range []string{"dockerfile", "auto"} {
+		input := base
+		input.BuildStrategy = strategy
+		if _, err := cleanApplicationServiceInput(input); err != nil {
+			t.Fatalf("strategy %q was rejected: %v", strategy, err)
+		}
+	}
+	for _, strategy := range []string{"railpack", "legacy-builder"} {
+		input := base
+		input.BuildStrategy = strategy
+		if _, err := cleanApplicationServiceInput(input); err == nil {
+			t.Fatalf("strategy %q should be rejected", strategy)
+		}
 	}
 }
 

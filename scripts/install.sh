@@ -137,7 +137,7 @@ mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
 # Download files from the selected branch on GitHub.
-for file in compose.yaml Caddyfile .env.example; do
+for file in compose.yaml Caddyfile buildkitd.toml .env.example; do
   log "  - ${file}"
   curl -fsSL "${GITHUB_RAW}/${file}" -o "${file}.tmp" || error "Failed to download ${file}"
   mv "${file}.tmp" "$file"
@@ -167,6 +167,12 @@ ENCRYPTION_KEY=${ENCRYPTION_KEY}
 COOKIE_SECURE=false
 HOST_DISK_PATH=${INSTALL_DIR}/host-disk
 
+# Auto builds analyze with Railpack and execute the generated plan on BuildKit.
+SELFHOST_BUILDKIT_HOST=tcp://buildkit:1234
+BUILDKIT_IMAGE=moby/buildkit:rootless
+SELFHOST_BUILDKIT_CACHE_REF=
+SELFHOST_RAILPACK_FRONTEND=ghcr.io/railwayapp/railpack-frontend:latest
+
 DOKYR_IMAGE=${DOKYR_IMAGE}
 DOKYR_REGISTRY_IMAGE=${DOKYR_REGISTRY_IMAGE}
 DOKYR_UPDATE_CHANNEL=${DOKYR_UPDATE_CHANNEL}
@@ -192,6 +198,9 @@ REGISTRY_S3_SECURE=true
 GITLAB_CLIENT_ID=
 GITLAB_CLIENT_SECRET=
 GITLAB_BASE_URL=https://gitlab.com
+GITEA_CLIENT_ID=
+GITEA_CLIENT_SECRET=
+GITEA_BASE_URL=https://gitea.com
 
 SMTP_ENABLED=true
 SMTP_HOST=

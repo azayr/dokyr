@@ -19,6 +19,9 @@ The installer writes the production environment file. For local development, cop
 | `JWT_SECRET` | Session signing key, at least 32 characters | development placeholder |
 | `ENCRYPTION_KEY` | Stored-secret encryption key, at least 32 characters | development placeholder |
 | `COOKIE_SECURE` | Send the session cookie only over HTTPS | `false` |
+| `SELFHOST_BUILDKIT_HOST` | BuildKit daemon used by Auto builds | `tcp://buildkit:1234` |
+| `SELFHOST_BUILDKIT_CACHE_REF` | Optional registry cache reference; supports `{service}` | empty |
+| `SELFHOST_RAILPACK_FRONTEND` | BuildKit frontend used for Railpack plans | `ghcr.io/railwayapp/railpack-frontend:latest` |
 
 ## Platform updates
 
@@ -42,7 +45,7 @@ The installer writes the production environment file. For local development, cop
 
 ## Integrations and mail
 
-GitHub applications are created interactively through the App Manifest flow and do not require static client credentials. GitLab OAuth uses `GITLAB_CLIENT_ID`, `GITLAB_CLIENT_SECRET`, and optionally `GITLAB_BASE_URL`.
+GitHub applications are created interactively through the App Manifest flow and do not require static client credentials. GitLab OAuth uses `GITLAB_CLIENT_ID`, `GITLAB_CLIENT_SECRET`, and optionally `GITLAB_BASE_URL`. Gitea OAuth uses `GITEA_CLIENT_ID`, `GITEA_CLIENT_SECRET`, and `GITEA_BASE_URL`; the base URL may be an HTTPS production origin or an explicit `http://` local-network origin for development.
 
 Dokyr's own notification SMTP settings can be bootstrapped once with the `SMTP_*` variables. After the complete configuration is imported, PostgreSQL becomes the source of truth and later Compose restarts do not overwrite values saved in the interface.
 

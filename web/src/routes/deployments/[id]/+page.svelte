@@ -15,12 +15,11 @@
     { id: 'verify', label: 'Verify candidate', detail: 'Check readiness before receiving traffic' },
     { id: 'promote', label: 'Promote release', detail: 'Switch traffic and retire the previous container' }
   ];
-  const repositoryStages = [
+  const repositoryStagesBeforeBuild = [
     { id: 'prepare', label: 'Prepare release', detail: 'Validate source and credentials' },
-    { id: 'clone', label: 'Clone repository', detail: 'Stream checkout progress from Git' },
-    { id: 'build', label: 'Build image', detail: 'Create the application image' },
-    ...imageStages.slice(2)
+    { id: 'clone', label: 'Clone repository', detail: 'Stream checkout progress from Git' }
   ];
+  const analyzeStage = { id: 'analyze', label: 'Analyze source', detail: 'Generate railpack-plan.json' };
 
   let data = { deployment: { id: 'Loading', status: 'deploying', duration: 0 }, project: { name: 'Loading…', sourceType: 'image' }, events: [] };
   let loading = true;
@@ -38,7 +37,10 @@
   let elapsed = 0;
   let lastEventID = 0;
 
-  $: stageDefinitions = data.deployment?.serviceId || data.project?.sourceType === 'image' || data.project?.sourceType === 'empty' ? imageStages : repositoryStages;
+  $: isRepositoryDeployment = data.project?.sourceType === 'repository' || data.events.some((event) => ['clone', 'analyze', 'build'].includes(event.stage));
+  $: stageDefinitions = isRepositoryDeployment
+    ? [...repositoryStagesBeforeBuild, ...(data.events.some((event) => event.stage === 'analyze') ? [analyzeStage] : []), { id: 'build', label: 'Build image', detail: 'Create the application image' }, ...imageStages.slice(2)]
+    : imageStages;
   $: steps = stageDefinitions.map((definition) => {
     const events = data.events.filter((event) => event.stage === definition.id);
     const complete = events.some((event) => event.type === 'complete') || (['verify', 'promote'].includes(definition.id) && data.deployment.status === 'healthy');

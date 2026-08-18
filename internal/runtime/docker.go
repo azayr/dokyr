@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -571,15 +572,13 @@ func (d *Docker) DeployApplicationImage(ctx context.Context, serviceID, projectI
 	return d.deployApplicationContainer(ctx, serviceID, projectID, serviceName, image, containerPort, environment, command, healthCheck, progress)
 }
 
-func (d *Docker) BuildApplicationImage(ctx context.Context, serviceID, sourceDir, buildStrategy, dockerfilePath, buildContext string, progress ProgressFunc) (string, error) {
+func (d *Docker) BuildApplicationImage(ctx context.Context, serviceID, sourceDir, buildStrategy, dockerfilePath, buildContext string, environment []string, progress ProgressFunc) (string, error) {
 	image := "selfhost-built-" + serviceID + ":latest"
 	switch buildStrategy {
 	case "", "dockerfile":
 		return d.buildDockerfileImage(ctx, image, sourceDir, dockerfilePath, buildContext, progress)
-	case "nixpacks":
-		return d.buildWithPack(ctx, "nixpacks", image, sourceDir, progress)
-	case "railpack":
-		return d.buildWithPack(ctx, "railpack", image, sourceDir, progress)
+	case "auto":
+		return d.buildWithRailpack(ctx, serviceID, image, sourceDir, environment, progress)
 	default:
 		return "", fmt.Errorf("unsupported build strategy %q", buildStrategy)
 	}
@@ -688,6 +687,7 @@ func (d *Docker) buildDockerfileImage(ctx context.Context, image, sourceDir, doc
 type buildProgressWriter struct {
 	mu       sync.Mutex
 	pending  string
+	stage    string
 	progress ProgressFunc
 }
 
@@ -703,7 +703,7 @@ func (w *buildProgressWriter) Write(value []byte) (int, error) {
 		line := strings.TrimSpace(w.pending[:index])
 		w.pending = w.pending[index+1:]
 		if line != "" && w.progress != nil {
-			w.progress("build", "log", line)
+			w.progress(w.stage, "log", line)
 		}
 	}
 	return len(value), nil
@@ -713,43 +713,150 @@ func (w *buildProgressWriter) Flush() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if line := strings.TrimSpace(w.pending); line != "" && w.progress != nil {
-		w.progress("build", "log", line)
+		w.progress(w.stage, "log", line)
 	}
 	w.pending = ""
 }
 
-func (d *Docker) buildWithPack(ctx context.Context, pack, image, sourceDir string, progress ProgressFunc) (string, error) {
+func (d *Docker) buildWithRailpack(ctx context.Context, serviceID, image, sourceDir string, environment []string, progress ProgressFunc) (string, error) {
+	buildkitAddress := buildkitHost()
+	if buildkitAddress == "" {
+		return "", errors.New("automatic builds require SELFHOST_BUILDKIT_HOST to point to a reachable BuildKit daemon")
+	}
+	artifactsDir, err := os.MkdirTemp("", "dokyr-railpack-")
+	if err != nil {
+		return "", fmt.Errorf("create Railpack artifact directory: %w", err)
+	}
+	defer os.RemoveAll(artifactsDir)
+	planPath := filepath.Join(artifactsDir, "railpack-plan.json")
+	infoPath := filepath.Join(artifactsDir, "railpack-info.json")
+
 	if progress != nil {
-		progress("build", "start", "Analyzing the repository with "+strings.Title(pack))
+		progress("analyze", "start", "Analyzing the repository with Railpack")
 	}
-	var command *exec.Cmd
-	switch pack {
-	case "nixpacks":
-		command = exec.CommandContext(ctx, "nixpacks", "build", sourceDir, "--name", image, "--docker-host", "unix:///var/run/docker.sock")
-	case "railpack":
-		if buildkitHost() == "" {
-			return "", errors.New("Railpack requires SELFHOST_BUILDKIT_HOST to point to a reachable BuildKit daemon")
-		}
-		command = exec.CommandContext(ctx, "railpack", "build", "--name", image, "--progress", "plain", sourceDir)
-		command.Env = append(os.Environ(), "BUILDKIT_HOST="+buildkitHost())
-	default:
-		return "", fmt.Errorf("unsupported build pack %q", pack)
-	}
-	writer := &buildProgressWriter{progress: progress}
-	command.Stdout = writer
-	command.Stderr = writer
-	if err := command.Run(); err != nil {
-		writer.Flush()
+	prepare := exec.CommandContext(ctx, "railpack", railpackPrepareArgs(sourceDir, planPath, infoPath, environment)...)
+	prepare.Env = os.Environ()
+	analyzeWriter := &buildProgressWriter{stage: "analyze", progress: progress}
+	prepare.Stdout = analyzeWriter
+	prepare.Stderr = analyzeWriter
+	if err := prepare.Run(); err != nil {
+		analyzeWriter.Flush()
 		if errors.Is(err, exec.ErrNotFound) {
-			return "", fmt.Errorf("%s is not installed in this Dokyr image; rebuild Dokyr with the build-pack tools enabled", pack)
+			return "", errors.New("railpack is not installed in this Dokyr image")
 		}
-		return "", fmt.Errorf("%s build: %w", pack, err)
+		return "", fmt.Errorf("Railpack analysis: %w", err)
 	}
-	writer.Flush()
+	analyzeWriter.Flush()
 	if progress != nil {
-		progress("build", "complete", strings.Title(pack)+" built "+image)
+		progress("analyze", "complete", "Railpack generated railpack-plan.json")
+		progress("build", "start", "Building "+image+" with BuildKit")
+	}
+	archivePath := filepath.Join(artifactsDir, "image.tar")
+	buildEnvironment := railpackBuildEnvironment(environment)
+	build := exec.CommandContext(ctx, "buildctl", railpackBuildctlArgs(buildkitAddress, railpackFrontend(), serviceID, image, sourceDir, artifactsDir, archivePath, buildkitCacheRef(serviceID), buildEnvironment)...)
+	build.Env = append(os.Environ(), buildEnvironment...)
+	buildWriter := &buildProgressWriter{stage: "build", progress: progress}
+	build.Stdout = buildWriter
+	build.Stderr = buildWriter
+	if err := build.Run(); err != nil {
+		buildWriter.Flush()
+		if errors.Is(err, exec.ErrNotFound) {
+			return "", errors.New("buildctl is not installed in this Dokyr image")
+		}
+		return "", fmt.Errorf("BuildKit build: %w", err)
+	}
+	buildWriter.Flush()
+	if err := d.loadImageArchive(ctx, archivePath, progress); err != nil {
+		return "", fmt.Errorf("load BuildKit image: %w", err)
+	}
+	if progress != nil {
+		progress("build", "complete", "BuildKit built "+image)
 	}
 	return image, nil
+}
+
+func railpackPrepareArgs(sourceDir, planPath, infoPath string, environment []string) []string {
+	args := []string{"prepare", sourceDir, "--plan-out", planPath, "--info-out", infoPath}
+	for _, variable := range railpackBuildEnvironment(environment) {
+		args = append(args, "--env", variable)
+	}
+	return args
+}
+
+func railpackBuildEnvironment(environment []string) []string {
+	filtered := make([]string, 0, len(environment))
+	for _, variable := range environment {
+		key, _, found := strings.Cut(variable, "=")
+		if found && (strings.HasPrefix(key, "RAILPACK_") || strings.HasPrefix(key, "MISE_")) {
+			filtered = append(filtered, variable)
+		}
+	}
+	return filtered
+}
+
+func railpackBuildctlArgs(address, frontend, serviceID, image, sourceDir, planDir, archivePath, cacheRef string, environment []string) []string {
+	args := []string{
+		"--addr", address, "build",
+		"--frontend", "gateway.v0",
+		"--opt", "source=" + frontend,
+		"--opt", "cache-key=" + serviceID,
+		"--local", "context=" + sourceDir,
+		"--local", "dockerfile=" + planDir,
+		"--output", "type=docker,name=" + image + ",dest=" + archivePath,
+		"--progress", "plain",
+	}
+	if len(environment) > 0 {
+		hash := sha256.Sum256([]byte(strings.Join(environment, "\x00")))
+		args = append(args, "--opt", fmt.Sprintf("secrets-hash=%x", hash))
+		for _, variable := range environment {
+			key, _, _ := strings.Cut(variable, "=")
+			args = append(args, "--secret", "id="+key+",env="+key)
+		}
+	}
+	if cacheRef != "" {
+		args = append(args,
+			"--import-cache", "type=registry,ref="+cacheRef,
+			"--export-cache", "type=registry,ref="+cacheRef+",mode=max",
+		)
+	}
+	return args
+}
+
+func (d *Docker) loadImageArchive(ctx context.Context, archivePath string, progress ProgressFunc) error {
+	archive, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer archive.Close()
+	response, err := d.rawRequest(ctx, http.MethodPost, "/images/load?quiet=1", archive, "application/x-tar")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	decoder := json.NewDecoder(response.Body)
+	for decoder.More() {
+		var update struct {
+			Stream      string `json:"stream"`
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+		}
+		if err := decoder.Decode(&update); err != nil {
+			return err
+		}
+		message := update.ErrorDetail.Message
+		if message == "" {
+			message = update.Error
+		}
+		if message != "" {
+			return errors.New(message)
+		}
+		if line := strings.TrimSpace(update.Stream); line != "" && progress != nil {
+			progress("build", "log", line)
+		}
+	}
+	return nil
 }
 
 func buildkitHost() string {
@@ -757,6 +864,18 @@ func buildkitHost() string {
 		return value
 	}
 	return ""
+}
+
+func railpackFrontend() string {
+	if value := strings.TrimSpace(os.Getenv("SELFHOST_RAILPACK_FRONTEND")); value != "" {
+		return value
+	}
+	return "ghcr.io/railwayapp/railpack-frontend:latest"
+}
+
+func buildkitCacheRef(serviceID string) string {
+	value := strings.TrimSpace(os.Getenv("SELFHOST_BUILDKIT_CACHE_REF"))
+	return strings.ReplaceAll(value, "{service}", serviceID)
 }
 
 func (d *Docker) DeployApplicationBuiltImage(ctx context.Context, serviceID, projectID, serviceName, image string, containerPort int, environment []string, command string, healthCheck ApplicationHealthCheck, progress ProgressFunc) (Service, error) {

@@ -3,13 +3,17 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -473,6 +477,127 @@ func TestMergeEnvironment(t *testing.T) {
 		if merged[index] != want[index] {
 			t.Errorf("merged[%d] = %q, want %q", index, merged[index], want[index])
 		}
+	}
+}
+
+func TestRailpackBuildEnvironmentOnlyForwardsBuilderConfiguration(t *testing.T) {
+	environment := []string{
+		"RAILPACK_JDK_VERSION=25",
+		"RAILPACK_NODE_VERSION=22",
+		"MISE_VERBOSE=1",
+		"DATABASE_PASSWORD=secret",
+		"OTHER_BUILDER_VERSION=21",
+		"BROKEN",
+	}
+	got := railpackBuildEnvironment(environment)
+	want := []string{"RAILPACK_JDK_VERSION=25", "RAILPACK_NODE_VERSION=22", "MISE_VERBOSE=1"}
+	if len(got) != len(want) {
+		t.Fatalf("builder environment = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("builder environment = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestRailpackPrepareArgsWritesPlanAndPassesBuilderVariables(t *testing.T) {
+	got := railpackPrepareArgs("/tmp/source", "/tmp/output/railpack-plan.json", "/tmp/output/railpack-info.json", []string{
+		"RAILPACK_JDK_VERSION=25",
+		"DATABASE_PASSWORD=secret",
+	})
+	want := []string{
+		"prepare", "/tmp/source",
+		"--plan-out", "/tmp/output/railpack-plan.json",
+		"--info-out", "/tmp/output/railpack-info.json",
+		"--env", "RAILPACK_JDK_VERSION=25",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Railpack args = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("Railpack args = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestRailpackBuildctlArgsUsesPlanAndRegistryCache(t *testing.T) {
+	got := railpackBuildctlArgs(
+		"tcp://buildkit:1234",
+		"ghcr.io/railwayapp/railpack-frontend:v1",
+		"svc_api",
+		"selfhost-built-svc_api:latest",
+		"/tmp/source",
+		"/tmp/artifacts",
+		"/tmp/artifacts/image.tar",
+		"registry.example.com/dokyr/svc_api:cache",
+		[]string{"RAILPACK_NODE_VERSION=22"},
+	)
+	secretHash := sha256.Sum256([]byte("RAILPACK_NODE_VERSION=22"))
+	want := []string{
+		"--addr", "tcp://buildkit:1234", "build",
+		"--frontend", "gateway.v0",
+		"--opt", "source=ghcr.io/railwayapp/railpack-frontend:v1",
+		"--opt", "cache-key=svc_api",
+		"--local", "context=/tmp/source",
+		"--local", "dockerfile=/tmp/artifacts",
+		"--output", "type=docker,name=selfhost-built-svc_api:latest,dest=/tmp/artifacts/image.tar",
+		"--progress", "plain",
+		"--opt", fmt.Sprintf("secrets-hash=%x", secretHash),
+		"--secret", "id=RAILPACK_NODE_VERSION,env=RAILPACK_NODE_VERSION",
+		"--import-cache", "type=registry,ref=registry.example.com/dokyr/svc_api:cache",
+		"--export-cache", "type=registry,ref=registry.example.com/dokyr/svc_api:cache,mode=max",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("BuildKit args = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("BuildKit args = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestBuildkitCacheRefScopesTemplateToService(t *testing.T) {
+	t.Setenv("SELFHOST_BUILDKIT_CACHE_REF", "registry.example.com/dokyr/{service}:cache")
+	if got := buildkitCacheRef("svc_api"); got != "registry.example.com/dokyr/svc_api:cache" {
+		t.Fatalf("cache ref = %q", got)
+	}
+}
+
+func TestLoadImageArchiveUsesDockerImageLoadEndpoint(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "image.tar")
+	archiveContents := []byte("docker-image-archive")
+	if err := os.WriteFile(archivePath, archiveContents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	docker := &Docker{client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		called = true
+		if request.Method != http.MethodPost || request.URL.Path != "/images/load" || request.URL.Query().Get("quiet") != "1" {
+			t.Fatalf("request = %s %s", request.Method, request.URL.String())
+		}
+		if request.Header.Get("Content-Type") != "application/x-tar" {
+			t.Fatalf("content type = %q", request.Header.Get("Content-Type"))
+		}
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(body, archiveContents) {
+			t.Fatalf("archive = %q", body)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{\"stream\":\"Loaded image\"}\n")), Header: make(http.Header)}, nil
+	})}}
+	var messages []string
+	if err := docker.loadImageArchive(context.Background(), archivePath, func(stage, eventType, message string) {
+		messages = append(messages, stage+":"+eventType+":"+message)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !called || len(messages) != 1 || messages[0] != "build:log:Loaded image" {
+		t.Fatalf("called = %v, messages = %#v", called, messages)
 	}
 }
 

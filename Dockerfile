@@ -26,9 +26,7 @@ FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS railpack
 RUN go install github.com/railwayapp/railpack/cmd/cli@latest \
   && mv /go/bin/cli /go/bin/railpack
 
-FROM --platform=$BUILDPLATFORM rust:1.85-alpine AS nixpacks
-RUN apk add --no-cache build-base openssl-dev pkgconfig \
-  && cargo install nixpacks --locked
+FROM moby/buildkit:rootless AS buildkit
 
 FROM --platform=$BUILDPLATFORM alpine:3.22 AS runtime-deps
 RUN apk add --no-cache ca-certificates tzdata
@@ -43,7 +41,7 @@ COPY --from=runtime-deps /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-ce
 COPY --from=runtime-deps /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=api /selfhost /usr/local/bin/selfhost
 COPY --from=railpack /go/bin/railpack /usr/local/bin/railpack
-COPY --from=nixpacks /usr/local/cargo/bin/nixpacks /usr/local/bin/nixpacks
+COPY --from=buildkit /usr/bin/buildctl /usr/local/bin/buildctl
 COPY --from=web /src/web/build ./web/build
 ENV SELFHOST_ADDRESS=:8080 SELFHOST_FRONTEND_DIR=/app/web/build
 LABEL org.opencontainers.image.title="Dokyr" \

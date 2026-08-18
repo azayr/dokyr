@@ -46,6 +46,9 @@ type Config struct {
 	GitLabClientID               string
 	GitLabClientSecret           string
 	GitLabBaseURL                string
+	GiteaClientID                string
+	GiteaClientSecret            string
+	GiteaBaseURL                 string
 	CaddyAdminURL                string
 	ControlUpstream              string
 	ControlHosts                 []string
@@ -90,6 +93,9 @@ func Load() Config {
 		GitLabClientID:               os.Getenv("GITLAB_CLIENT_ID"),
 		GitLabClientSecret:           os.Getenv("GITLAB_CLIENT_SECRET"),
 		GitLabBaseURL:                env("GITLAB_BASE_URL", "https://gitlab.com"),
+		GiteaClientID:                os.Getenv("GITEA_CLIENT_ID"),
+		GiteaClientSecret:            os.Getenv("GITEA_CLIENT_SECRET"),
+		GiteaBaseURL:                 env("GITEA_BASE_URL", "https://gitea.com"),
 		CaddyAdminURL:                env("CADDY_ADMIN_URL", "unix:///run/caddy-admin/admin.sock"),
 		ControlUpstream:              env("DOKYR_CONTROL_UPSTREAM", "selfhost:8080"),
 		ControlHosts:                 splitHosts(env("SELFHOST_CONTROL_HOSTS", "localhost")),

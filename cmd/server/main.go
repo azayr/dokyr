@@ -68,6 +68,9 @@ func main() {
 		GitLabClientID:     cfg.GitLabClientID,
 		GitLabClientSecret: cfg.GitLabClientSecret,
 		GitLabBaseURL:      cfg.GitLabBaseURL,
+		GiteaClientID:      cfg.GiteaClientID,
+		GiteaClientSecret:  cfg.GiteaClientSecret,
+		GiteaBaseURL:       cfg.GiteaBaseURL,
 	})
 	registryTokens, err := registry.NewTokenIssuer(registry.TokenAuthConfig{
 		Issuer:          cfg.RegistryTokenIssuer,

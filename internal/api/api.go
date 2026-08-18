@@ -4376,7 +4376,7 @@ func cleanApplicationServiceInput(in applicationServiceInput) (applicationServic
 		in.BuildStrategy = "dockerfile"
 	} else {
 		if in.ConnectionID == "" {
-			return in, errors.New("choose a connected GitHub or GitLab account")
+			return in, errors.New("choose a connected GitHub, GitLab, or Gitea account")
 		}
 		if in.Repository == "" || strings.ContainsAny(in.Repository, " \t\r\n") {
 			return in, errors.New("choose a repository")
@@ -4390,8 +4390,8 @@ func cleanApplicationServiceInput(in applicationServiceInput) (applicationServic
 		if in.BuildStrategy == "" {
 			in.BuildStrategy = "dockerfile"
 		}
-		if in.BuildStrategy != "dockerfile" && in.BuildStrategy != "railpack" && in.BuildStrategy != "nixpacks" {
-			return in, errors.New("choose Dockerfile, Railpack, or Nixpacks")
+		if in.BuildStrategy != "dockerfile" && in.BuildStrategy != "auto" {
+			return in, errors.New("choose Dockerfile or Auto")
 		}
 		if in.BuildStrategy == "dockerfile" {
 			if in.DockerfilePath == "" {
@@ -5230,7 +5230,7 @@ func (a *API) runApplicationServiceDeployment(deploymentCtx context.Context, dep
 			if err == nil {
 				progress("clone", "complete", "Repository checkout is ready")
 				var image string
-				image, err = a.docker.BuildApplicationImage(ctx, service.ID, workspace, service.BuildStrategy, service.DockerfilePath, service.BuildContext, progress)
+				image, err = a.docker.BuildApplicationImage(ctx, service.ID, workspace, service.BuildStrategy, service.DockerfilePath, service.BuildContext, service.Environment, progress)
 				if err == nil {
 					runtimeService, err = a.docker.DeployApplicationBuiltImage(ctx, service.ID, service.ProjectID, service.Name, image, service.ContainerPort, service.Environment, service.Command, healthCheck, progress)
 				}

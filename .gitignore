@@ -4,3 +4,5 @@
 /web/build/
 /selfhost
 .DS_Store
+.pnpm-store/
+.env

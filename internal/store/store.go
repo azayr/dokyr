@@ -1956,6 +1956,21 @@ func (s *Store) DeleteSourceConnection(ctx context.Context, id string) error {
 	return nil
 }
 
+func (s *Store) UpdateSourceConnectionToken(ctx context.Context, id, encryptedToken string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE source_connections SET access_token_encrypted=$2,updated_at=NOW() WHERE id=$1`, id, encryptedToken)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *Store) UpsertGitHubInstallation(ctx context.Context, installation GitHubInstallation) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO github_app_installations(installation_id,connection_id,user_id,account_id,account_login,account_avatar,repository_selection,manage_url,contents_permission)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)

@@ -8,6 +8,9 @@ services:
       SELFHOST_HOST_PROC: /host/proc
       SELFHOST_HOST_SYS: /host/sys
       SELFHOST_HOST_DISK: /host/disk
+      SELFHOST_BUILDKIT_HOST: ${SELFHOST_BUILDKIT_HOST:-tcp://buildkit:1234}
+      SELFHOST_BUILDKIT_CACHE_REF: ${SELFHOST_BUILDKIT_CACHE_REF:-}
+      SELFHOST_RAILPACK_FRONTEND: ${SELFHOST_RAILPACK_FRONTEND:-ghcr.io/railwayapp/railpack-frontend:latest}
       DATABASE_URL: postgres://selfhost:${POSTGRES_PASSWORD:-selfhost-local-password}@postgres:5432/selfhost?sslmode=disable
       SELFHOST_JWT_SECRET: ${JWT_SECRET:-development-secret-change-before-production}
       SELFHOST_COOKIE_SECURE: ${COOKIE_SECURE:-false}
@@ -16,6 +19,9 @@ services:
       GITLAB_CLIENT_ID: ${GITLAB_CLIENT_ID:-}
       GITLAB_CLIENT_SECRET: ${GITLAB_CLIENT_SECRET:-}
       GITLAB_BASE_URL: ${GITLAB_BASE_URL:-https://gitlab.com}
+      GITEA_CLIENT_ID: ${GITEA_CLIENT_ID:-}
+      GITEA_CLIENT_SECRET: ${GITEA_CLIENT_SECRET:-}
+      GITEA_BASE_URL: ${GITEA_BASE_URL:-https://gitea.com}
       SMTP_ENABLED: ${SMTP_ENABLED:-true}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
@@ -61,8 +67,12 @@ services:
       - ${HOST_DISK_PATH:-.}:/host/disk:ro
       - caddy_admin:/run/caddy-admin
       - registry_auth:/run/registry-auth
-    networks: [control, proxy]
+    extra_hosts:
+      - "gitea.localhost:host-gateway"
+    networks: [control, proxy, build]
     depends_on:
+      buildkit:
+        condition: service_healthy
       caddy:
         condition: service_started
       postgres:
@@ -92,6 +102,25 @@ services:
         # Recreate the development image when its build recipe changes.
         - action: rebuild
           path: ./Dockerfile
+
+  buildkit:
+    image: ${BUILDKIT_IMAGE:-moby/buildkit:rootless}
+    restart: unless-stopped
+    command: ["--config", "/etc/buildkit/buildkitd.toml", "--addr", "tcp://0.0.0.0:1234"]
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+      - systempaths=unconfined
+    volumes:
+      - buildkit_data:/home/user/.local/share/buildkit
+      - ./buildkitd.toml:/etc/buildkit/buildkitd.toml:ro
+    networks: [build]
+    healthcheck:
+      test: ["CMD", "buildctl", "--addr", "tcp://127.0.0.1:1234", "debug", "workers"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
 
   postgres:
     image: postgres:17-alpine
@@ -211,11 +240,13 @@ services:
 networks:
   control:
     internal: true
+  build:
   mail_egress:
   proxy:
     name: selfhost-proxy
 
 volumes:
+  buildkit_data:
   postgres_data:
   registry_data:
   caddy_data:

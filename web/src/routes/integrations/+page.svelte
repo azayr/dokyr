@@ -8,7 +8,7 @@
   import { api, can, currentPermissions } from '$lib/auth.js';
   import { toast } from '$lib/toast.js';
 
-  let data = { providers: { github: {}, gitlab: {} }, connections: [], registries: [] };
+  let data = { providers: { github: {}, gitlab: {}, gitea: {} }, connections: [], registries: [] };
   let loading = true;
   let saving = false;
   let syncing = false;
@@ -29,7 +29,8 @@
 
   const providerInfo = {
     github: { name: 'GitHub', mark: 'GH', hint: 'Organizations and private repositories' },
-    gitlab: { name: 'GitLab', mark: 'GL', hint: 'Groups and private repositories' }
+    gitlab: { name: 'GitLab', mark: 'GL', hint: 'Groups and private repositories' },
+    gitea: { name: 'Gitea', mark: 'GT', hint: 'Self-hosted and local-network repositories' }
   };
 
   async function load(trySync = true) {
@@ -158,7 +159,7 @@
       <article class="panel provider-card">
         <header class="provider-head">
           <span class="provider-mark {key}">
-            {#if key === 'github'}<Icon name="github" size={18} />{:else}<Icon name="gitlab" size={18} />{/if}
+            {#if key === 'github'}<Icon name="github" size={18} />{:else if key === 'gitlab'}<Icon name="gitlab" size={22} />{:else}<Icon name="gitea" size={24} />{/if}
           </span>
           <div>
             <h3>{provider.name}</h3>
@@ -248,6 +249,12 @@
           <div class="config-note">
             <Icon name="info" size={14} />
             <span>GitLab OAuth requires <code>GITLAB_CLIENT_ID</code> and <code>GITLAB_CLIENT_SECRET</code> in this server's environment.</span>
+          </div>
+        {/if}
+        {#if key === 'gitea' && !state.configured}
+          <div class="config-note gitea-note">
+            <Icon name="info" size={14} />
+            <span>Gitea OAuth requires <code>GITEA_CLIENT_ID</code> and <code>GITEA_CLIENT_SECRET</code>. Set <code>GITEA_BASE_URL</code> to the production or local-network instance origin.</span>
           </div>
         {/if}
       </article>
@@ -375,6 +382,14 @@
   :global(.theme-dark) .provider-mark.gitlab {
     background: #3a2118;
     color: #fc8a51;
+  }
+  .provider-mark.gitea {
+    background: #e5f2ef;
+    color: #4b8b72;
+  }
+  :global(.theme-dark) .provider-mark.gitea {
+    background: #1d332c;
+    color: #72b89d;
   }
   .provider-head h3 {
     margin: 0;
@@ -512,6 +527,11 @@
     border-top-color: color-mix(in srgb, var(--color-accent) 26%, var(--color-rule));
     background: var(--color-accent-softer);
     color: var(--color-accent);
+  }
+  .config-note.gitea-note {
+    border-top-color: color-mix(in srgb, #4b8b72 35%, var(--color-rule));
+    background: color-mix(in srgb, #4b8b72 7%, var(--color-paper-raised));
+    color: #4b8b72;
   }
   .config-note span {
     color: var(--color-ink-secondary);
@@ -664,6 +684,16 @@
     .registry-grid form {
       border-right: 0;
       border-bottom: 1px solid var(--color-rule);
+    }
+  }
+  @media (min-width: 62.01rem) and (max-width: 90rem) {
+    .provider-card:last-child {
+      grid-column: 1 / -1;
+    }
+  }
+  @media (min-width: 90.01rem) {
+    .providers {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
     }
   }
   @media (max-width: 40rem) {

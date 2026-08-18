@@ -8,7 +8,7 @@ A lightweight, self-hosted deployment control plane. The foundation combines a G
 
 The complete implementation guide—including container topology, request and deployment sequences, data model, security boundaries, configuration, operations, known limitations, and maintainer invariants—is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-The prebuilt control-plane image is available as `ghcr.io/azayr/dokyr:latest`. It contains the Go service and Svelte interface; PostgreSQL, Caddy, the registry, Stalwart, the Docker socket, networks, and volumes are supplied by `compose.yaml`.
+The prebuilt control-plane image is available as `ghcr.io/azayr/dokyr:latest`. It contains the Go service, Svelte interface, Railpack analyzer, and BuildKit client; PostgreSQL, Caddy, the registry, Stalwart, the rootless BuildKit worker, Docker socket, networks, and volumes are supplied by `compose.yaml`.
 
 ## Install on a VPS
 
@@ -307,7 +307,21 @@ http://localhost:8888/api/integrations/oauth/gitlab/callback
 
 For production, replace `http://localhost:8888` with `PUBLIC_URL` and enable `COOKIE_SECURE=true`. GitLab self-managed instances can be selected with `GITLAB_BASE_URL`.
 
-GitHub App credentials, GitLab provider tokens, and private registry passwords
+Gitea uses the same server-managed OAuth pattern. Create an OAuth2 application
+in the Gitea user settings and register this callback URL:
+
+```text
+http://localhost:8888/api/integrations/oauth/gitea/callback
+```
+
+Set `GITEA_CLIENT_ID`, `GITEA_CLIENT_SECRET`, and `GITEA_BASE_URL`. In
+production, use the HTTPS Gitea origin. For local-network testing,
+`GITEA_BASE_URL` may be an explicit HTTP origin such as
+`http://192.168.1.20:3000`; Dokyr accepts HTTP clone URLs only when they match
+that configured Gitea origin. Gitea OAuth tokens are refreshed automatically
+and remain encrypted at rest.
+
+GitHub App credentials, GitLab/Gitea provider tokens, and private registry passwords
 are encrypted with `ENCRYPTION_KEY` before PostgreSQL stores them. Keep that key
 stable: changing it makes existing saved credentials unreadable. GitHub
 installation tokens are short-lived and generated only when repository access
@@ -322,7 +336,7 @@ Private container images are supported from the project creation screen. Save an
 - Project overview with services, traffic and deployment history
 - Deployment detail with pipeline and logs
 - PostgreSQL schema managed by ordered, embedded SQL migration files
-- Identity-only GitHub App plus separate GitHub App/GitLab repository discovery
+- Identity-only GitHub App plus separate GitHub App/GitLab/Gitea repository discovery
 - Encrypted private Docker registry credentials and image-based projects
 - Docker Engine health integration using the official Go client
 - Production multi-stage image and Caddy/Compose topology
