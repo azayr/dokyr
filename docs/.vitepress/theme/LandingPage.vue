@@ -28,6 +28,7 @@ import routeIcon from '@iconify-icons/lucide/git-branch';
 import scaleIcon from '@iconify-icons/lucide/scale';
 import serverIcon from '@iconify-icons/lucide/server';
 import terminalIcon from '@iconify-icons/lucide/terminal';
+import { releaseTag, releaseURL } from '../release';
 
 const installCommand = 'curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/install.sh | sudo sh';
 const copied = ref(false);
@@ -127,9 +128,9 @@ onMounted(() => {
   <main class="landing-shell">
     <section class="hero section-frame" aria-labelledby="hero-title">
       <div class="hero-copy" data-reveal>
-        <a class="release-link" href="https://github.com/azayr/dokyr/releases/tag/v0.2.33">
+        <a class="release-link" :href="releaseURL">
           <Icon :icon="badgeCheckIcon" aria-hidden="true" />
-          <span>v0.2.33</span>
+          <span>{{ releaseTag }}</span>
           latest release
           <Icon class="link-icon" :icon="externalLinkIcon" aria-hidden="true" />
         </a>

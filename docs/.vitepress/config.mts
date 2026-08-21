@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitepress';
 import { withMermaid } from 'vitepress-plugin-mermaid';
+import { releaseTag, releaseURL, releaseVersion } from './release';
 
 const base = process.env.DOCS_BASE || '/';
 const siteOrigin = (process.env.DOCS_ORIGIN || 'https://azayr.github.io/dokyr').replace(/\/$/, '');
@@ -70,7 +71,7 @@ export default withMermaid(defineConfig({
             downloadUrl: `${repository}/pkgs/container/dokyr`,
             license: `${repository}/blob/main/LICENSE`,
             description,
-            softwareVersion: '0.2.34',
+            softwareVersion: releaseVersion,
             offers: {
               '@type': 'Offer',
               price: '0',
@@ -158,7 +159,7 @@ export default withMermaid(defineConfig({
       { text: 'Operations', link: '/operations/upgrades' },
       { text: 'API', link: '/API' },
       { text: 'Architecture', link: '/ARCHITECTURE' },
-      { text: 'v0.2.34', link: 'https://github.com/azayr/dokyr/releases/tag/v0.2.34' }
+      { text: releaseTag, link: releaseURL }
     ],
     sidebar: {
       '/guide/': [
