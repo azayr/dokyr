@@ -22,6 +22,10 @@
   let registryDomain = { domain: '', httpsEnabled: true, attached: false, registryHosts: [] };
   let controlHosts = [];
   let publicURL = '';
+  let platform = { publicURL: '', domain: '', customDomainConfigured: false };
+  let platformDomain = '';
+  let platformSaving = false;
+  let platformInput;
   let routes = [];
   let configuration = '';
   let managedConfiguration = '';
@@ -92,7 +96,13 @@
   $: activeProject = projects.find((project) => project.id === draft?.projectId);
   $: activeServices = activeProject?.services || [];
 
-  onMount(load);
+  onMount(async () => {
+    await load();
+    if (new URLSearchParams(location.search).get('platform') === '1') {
+      platformInput?.focus();
+      document.getElementById('platform-domain')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  });
 
   async function load() {
     loading = true;
@@ -113,6 +123,8 @@
       registryDomain = normalizeRegistry(payload.registry);
       controlHosts = payload.controlHosts || [];
       publicURL = payload.publicURL || '';
+      platform = payload.platform || platform;
+      platformDomain = platform.domain || '';
       routes = payload.routes || [];
       configuration = payload.configuration || '';
       managedConfiguration = configuration;
@@ -121,6 +133,32 @@
       error = cause instanceof Error ? cause.message : 'Could not load domains';
     } finally {
       loading = false;
+    }
+  }
+
+  async function savePlatformDomain(domain = platformDomain) {
+    platformSaving = true;
+    error = '';
+    notice = '';
+    try {
+      const response = await api('/api/settings/platform/domain', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain: domain.trim() })
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not update the platform domain');
+      platform = payload;
+      platformDomain = payload.domain || '';
+      await load();
+      notice = payload.domain
+        ? `${payload.domain} is now the permanent Dokyr address. Automatic HTTPS is being provisioned.`
+        : 'The custom platform domain was removed. Dokyr is using its temporary server address again.';
+      toast.success(payload.domain ? 'Platform domain connected' : 'Platform domain removed');
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : 'Could not update the platform domain';
+    } finally {
+      platformSaving = false;
     }
   }
 
@@ -531,6 +569,33 @@
     <div class="alert alert-warning page-alert"><Icon name="alert" size={15} /><div><strong>The edge router is unavailable</strong><span>{connectionError}</span></div></div>
   {/if}
 
+  <section id="platform-domain" class="panel platform-domain" aria-labelledby="platform-domain-title">
+    <div class="platform-domain-copy">
+      <span class="platform-domain-icon"><Icon name="shield" size={18} /></span>
+      <div>
+        <span class="eyebrow">Control panel address</span>
+        <h2 id="platform-domain-title">{platform.customDomainConfigured ? 'Permanent domain connected' : 'Replace the temporary server URL'}</h2>
+        <p>{platform.customDomainConfigured ? `Dokyr is available at ${platform.publicURL}.` : `The current address, ${platform.publicURL || publicURL}, is based on this server's IP. Point a domain to ${dnsTarget.value}, then connect it here.`}</p>
+      </div>
+    </div>
+    <form onsubmit={(event) => { event.preventDefault(); savePlatformDomain(); }}>
+      <label>
+        <span>Platform domain</span>
+        <div class="platform-domain-input">
+          <Icon name="globe" size={14} />
+          <input bind:this={platformInput} bind:value={platformDomain} autocomplete="off" spellcheck="false" placeholder="panel.example.com" required />
+        </div>
+      </label>
+      <button class="btn btn-primary" type="submit" disabled={platformSaving || !platformDomain.trim()}>{platformSaving ? 'Connecting…' : platform.domain ? 'Update domain' : 'Connect domain'}</button>
+      {#if platform.domain}<button class="btn" type="button" onclick={() => savePlatformDomain('')} disabled={platformSaving}>Remove</button>{/if}
+    </form>
+    <footer>
+      <span><Icon name="network" size={13} /> DNS record</span>
+      <code>{dnsTarget.type} · {platformDomain || 'panel.example.com'} → {dnsTarget.value}</code>
+      <span><Icon name="lock" size={13} /> Automatic HTTPS</span>
+    </footer>
+  </section>
+
   <section class="domain-overview" aria-label="Domain summary">
     <article>
       <span class="metric-icon"><Icon name="globe" size={16} /></span>
@@ -809,6 +874,23 @@
   .connection small { color: var(--color-muted); font-size: var(--text-2xs); }
   .page-alert { margin-bottom: var(--space-4); }
 
+  .platform-domain { margin-bottom: var(--space-4); overflow: hidden; }
+  .platform-domain-copy { padding: var(--space-5); display: flex; align-items: center; gap: var(--space-4); }
+  .platform-domain-icon { width: 42px; height: 42px; flex: none; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-rule)); border-radius: var(--radius-md); background: var(--color-accent-softer); color: var(--color-accent); }
+  .platform-domain-copy > div { min-width: 0; display: grid; gap: 3px; }
+  .platform-domain-copy h2 { margin: 0; font-size: var(--text-lg); }
+  .platform-domain-copy p { margin: 0; color: var(--color-muted); font-size: var(--text-xs); line-height: 1.5; }
+  .platform-domain form { padding: 0 var(--space-5) var(--space-5); display: grid; grid-template-columns: minmax(240px, 1fr) auto auto; align-items: end; gap: var(--space-2); }
+  .platform-domain form label { display: grid; gap: 6px; }
+  .platform-domain form label > span { color: var(--color-muted); font-size: var(--text-2xs); font-weight: 700; }
+  .platform-domain-input { height: 38px; padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-2); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); color: var(--color-muted); }
+  .platform-domain-input:focus-within { border-color: var(--color-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-focus) 14%, transparent); }
+  .platform-domain-input input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--color-ink); font: var(--text-sm) var(--font-mono); }
+  .platform-domain footer { min-height: 42px; padding: 0 var(--space-5); display: flex; align-items: center; gap: var(--space-3); border-top: 1px solid var(--color-rule); background: var(--color-surface-subtle); color: var(--color-muted); font-size: var(--text-2xs); }
+  .platform-domain footer span { display: inline-flex; align-items: center; gap: 5px; }
+  .platform-domain footer code { color: var(--color-ink-secondary); font-size: var(--text-2xs); }
+  .platform-domain footer span:last-child { margin-left: auto; color: var(--color-success); }
+
   .domain-overview { margin-bottom: var(--space-4); display: grid; grid-template-columns: repeat(3, minmax(140px, .45fr)) minmax(260px, 1fr); overflow: hidden; border: 1px solid var(--color-rule); border-radius: var(--radius-lg); background: var(--color-paper-raised); box-shadow: var(--shadow-panel); }
   .domain-overview article { min-height: 74px; padding: var(--space-4); display: flex; align-items: center; gap: var(--space-3); border-right: 1px solid var(--color-rule); }
   .metric-icon { width: 34px; height: 34px; display: grid; place-items: center; flex: none; border: 1px solid color-mix(in srgb, var(--color-accent) 25%, var(--color-rule)); border-radius: var(--radius-md); background: var(--color-accent-softer); color: var(--color-accent); }
@@ -984,6 +1066,10 @@
   }
   @media (max-width: 42rem) {
     .page-actions .connection { display: none; }
+    .platform-domain form { grid-template-columns: 1fr 1fr; }
+    .platform-domain form label { grid-column: 1 / -1; }
+    .platform-domain footer { align-items: flex-start; flex-direction: column; gap: 4px; padding-block: var(--space-3); }
+    .platform-domain footer span:last-child { margin-left: 0; }
     .domain-overview { grid-template-columns: 1fr; }
     .domain-overview article { border-right: 0; border-bottom: 1px solid var(--color-rule); }
     .flow-note { grid-column: 1; }

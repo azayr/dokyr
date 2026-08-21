@@ -35,31 +35,6 @@ require_command() {
   fi
 }
 
-read_input() {
-  _prompt="$1"
-  _default="$2"
-  if [ -n "$_default" ]; then
-    printf "%s [%s]: " "$_prompt" "$_default" > /dev/tty
-  else
-    printf "%s: " "$_prompt" > /dev/tty
-  fi
-  read -r _value < /dev/tty
-  if [ -z "$_value" ]; then
-    _value="$_default"
-  fi
-  printf '%s' "$_value"
-}
-
-read_secret() {
-  _prompt="$1"
-  printf "%s: " "$_prompt" > /dev/tty
-  stty -echo 2>/dev/null < /dev/tty || true
-  read -r _value < /dev/tty
-  stty echo 2>/dev/null < /dev/tty || true
-  printf '\n' > /dev/tty
-  printf '%s' "$_value"
-}
-
 random_secret() {
   if command_exists openssl; then
     openssl rand -base64 32 | tr -d '=+/\n' | cut -c1-48
@@ -67,6 +42,26 @@ random_secret() {
     # Fallback that works on most Unix-like systems
     LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 48
   fi
+}
+
+detect_server_ip() {
+  if [ -n "${SERVER_IP:-}" ]; then
+    printf '%s' "$SERVER_IP"
+    return
+  fi
+  if _public_ip="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null)" &&
+    printf '%s' "$_public_ip" | grep -Eq '^[0-9]+(\.[0-9]+){3}$'; then
+    printf '%s' "$_public_ip"
+    return
+  fi
+  if command_exists hostname; then
+    _local_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    if [ -n "$_local_ip" ]; then
+      printf '%s' "$_local_ip"
+      return
+    fi
+  fi
+  printf '127.0.0.1'
 }
 
 # ---- preflight ----
@@ -83,11 +78,12 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 require_command curl
-require_command stty
 require_command tr
 require_command head
 require_command grep
 require_command chmod
+require_command awk
+
 
 # Docker socket is required for Dokyr to manage the host engine.
 if [ ! -S /var/run/docker.sock ]; then
@@ -107,19 +103,19 @@ fi
 log "Welcome to the Dokyr installer."
 log "Install directory: ${INSTALL_DIR}"
 
-printf '\n'
-HTTP_PORT="${HTTP_PORT:-80}"
+HTTP_PORT="${HTTP_PORT:-3030}"
 HTTPS_PORT="${HTTPS_PORT:-443}"
 DOKYR_IMAGE="${DOKYR_IMAGE:-ghcr.io/azayr/dokyr:latest}"
 DOKYR_REGISTRY_IMAGE="${DOKYR_REGISTRY_IMAGE:-ghcr.io/azayr/dokyr}"
 DOKYR_UPDATE_CHANNEL="${DOKYR_UPDATE_CHANNEL:-latest}"
 REGISTRY_HOSTS="${REGISTRY_HOSTS:-registry.invalid}"
 REGISTRY_HTTP_RELATIVEURLS="${REGISTRY_HTTP_RELATIVEURLS:-true}"
-PUBLIC_URL="${PUBLIC_URL:-$(read_input "Public URL (e.g. http://panel.example.com)" "http://localhost:${HTTP_PORT}")}"
-CONTROL_HOSTS="${CONTROL_HOSTS:-$(read_input "Control panel hostnames (space-separated, e.g. panel.example.com)" "localhost")}"
-POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(read_input "PostgreSQL password (leave blank to generate)" "")}"
-JWT_SECRET="${JWT_SECRET:-$(read_input "JWT secret (leave blank to generate)" "")}"
-ENCRYPTION_KEY="${ENCRYPTION_KEY:-$(read_input "Encryption key (leave blank to generate)" "")}"
+SERVER_IP="$(detect_server_ip)"
+PUBLIC_URL="${PUBLIC_URL:-http://${SERVER_IP}:${HTTP_PORT}}"
+CONTROL_HOSTS="${CONTROL_HOSTS:-${SERVER_IP}}"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
+JWT_SECRET="${JWT_SECRET:-}"
+ENCRYPTION_KEY="${ENCRYPTION_KEY:-}"
 REGISTRY_INTERNAL_SECRET="${REGISTRY_INTERNAL_SECRET:-}"
 STALWART_RECOVERY_PASSWORD="${STALWART_RECOVERY_PASSWORD:-}"
 STALWART_RELAY_PASSWORD="${STALWART_RELAY_PASSWORD:-}"
@@ -258,11 +254,8 @@ log "Install directory: ${INSTALL_DIR}"
 log ""
 log "Next steps:"
 log "  1. Visit ${PUBLIC_URL} and create the owner account."
-log "  2. Open Infrastructure -> Mail and choose the server's public mail hostname."
-log "  3. Point that hostname to this server, set matching reverse DNS, and allow TCP port 25."
-log "  4. Add sending domains from Infrastructure -> Mail."
-log "  5. Point a registry hostname to this server, then attach it from Infrastructure -> Registry -> Registry domain."
-log "  6. (Optional) Link GitHub from Settings -> Security; Dokyr creates an identity-only GitHub App for this server."
+log "  2. Add a control-panel domain from the dashboard when DNS is ready."
+log "  3. Configure optional mail, registry, and source integrations from the panel."
 log ""
 log "To manage the stack later:"
 log "  cd ${INSTALL_DIR} && ${COMPOSE_CMD} up -d"

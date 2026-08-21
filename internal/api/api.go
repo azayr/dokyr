@@ -51,6 +51,8 @@ type API struct {
 	log                    *slog.Logger
 	caddy                  *caddy.Client
 	publicURL              string
+	dnsTargetURL           string
+	publicURLMu            sync.RWMutex
 	registryHosts          []string
 	registryInternalSecret string
 	mailGateway            *mailgateway.Gateway
@@ -92,7 +94,7 @@ type databaseCreateInput struct {
 	PublicPort    int    `json:"publicPort"`
 }
 
-func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integration.Service, registryTokens *registry.TokenIssuer, box *secretbox.Box, caddyClient *caddy.Client, updates *platformupdate.Client, mailGateway *mailgateway.Gateway, publicURL string, registryHosts []string, registryInternalSecret string, log *slog.Logger) *API {
+func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integration.Service, registryTokens *registry.TokenIssuer, box *secretbox.Box, caddyClient *caddy.Client, updates *platformupdate.Client, mailGateway *mailgateway.Gateway, publicURL, dnsTargetURL string, registryHosts []string, registryInternalSecret string, log *slog.Logger) *API {
 	// Roles come from the database on every request rather than from the
 	// session token, so removing or re-roling an account takes effect at once
 	// instead of when the token expires.
@@ -114,6 +116,7 @@ func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integ
 		caddy:                  caddyClient,
 		updates:                updates,
 		publicURL:              strings.TrimRight(publicURL, "/"),
+		dnsTargetURL:           strings.TrimRight(dnsTargetURL, "/"),
 		registryHosts:          append([]string(nil), registryHosts...),
 		registryInternalSecret: registryInternalSecret,
 		mailGateway:            mailGateway,
@@ -124,6 +127,22 @@ func New(s *store.Store, d *runtime.Docker, a *auth.Manager, integrations *integ
 	}
 	go api.resumeDatabaseProvisioning()
 	return api
+}
+
+func (a *API) currentPublicURL() string {
+	a.publicURLMu.RLock()
+	defer a.publicURLMu.RUnlock()
+	return a.publicURL
+}
+
+func (a *API) setPublicURL(publicURL string) {
+	publicURL = strings.TrimRight(publicURL, "/")
+	a.publicURLMu.Lock()
+	a.publicURL = publicURL
+	a.publicURLMu.Unlock()
+	if a.integrations != nil {
+		a.integrations.SetPublicURL(publicURL)
+	}
 }
 
 func (a *API) resumeDatabaseProvisioning() {
@@ -203,6 +222,7 @@ func (a *API) registerProtectedRoutes(protected *guardedMux) {
 	protected.handle("PUT /api/settings/smtp", authz.PermPlatformWrite, a.updateSMTPSettings)
 	protected.handle("POST /api/settings/smtp/test", authz.PermPlatformWrite, a.testSMTPSettings)
 	protected.handle("GET /api/settings/platform/update", authz.PermPlatformWrite, a.platformUpdateStatusHandler)
+	protected.handle("PUT /api/settings/platform/domain", authz.PermPlatformWrite, a.updateControlPlaneDomain)
 	protected.handle("POST /api/settings/platform/update/check", authz.PermPlatformWrite, a.checkPlatformUpdate)
 	protected.handle("PUT /api/settings/platform/update", authz.PermPlatformWrite, a.updatePlatformUpdateSettings)
 	protected.handle("POST /api/settings/platform/update/apply", authz.PermPlatformWrite, a.applyPlatformUpdate)
@@ -495,9 +515,10 @@ func (a *API) setupStatus(w http.ResponseWriter, r *http.Request) {
 }
 func (a *API) setup(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Name     string `json:"name"`
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Name                 string `json:"name"`
+		Email                string `json:"email"`
+		Password             string `json:"password"`
+		PasswordConfirmation string `json:"passwordConfirmation"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -514,6 +535,10 @@ func (a *API) setup(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(in.Password) < 10 {
 		bad(w, "password must contain at least 10 characters")
+		return
+	}
+	if in.Password != in.PasswordConfirmation {
+		bad(w, "password confirmation does not match")
 		return
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
@@ -944,7 +969,7 @@ func (a *API) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
-	resetURL := a.publicURL + "/reset-password?token=" + url.QueryEscape(token)
+	resetURL := a.currentPublicURL() + "/reset-password?token=" + url.QueryEscape(token)
 	name := html.EscapeString(u.Name)
 	link := html.EscapeString(resetURL)
 	message := mailer.Message{
@@ -1260,7 +1285,98 @@ func (a *API) dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deployments = latestServiceDeployments(deployments)
-	write(w, 200, map[string]any{"projects": projects, "deployments": deployments, "docker": a.docker.Health(r.Context())})
+	write(w, 200, map[string]any{
+		"projects":    projects,
+		"deployments": deployments,
+		"docker":      a.docker.Health(r.Context()),
+		"platform":    a.controlPlaneStatus(),
+	})
+}
+
+func (a *API) controlPlaneStatus() map[string]any {
+	publicURL := a.currentPublicURL()
+	domain := a.caddy.ControlDomain()
+	configured := domain != "" || !temporaryPublicURL(publicURL)
+	return map[string]any{
+		"publicURL":              publicURL,
+		"domain":                 domain,
+		"customDomainConfigured": configured,
+	}
+}
+
+func temporaryPublicURL(publicURL string) bool {
+	parsed, err := url.Parse(publicURL)
+	if err != nil {
+		return true
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	return host == "" || host == "localhost" || net.ParseIP(host) != nil
+}
+
+func (a *API) updateControlPlaneDomain(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Domain string `json:"domain"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	domain, err := caddy.NormalizeDomain(input.Domain)
+	if err != nil {
+		bad(w, err.Error())
+		return
+	}
+
+	a.domainMu.Lock()
+	defer a.domainMu.Unlock()
+	previousDomain := a.caddy.ControlDomain()
+	if domain != "" && domain != previousDomain {
+		if a.caddy.IsControlHost(domain) {
+			write(w, http.StatusConflict, map[string]string{"error": "this hostname is reserved by another control-plane service"})
+			return
+		}
+		if assigned, lookupErr := a.registryDomainMatches(r.Context(), domain); lookupErr != nil {
+			problem(w, lookupErr)
+			return
+		} else if assigned {
+			write(w, http.StatusConflict, map[string]string{"error": "this domain is assigned to the container registry"})
+			return
+		}
+	}
+	routes, err := a.managedRoutes(r.Context())
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	for _, route := range routes {
+		if strings.EqualFold(route.Domain, domain) && !strings.EqualFold(domain, previousDomain) {
+			write(w, http.StatusConflict, map[string]string{"error": "remove this domain from its project before using it for the control panel"})
+			return
+		}
+	}
+	if err := a.caddy.SetControlDomain(domain); err != nil {
+		bad(w, err.Error())
+		return
+	}
+	if err := a.caddy.Apply(r.Context(), routes); err != nil {
+		_ = a.caddy.SetControlDomain(previousDomain)
+		write(w, http.StatusBadGateway, map[string]string{"error": "Caddy could not apply the control-panel domain: " + err.Error()})
+		return
+	}
+	if err := a.store.SaveControlPlaneSettings(r.Context(), store.ControlPlaneSettings{Domain: domain}); err != nil {
+		_ = a.caddy.SetControlDomain(previousDomain)
+		_ = a.caddy.Apply(r.Context(), routes)
+		problem(w, err)
+		return
+	}
+	publicURL := a.dnsTargetURL
+	if publicURL == "" {
+		publicURL = a.currentPublicURL()
+	}
+	if domain != "" {
+		publicURL = "https://" + domain
+	}
+	a.setPublicURL(publicURL)
+	write(w, http.StatusOK, a.controlPlaneStatus())
 }
 
 // latestServiceDeployments keeps the dashboard focused on current service
@@ -1356,7 +1472,9 @@ func (a *API) domainsIndex(w http.ResponseWriter, r *http.Request) {
 		"connected":       connectionError == "",
 		"connectionError": connectionError,
 		"controlHosts":    a.caddy.ControlHosts(),
-		"publicURL":       a.publicURL,
+		"controlDomain":   a.caddy.ControlDomain(),
+		"platform":        a.controlPlaneStatus(),
+		"publicURL":       a.currentPublicURL(),
 		"projects":        workspaces,
 		"managedDomains":  a.managedDomainResponses(managedDomains),
 		"dnsTarget":       a.domainDNSInstruction("@"),
@@ -1379,7 +1497,11 @@ type domainDNSInstruction struct {
 
 func (a *API) domainDNSInstruction(domain string) domainDNSInstruction {
 	host := "localhost"
-	if parsed, err := url.Parse(a.publicURL); err == nil && parsed.Hostname() != "" {
+	dnsTargetURL := a.dnsTargetURL
+	if dnsTargetURL == "" {
+		dnsTargetURL = a.currentPublicURL()
+	}
+	if parsed, err := url.Parse(dnsTargetURL); err == nil && parsed.Hostname() != "" {
 		host = strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
 	}
 	recordType := "CNAME"
@@ -4707,7 +4829,7 @@ func (a *API) deploymentTriggerResponse(ctx context.Context, service store.Appli
 				return nil, decryptErr
 			}
 			if secret != "" {
-				response["webhookUrl"] = a.publicURL + "/api/webhooks/github"
+				response["webhookUrl"] = a.currentPublicURL() + "/api/webhooks/github"
 				response["webhookConfigured"] = true
 			}
 		}
@@ -4725,7 +4847,7 @@ func (a *API) deploymentTriggerResponse(ctx context.Context, service store.Appli
 	if err != nil {
 		return nil, err
 	}
-	response["webhookUrl"] = a.publicURL + "/api/webhooks/registry/" + url.PathEscape(service.ID) + "/" + url.PathEscape(secret)
+	response["webhookUrl"] = a.currentPublicURL() + "/api/webhooks/registry/" + url.PathEscape(service.ID) + "/" + url.PathEscape(secret)
 	response["webhookConfigured"] = true
 	return response, nil
 }
@@ -5693,7 +5815,7 @@ func (a *API) queueDeploymentNotification(deploymentID, projectID, serviceName, 
 			label = "failed"
 			color = "#c53b36"
 		}
-		deploymentURL := a.publicURL + "/deployments/" + url.PathEscape(deploymentID)
+		deploymentURL := a.currentPublicURL() + "/deployments/" + url.PathEscape(deploymentID)
 		message := mailer.Message{
 			To: owner.Email, Subject: "Deployment " + label + ": " + project.Name + " / " + serviceName,
 			Text: "Deployment " + label + " for " + project.Name + " / " + serviceName + ".\n\n" + detail + "\n\nView deployment: " + deploymentURL,

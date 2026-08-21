@@ -5,17 +5,22 @@
   let name = '';
   let email = '';
   let password = '';
+  let passwordConfirmation = '';
   let error = '';
   let busy = false;
   let passwordVisible = false;
 
   async function submit() {
-    busy = true;
     error = '';
+    if (password !== passwordConfirmation) {
+      error = 'Password confirmation does not match';
+      return;
+    }
+    busy = true;
     const response = await fetch('/api/setup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, email, password })
+      body: JSON.stringify({ name, email, password, passwordConfirmation })
     });
     const data = await response.json();
     if (!response.ok) { error = data.error || 'Setup failed'; busy = false; return; }
@@ -45,6 +50,10 @@
           <Icon name={passwordVisible ? 'eye-off' : 'eye'} size={15} />
         </button>
       </span>
+    </label>
+    <label class="auth-field">
+      Confirm password
+      <input class="auth-input" bind:value={passwordConfirmation} type="password" autocomplete="new-password" minlength="10" placeholder="Repeat your password" required />
     </label>
     <button class="auth-submit" disabled={busy}>
       {busy ? 'Creating owner…' : 'Create owner account'}

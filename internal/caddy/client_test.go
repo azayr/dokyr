@@ -215,6 +215,30 @@ func TestIsControlHost(t *testing.T) {
 	}
 }
 
+func TestControlDomainAddsHTTPSRouteAndRemainsReserved(t *testing.T) {
+	client, err := New("http://caddy:2019", []string{"127.0.0.1"}, []string{"registry.invalid"}, "dokyr:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetControlDomain("panel.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	configuration := client.Render(nil)
+	for _, expected := range []string{
+		"panel.example.com {",
+		"reverse_proxy dokyr:8080",
+		"@controlDomain host panel.example.com",
+		"redir https://{host}{uri} permanent",
+	} {
+		if !strings.Contains(configuration, expected) {
+			t.Fatalf("control-domain config does not contain %q:\n%s", expected, configuration)
+		}
+	}
+	if !client.IsControlHost("panel.example.com") {
+		t.Fatal("configured platform domain must be reserved from project routes")
+	}
+}
+
 func TestMailHostnameOnlyForwardsACMEChallenge(t *testing.T) {
 	client, err := New("http://caddy:2019", []string{"panel.example.com"}, nil, "dokyr:8080")
 	if err != nil {

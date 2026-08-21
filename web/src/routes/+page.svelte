@@ -7,7 +7,7 @@
   import { api } from '$lib/auth.js';
   import { formatRelativeTime } from '$lib/time.js';
 
-  let data = { projects: [], deployments: [], docker: {} };
+  let data = { projects: [], deployments: [], docker: {}, platform: { publicURL: '', domain: '', customDomainConfigured: false } };
   let metrics = {
     checkedAt: '',
     engineName: '',
@@ -66,7 +66,7 @@
       if (!response.ok) throw new Error(payload.error || 'Could not load the dashboard');
       data = payload;
     } catch {
-      data = { projects: [], deployments: [], docker: {} };
+      data = { projects: [], deployments: [], docker: {}, platform: { publicURL: '', domain: '', customDomainConfigured: false } };
     }
   }
 
@@ -115,6 +115,17 @@
   meta={[metrics.engineName || 'local-docker', engineOnline ? 'live' : 'offline']}
 >
   <a slot="actions" class="btn btn-primary" href="/projects?new=1"><Icon name="plus" size={14} /> New project</a>
+
+  {#if !loading && !data.platform?.customDomainConfigured}
+    <aside class="domain-warning" aria-label="Platform domain required">
+      <span class="domain-warning-icon"><Icon name="globe" size={18} /></span>
+      <div>
+        <strong>Add a permanent address for this server</strong>
+        <p>Dokyr is currently using <code>{data.platform?.publicURL || 'its temporary IP address'}</code>. Connect a domain to enable a stable URL and automatic HTTPS.</p>
+      </div>
+      <a class="btn btn-sm" href="/domains?platform=1">Add platform domain <Icon name="arrow-right" size={13} /></a>
+    </aside>
+  {/if}
 
   <section class="metrics" aria-label="Workspace metrics">
     <article>
@@ -305,6 +316,46 @@
 </Shell>
 
 <style>
+  .domain-warning {
+    margin-bottom: var(--space-4);
+    padding: var(--space-4);
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--color-warning) 38%, var(--color-rule));
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--color-warning) 8%, var(--color-paper-raised));
+    box-shadow: inset 3px 0 0 var(--color-warning);
+  }
+  .domain-warning-icon {
+    width: 38px;
+    height: 38px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--radius-md);
+    background: var(--color-warning-soft);
+    color: var(--color-warning);
+  }
+  .domain-warning div {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+  .domain-warning strong {
+    font-size: var(--text-sm);
+  }
+  .domain-warning p {
+    margin: 0;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+  }
+  .domain-warning code {
+    color: var(--color-ink-secondary);
+    font-size: inherit;
+  }
+
   .metrics {
     margin-bottom: var(--space-4);
     display: grid;
@@ -714,6 +765,13 @@
     }
   }
   @media (max-width: 46rem) {
+    .domain-warning {
+      grid-template-columns: auto minmax(0, 1fr);
+    }
+    .domain-warning .btn {
+      grid-column: 1 / -1;
+      justify-content: center;
+    }
     .metrics {
       grid-template-columns: repeat(2, 1fr);
     }

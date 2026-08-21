@@ -37,3 +37,19 @@ func TestLatestServiceDeploymentsGroupsLegacyRowsByProjectAndServiceName(t *test
 		t.Fatalf("latestServiceDeployments() returned %d deployments, want 3", len(got))
 	}
 }
+
+func TestTemporaryPublicURL(t *testing.T) {
+	tests := []struct {
+		url       string
+		temporary bool
+	}{
+		{url: "http://203.0.113.20:3030", temporary: true},
+		{url: "http://localhost:8888", temporary: true},
+		{url: "https://panel.example.com", temporary: false},
+	}
+	for _, test := range tests {
+		if got := temporaryPublicURL(test.url); got != test.temporary {
+			t.Errorf("temporaryPublicURL(%q) = %v, want %v", test.url, got, test.temporary)
+		}
+	}
+}

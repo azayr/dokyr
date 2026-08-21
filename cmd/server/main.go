@@ -53,6 +53,21 @@ func main() {
 	if err := db.ReconcilePlatformUpdateJob(context.Background(), version.Current().Version); err != nil && !store.NotFound(err) {
 		log.Warn("reconcile interrupted platform update", "error", err)
 	}
+	controlDomain := ""
+	effectivePublicURL := cfg.PublicURL
+	if settings, settingsErr := db.ControlPlaneSettings(context.Background()); settingsErr == nil {
+		controlDomain, err = caddy.NormalizeDomain(settings.Domain)
+		if err != nil {
+			log.Error("configure stored control-panel domain", "error", err)
+			os.Exit(1)
+		}
+		if controlDomain != "" {
+			effectivePublicURL = "https://" + controlDomain
+		}
+	} else if !store.NotFound(settingsErr) {
+		log.Error("read control-panel settings", "error", settingsErr)
+		os.Exit(1)
+	}
 	authManager, err := auth.New(cfg.JWTSecret, cfg.JWTIssuer, cfg.CookieSecure)
 	if err != nil {
 		log.Error("configure authentication", "error", err)
@@ -64,7 +79,7 @@ func main() {
 		os.Exit(1)
 	}
 	integrations := integration.New(db, box, integration.Config{
-		PublicURL:          cfg.PublicURL,
+		PublicURL:          effectivePublicURL,
 		GitLabClientID:     cfg.GitLabClientID,
 		GitLabClientSecret: cfg.GitLabClientSecret,
 		GitLabBaseURL:      cfg.GitLabBaseURL,
@@ -105,6 +120,10 @@ func main() {
 	caddyClient, err := caddy.New(cfg.CaddyAdminURL, cfg.ControlHosts, cfg.RegistryHosts, cfg.ControlUpstream)
 	if err != nil {
 		log.Error("configure Caddy client", "error", err)
+		os.Exit(1)
+	}
+	if err := caddyClient.SetControlDomain(controlDomain); err != nil {
+		log.Error("configure control-panel domain", "error", err)
 		os.Exit(1)
 	}
 	updateClient, err := platformupdate.NewClient(cfg.PlatformImage, cfg.UpdateChannel)
@@ -153,7 +172,7 @@ func main() {
 	if mailGateway.Configured() && mailSetup {
 		go initializeStalwart(metricsContext, docker, mailGateway, log)
 	}
-	apiHandler := api.New(db, docker, authManager, integrations, registryTokens, box, caddyClient, updateClient, mailGateway, cfg.PublicURL, cfg.RegistryHosts, cfg.RegistryInternalSecret, log)
+	apiHandler := api.New(db, docker, authManager, integrations, registryTokens, box, caddyClient, updateClient, mailGateway, effectivePublicURL, cfg.PublicURL, cfg.RegistryHosts, cfg.RegistryInternalSecret, log)
 	smtpImported, err := apiHandler.BootstrapSMTPSettings(context.Background(), cfg.SMTP)
 	if err != nil {
 		log.Error("bootstrap SMTP settings", "error", err)

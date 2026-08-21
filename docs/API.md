@@ -207,7 +207,12 @@ Typical stages are `prepare`, `clone`, `build`, `pull`, `replace`, `create`, `st
 ### `POST /api/setup` — public
 
 ```json
-{ "name": "Owner", "email": "owner@example.com", "password": "at-least-ten-characters" }
+{
+  "name": "Owner",
+  "email": "owner@example.com",
+  "password": "at-least-ten-characters",
+  "passwordConfirmation": "at-least-ten-characters"
+}
 ```
 
 Returns `201` with `{ "user": User }` and sets the session cookie. It returns `409` after initial setup has completed.
@@ -431,7 +436,7 @@ must be recreated for SMTP use.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/dashboard` | Projects, recent deployments, Docker health |
+| `GET` | `/api/dashboard` | Projects, recent deployments, Docker health, and platform-domain status |
 | `GET` | `/api/projects` | All projects |
 | `POST` | `/api/projects` | Create project |
 | `GET` | `/api/projects/{projectId}` | Full project detail |
@@ -439,6 +444,7 @@ must be recreated for SMTP use.
 | `DELETE` | `/api/projects/{projectId}` | Delete project with confirmation |
 | `PUT` | `/api/projects/{projectId}/domain` | Replace all domain bindings |
 | `GET` | `/api/domains` | Read the global domain-management workspace and Caddy state |
+| `PUT` | `/api/settings/platform/domain` | Set or remove the permanent HTTPS control-panel domain (owner only) |
 | `POST` | `/api/projects/{projectId}/deploy` | Deploy default/legacy application |
 | `POST` | `/api/projects/{projectId}/stop` | Stop default/legacy application |
 | `POST` | `/api/projects/{projectId}/restart` | Restart or start default/legacy application |

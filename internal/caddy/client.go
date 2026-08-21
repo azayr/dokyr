@@ -37,6 +37,7 @@ type Client struct {
 	adminURL        string
 	controlUpstream string
 	controlHosts    []string
+	controlDomain   string
 	registryHosts   []string
 	mailHostname    string
 	http            *http.Client
@@ -181,8 +182,16 @@ func (c *Client) Apply(ctx context.Context, routes []Route) error {
 func (c *Client) Render(routes []Route) string {
 	c.mu.RLock()
 	mailHostname := c.mailHostname
+	controlDomain := c.controlDomain
+	controlHosts := append([]string(nil), c.controlHosts...)
+	registryHosts := append([]string(nil), c.registryHosts...)
+	controlUpstream := c.controlUpstream
 	c.mu.RUnlock()
-	return render(routes, c.controlHosts, c.registryHosts, c.controlUpstream, mailHostname)
+	if controlDomain != "" {
+		controlHosts = append(controlHosts, controlDomain)
+		sort.Strings(controlHosts)
+	}
+	return render(routes, controlHosts, registryHosts, controlUpstream, mailHostname, controlDomain)
 }
 
 // SetMailHostname reserves the public mail hostname and exposes only
@@ -207,7 +216,35 @@ func (c *Client) ControlUpstream() string {
 }
 
 func (c *Client) ControlHosts() []string {
-	return append([]string(nil), c.controlHosts...)
+	c.mu.RLock()
+	hosts := append([]string(nil), c.controlHosts...)
+	if c.controlDomain != "" {
+		hosts = append(hosts, c.controlDomain)
+	}
+	c.mu.RUnlock()
+	sort.Strings(hosts)
+	return hosts
+
+}
+
+func (c *Client) ControlDomain() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.controlDomain
+}
+
+// SetControlDomain promotes a user-configured hostname to the HTTPS control
+// plane route. Environment-provided control hosts remain available as recovery
+// addresses if DNS is changed or removed later.
+func (c *Client) SetControlDomain(domain string) error {
+	normalized, err := NormalizeDomain(domain)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.controlDomain = normalized
+	c.mu.Unlock()
+	return nil
 }
 
 // IsControlHost reports whether domain is one of the hostnames that must reach
@@ -223,14 +260,19 @@ func (c *Client) IsControlHost(domain string) bool {
 	if domain == "" {
 		return false
 	}
-	for _, host := range c.controlHosts {
+	c.mu.RLock()
+	controlDomain := c.controlDomain
+	controlHosts := append([]string(nil), c.controlHosts...)
+	mailHostname := c.mailHostname
+	c.mu.RUnlock()
+	if controlDomain == domain {
+		return true
+	}
+	for _, host := range controlHosts {
 		if strings.TrimSuffix(strings.ToLower(host), ".") == domain {
 			return true
 		}
 	}
-	c.mu.RLock()
-	mailHostname := c.mailHostname
-	c.mu.RUnlock()
 	if mailHostname != "" && mailHostname == domain {
 		return true
 	}
@@ -282,7 +324,7 @@ func (c *Client) ApplyRaw(ctx context.Context, body string) error {
 	return fmt.Errorf("Caddy rejected configuration (%s): %s", res.Status, strings.TrimSpace(string(message)))
 }
 
-func render(routes []Route, controlHosts []string, registryHosts []string, controlUpstream, mailHostname string) string {
+func render(routes []Route, controlHosts []string, registryHosts []string, controlUpstream, mailHostname, controlDomain string) string {
 	sorted := append([]Route(nil), routes...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Domain < sorted[j].Domain })
 	// Drop any route that claims a control hostname. Callers reject these when
@@ -305,6 +347,9 @@ func render(routes []Route, controlHosts []string, registryHosts []string, contr
 	sorted = kept
 	var body strings.Builder
 	body.WriteString("{\n\tadmin unix//run/caddy-admin/admin.sock\n}\n\n")
+	if controlDomain != "" {
+		fmt.Fprintf(&body, "%s {\n\tencode zstd gzip\n\treverse_proxy %s\n}\n\n", controlDomain, controlUpstream)
+	}
 	for _, route := range sorted {
 		if route.HTTPS {
 			fmt.Fprintf(&body, "%s {\n\tencode zstd gzip\n", route.Domain)
@@ -313,6 +358,9 @@ func render(routes []Route, controlHosts []string, registryHosts []string, contr
 		}
 	}
 	body.WriteString(":80 {\n\tencode zstd gzip\n")
+	if controlDomain != "" {
+		fmt.Fprintf(&body, "\t@controlDomain host %s\n\thandle @controlDomain {\n\t\tredir https://{host}{uri} permanent\n\t}\n", controlDomain)
+	}
 	// Caddy stops at the first matching handle block, so the control-panel
 	// matchers are written before any project route. The panel stays reachable
 	// even if a project somehow holds one of its hostnames.

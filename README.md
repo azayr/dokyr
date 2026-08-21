@@ -18,19 +18,18 @@ The fastest way to install Dokyr on a fresh server is the remote installer. It d
 curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/install.sh | sudo sh
 ```
 
-The installer defaults to `/opt/dokyr`, publishes the control panel on HTTP port `80` and HTTPS port `443`, and prompts for the panel hostname while generating omitted secrets. Run it as root so the control plane can access the host Docker socket. After the stack starts, create the owner account, then configure one public mail-server hostname from **Infrastructure → Mail**.
+The installer defaults to `/opt/dokyr`, detects the server's public IP, publishes the temporary control-panel address on HTTP port `3030`, and generates every infrastructure secret automatically. It does not ask for database credentials or hostnames. Run it as root so the control plane can access the host Docker socket, then open the displayed IP address and create the owner account.
 
 For an automated install, download the script and run it with the variables you want preset:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/install.sh -o /tmp/install-dokyr.sh
 sudo DOKYR_INSTALL_DIR=/srv/dokyr \
-  HTTP_PORT=80 HTTPS_PORT=443 \
-  PUBLIC_URL=http://panel.example.com \
-  CONTROL_HOSTS="panel.example.com" \
-  POSTGRES_PASSWORD="..." JWT_SECRET="..." ENCRYPTION_KEY="..." \
+  HTTP_PORT=3030 HTTPS_PORT=443 \
   sh /tmp/install-dokyr.sh
 ```
+
+After signing in, use the dashboard warning or **Infrastructure → Domains** to replace the temporary IP address with a permanent control-panel domain and automatic HTTPS. Advanced unattended installs may still override `SERVER_IP`, `PUBLIC_URL`, `CONTROL_HOSTS`, or generated secrets through environment variables.
 
 ## Uninstall
 

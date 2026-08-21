@@ -45,6 +45,8 @@ Enable HTTPS after DNS reaches the host and ports 80 and 443 are available. Cadd
 
 ## Control-panel hosts
 
-`CONTROL_HOSTS` is the allowlist for control-panel domains. Unknown hostnames receive a 404 instead of being forwarded to the panel. Direct IPv4 access is allowed so a fresh installation remains reachable before DNS is configured.
+Fresh installations use the server IP and port 3030 as a temporary control-panel address. The dashboard warning links to **Infrastructure → Domains**, where the owner can connect a permanent control-panel domain. Dokyr reserves that hostname from project routes, configures Caddy automatic HTTPS, and keeps the original IP address available as a recovery route.
+
+`CONTROL_HOSTS` remains an advanced bootstrap allowlist. Unknown hostnames receive a 404 instead of being forwarded to the panel. Direct IPv4 access is allowed so a fresh installation remains reachable before DNS is configured.
 
 Application domains belong in the Domains interface. Do not add every application hostname to `CONTROL_HOSTS`.

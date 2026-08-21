@@ -230,7 +230,7 @@ func (a *API) issueInvitationLink(r *http.Request, u store.User) (string, error)
 	if err := a.store.CreatePasswordResetToken(r.Context(), hex.EncodeToString(hash[:]), u.ID, time.Now().Add(invitationLifetime)); err != nil {
 		return "", err
 	}
-	return a.publicURL + "/reset-password?token=" + url.QueryEscape(token), nil
+	return a.currentPublicURL() + "/reset-password?token=" + url.QueryEscape(token), nil
 }
 
 // sendInvitationEmail delivers the link when SMTP is configured, and reports

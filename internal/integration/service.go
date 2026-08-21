@@ -43,9 +43,22 @@ type Service struct {
 	store      *store.Store
 	box        *secretbox.Box
 	cfg        Config
+	configMu   sync.RWMutex
 	http       *http.Client
 	lookupIPv4 func(context.Context, string) (string, error)
 	oauth      sync.Mutex
+}
+
+func (s *Service) SetPublicURL(publicURL string) {
+	s.configMu.Lock()
+	s.cfg.PublicURL = strings.TrimRight(publicURL, "/")
+	s.configMu.Unlock()
+}
+
+func (s *Service) publicURL() string {
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
+	return s.cfg.PublicURL
 }
 
 type Repository struct {
@@ -307,7 +320,7 @@ func (s *Service) startGitHubManifest(ctx context.Context, userID, mode string) 
 
 func (s *Service) githubManifest(mode, suffix string) (map[string]any, string, error) {
 	manifest := map[string]any{
-		"url":    s.cfg.PublicURL,
+		"url":    s.publicURL(),
 		"public": true,
 	}
 	purpose := "Create a public GitHub App that users can install for explicitly selected repositories."
@@ -324,7 +337,7 @@ func (s *Service) githubManifest(mode, suffix string) (map[string]any, string, e
 		manifest["setup_on_update"] = true
 		manifest["description"] = "Selected repository access for this Dokyr control plane."
 		manifest["hook_attributes"] = map[string]any{
-			"url":    s.cfg.PublicURL + "/api/webhooks/github",
+			"url":    s.publicURL() + "/api/webhooks/github",
 			"active": true,
 		}
 		manifest["default_events"] = []string{"push"}
@@ -1184,19 +1197,19 @@ func (s *Service) bearer(req *http.Request, token, provider string) {
 }
 
 func (s *Service) callbackURL(provider string) string {
-	return s.cfg.PublicURL + "/api/integrations/oauth/" + provider + "/callback"
+	return s.publicURL() + "/api/integrations/oauth/" + provider + "/callback"
 }
 func (s *Service) accountCallbackURL() string {
-	return s.cfg.PublicURL + "/api/auth/github/callback"
+	return s.publicURL() + "/api/auth/github/callback"
 }
 func (s *Service) loginManifestCallbackURL() string {
-	return s.cfg.PublicURL + "/api/auth/github/manifest/callback"
+	return s.publicURL() + "/api/auth/github/manifest/callback"
 }
 func (s *Service) manifestCallbackURL() string {
-	return s.cfg.PublicURL + "/api/integrations/github/manifest/callback"
+	return s.publicURL() + "/api/integrations/github/manifest/callback"
 }
 func (s *Service) installationCallbackURL() string {
-	return s.cfg.PublicURL + "/api/integrations/github/install/callback"
+	return s.publicURL() + "/api/integrations/github/install/callback"
 }
 func (s *Service) providerBase(provider string) string {
 	if provider == "github" {
