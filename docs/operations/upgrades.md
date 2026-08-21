@@ -31,7 +31,7 @@ Automatic updates are disabled by default. When enabled, they run during the con
 The in-app updater replaces the Dokyr image only. When release notes mention changes to the platform Compose topology, run the topology updater:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/update.sh | sudo sh
+curl -fsSL https://sh.dokyr.com/update.sh | sudo sh
 ```
 
 The script downloads and validates `compose.production.yaml`, pulls required
@@ -44,7 +44,7 @@ containers and databases remain running.
 To validate an update without changing the installed stack:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/update.sh -o /tmp/update-dokyr.sh
+curl -fsSL https://sh.dokyr.com/update.sh -o /tmp/update-dokyr.sh
 sudo DOKYR_UPDATE_DRY_RUN=true sh /tmp/update-dokyr.sh
 ```
 

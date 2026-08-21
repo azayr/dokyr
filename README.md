@@ -25,7 +25,7 @@ For an automated install, download the script and run it with the variables you 
 ```sh
 curl -fsSL https://sh.dokyr.com/install.sh -o /tmp/install-dokyr.sh
 sudo DOKYR_INSTALL_DIR=/srv/dokyr \
-  HTTP_PORT=3030 HTTPS_PORT=443 \
+  HTTP_PORT=80 RECOVERY_HTTP_PORT=3030 HTTPS_PORT=443 \
   sh /tmp/install-dokyr.sh
 ```
 
@@ -75,7 +75,7 @@ Compose topology—such as adding or removing a platform service—update the VP
 topology separately:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/update.sh | sudo sh
+curl -fsSL https://sh.dokyr.com/update.sh | sudo sh
 ```
 
 The topology updater validates and pulls the replacement before changing the

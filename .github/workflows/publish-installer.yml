@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - scripts/install.sh
+      - scripts/update.sh
       - scripts/uninstall.sh
       - .github/workflows/publish-installer.yml
   workflow_dispatch:
@@ -35,6 +36,7 @@ jobs:
           mkdir _site
           cp scripts/install.sh _site/install.sh
           cp scripts/install.sh _site/index.html
+          cp scripts/update.sh _site/update.sh
           cp scripts/uninstall.sh _site/uninstall.sh
           touch _site/.nojekyll
 

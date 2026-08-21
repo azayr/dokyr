@@ -2,7 +2,7 @@
 set -eu
 
 # Dokyr Compose topology updater
-# Usage: curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/update.sh | sudo sh
+# Usage: curl -fsSL https://sh.dokyr.com/update.sh | sudo sh
 #
 # This replaces and reconciles Dokyr's platform Compose stack. Project
 # containers and their volumes are managed separately and are not stopped or
@@ -101,6 +101,26 @@ fi
 # names without overriding a DOKYR_* value the operator has already set.
 awk -v install_dir="$INSTALL_DIR" '
   BEGIN { install_dir_seen = 0; legacy_count = 0 }
+  NR == FNR {
+    if ($0 ~ /^HTTP_PORT=/) {
+      existing_http_port = $0
+      sub(/^HTTP_PORT=/, "", existing_http_port)
+    }
+    if ($0 ~ /^RECOVERY_HTTP_PORT=/) recovery_http_port_seen = 1
+    next
+  }
+  /^HTTP_PORT=/ {
+    if (!recovery_http_port_seen) {
+      recovery_http_port = existing_http_port
+      if (recovery_http_port == "" || recovery_http_port == "80") recovery_http_port = "3030"
+      print "HTTP_PORT=80"
+      print "RECOVERY_HTTP_PORT=" recovery_http_port
+    } else {
+      print
+    }
+    http_port_seen = 1
+    next
+  }
   /^SELFHOST_[A-Z0-9_]*=/ {
     migrated = $0
     sub(/^SELFHOST_/, "DOKYR_", migrated)
@@ -129,13 +149,15 @@ awk -v install_dir="$INSTALL_DIR" '
   }
   { print }
   END {
+    if (!http_port_seen) print "HTTP_PORT=80"
+    if (!http_port_seen && !recovery_http_port_seen) print "RECOVERY_HTTP_PORT=3030"
     for (i = 1; i <= legacy_count; i++) {
       key = legacy_keys[i]
       if (!(key in current)) print legacy_values[key]
     }
     if (!install_dir_seen) print "DOKYR_INSTALL_DIR=" install_dir
   }
-' "${INSTALL_DIR}/.env" > "${UPDATE_DIR}/.env"
+' "${INSTALL_DIR}/.env" "${INSTALL_DIR}/.env" > "${UPDATE_DIR}/.env"
 
 log "Validating the downloaded Compose topology..."
 if ! $COMPOSE_CMD --env-file "${UPDATE_DIR}/.env" -f "${UPDATE_DIR}/compose.yaml" config --quiet; then

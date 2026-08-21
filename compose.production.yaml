@@ -184,7 +184,8 @@ services:
       DOKYR_CONTROL_HOSTS: ${CONTROL_HOSTS:-localhost}
       REGISTRY_HOSTS: ${REGISTRY_HOSTS:-registry.invalid}
     ports:
-      - "${HTTP_PORT:-8888}:80"
+      - "${HTTP_PORT:-80}:80"
+      - "${RECOVERY_HTTP_PORT:-3030}:80"
       - "${HTTPS_PORT:-8443}:443"
       - "${HTTPS_PORT:-8443}:443/udp"
     volumes:

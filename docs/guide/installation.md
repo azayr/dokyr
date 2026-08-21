@@ -14,7 +14,7 @@ Prepare a Linux server with:
 - a recent Docker Engine and Docker Compose;
 - root or `sudo` access;
 - at least 2 GB of memory for the platform and a small workload;
-- TCP port 3030 available for initial HTTP access and port 443 available for HTTPS;
+- TCP ports 80 and 443 available for domain traffic, plus port 3030 for initial and recovery access;
 - a DNS A or AAAA record when you want a hostname for the control panel.
 
 ::: warning Docker access
@@ -39,7 +39,8 @@ Download the script first when you need a repeatable, non-interactive installati
 curl -fsSL https://sh.dokyr.com/install.sh -o /tmp/install-dokyr.sh
 
 sudo DOKYR_INSTALL_DIR=/srv/dokyr \
-  HTTP_PORT=3030 \
+  HTTP_PORT=80 \
+  RECOVERY_HTTP_PORT=3030 \
   HTTPS_PORT=443 \
   sh /tmp/install-dokyr.sh
 ```

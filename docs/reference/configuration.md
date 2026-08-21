@@ -11,7 +11,8 @@ The installer writes the production environment file. For local development, cop
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `HTTP_PORT` | Public Caddy HTTP port (`3030` in VPS installs; `8888` locally) | `8888` |
+| `HTTP_PORT` | Standard Caddy HTTP ingress port (`80` in VPS installs; `8888` locally) | `8888` |
+| `RECOVERY_HTTP_PORT` | Secondary HTTP port for temporary IP and recovery access in the VPS topology | `3030` |
 | `HTTPS_PORT` | Public Caddy HTTPS port | `8443` |
 | `PUBLIC_URL` | Complete external control-panel URL | `http://localhost:8888` |
 | `CONTROL_HOSTS` | Space-separated control-panel host allowlist | `localhost` |
@@ -23,7 +24,7 @@ The installer writes the production environment file. For local development, cop
 | `DOKYR_BUILDKIT_CACHE_REF` | Optional registry cache reference; supports `{service}` | empty |
 | `DOKYR_RAILPACK_FRONTEND` | BuildKit frontend used for Railpack plans | `ghcr.io/railwayapp/railpack-frontend:latest` |
 
-The VPS installer detects `SERVER_IP`, derives the temporary `PUBLIC_URL`, and generates `POSTGRES_PASSWORD`, `JWT_SECRET`, and `ENCRYPTION_KEY`. These variables remain available for advanced automation and recovery; they are not interactive installation questions. A permanent control-panel domain is stored from **Infrastructure → Domains** after the owner account is created.
+The VPS installer exposes Caddy on standard HTTP port 80 for domain traffic and ACME challenges, while retaining port 3030 for temporary IP and recovery access. It detects `SERVER_IP`, derives the temporary `PUBLIC_URL` from `RECOVERY_HTTP_PORT`, and generates `POSTGRES_PASSWORD`, `JWT_SECRET`, and `ENCRYPTION_KEY`. These variables remain available for advanced automation and recovery; they are not interactive installation questions. A permanent control-panel domain is stored from **Infrastructure → Domains** after the owner account is created.
 
 ## Platform updates
 

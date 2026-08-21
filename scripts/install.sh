@@ -103,7 +103,8 @@ fi
 log "Welcome to the Dokyr installer."
 log "Install directory: ${INSTALL_DIR}"
 
-HTTP_PORT="${HTTP_PORT:-3030}"
+HTTP_PORT="${HTTP_PORT:-80}"
+RECOVERY_HTTP_PORT="${RECOVERY_HTTP_PORT:-3030}"
 HTTPS_PORT="${HTTPS_PORT:-443}"
 DOKYR_IMAGE="${DOKYR_IMAGE:-ghcr.io/azayr/dokyr:latest}"
 DOKYR_REGISTRY_IMAGE="${DOKYR_REGISTRY_IMAGE:-ghcr.io/azayr/dokyr}"
@@ -111,7 +112,7 @@ DOKYR_UPDATE_CHANNEL="${DOKYR_UPDATE_CHANNEL:-latest}"
 REGISTRY_HOSTS="${REGISTRY_HOSTS:-registry.invalid}"
 REGISTRY_HTTP_RELATIVEURLS="${REGISTRY_HTTP_RELATIVEURLS:-true}"
 SERVER_IP="$(detect_server_ip)"
-PUBLIC_URL="${PUBLIC_URL:-http://${SERVER_IP}:${HTTP_PORT}}"
+PUBLIC_URL="${PUBLIC_URL:-http://${SERVER_IP}:${RECOVERY_HTTP_PORT}}"
 CONTROL_HOSTS="${CONTROL_HOSTS:-${SERVER_IP}}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
 JWT_SECRET="${JWT_SECRET:-}"
@@ -126,6 +127,10 @@ if [ -z "$ENCRYPTION_KEY" ]; then ENCRYPTION_KEY="$(random_secret)"; fi
 if [ -z "$REGISTRY_INTERNAL_SECRET" ]; then REGISTRY_INTERNAL_SECRET="$(random_secret)"; fi
 if [ -z "$STALWART_RECOVERY_PASSWORD" ]; then STALWART_RECOVERY_PASSWORD="$(random_secret)"; fi
 if [ -z "$STALWART_RELAY_PASSWORD" ]; then STALWART_RELAY_PASSWORD="$(random_secret)"; fi
+
+if [ "$HTTP_PORT" = "$RECOVERY_HTTP_PORT" ]; then
+  error "HTTP_PORT and RECOVERY_HTTP_PORT must use different host ports"
+fi
 
 printf '\n'
 log "Downloading Compose files into ${INSTALL_DIR}..."
@@ -151,6 +156,7 @@ fi
 log "Writing .env configuration..."
 cat > .env <<EOF
 HTTP_PORT=${HTTP_PORT}
+RECOVERY_HTTP_PORT=${RECOVERY_HTTP_PORT}
 HTTPS_PORT=${HTTPS_PORT}
 PUBLIC_URL=${PUBLIC_URL}
 CONTROL_HOSTS=${CONTROL_HOSTS}
