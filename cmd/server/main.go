@@ -54,6 +54,7 @@ func main() {
 		log.Warn("reconcile interrupted platform update", "error", err)
 	}
 	controlDomain := ""
+	controlOriginHTTPS := true
 	effectivePublicURL := cfg.PublicURL
 	if settings, settingsErr := db.ControlPlaneSettings(context.Background()); settingsErr == nil {
 		controlDomain, err = caddy.NormalizeDomain(settings.Domain)
@@ -61,6 +62,7 @@ func main() {
 			log.Error("configure stored control-panel domain", "error", err)
 			os.Exit(1)
 		}
+		controlOriginHTTPS = settings.OriginHTTPSEnabled
 		if controlDomain != "" {
 			effectivePublicURL = "https://" + controlDomain
 		}
@@ -122,7 +124,7 @@ func main() {
 		log.Error("configure Caddy client", "error", err)
 		os.Exit(1)
 	}
-	if err := caddyClient.SetControlDomain(controlDomain); err != nil {
+	if err := caddyClient.SetControlDomain(controlDomain, controlOriginHTTPS); err != nil {
 		log.Error("configure control-panel domain", "error", err)
 		os.Exit(1)
 	}

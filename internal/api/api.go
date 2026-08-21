@@ -1300,6 +1300,7 @@ func (a *API) controlPlaneStatus() map[string]any {
 	return map[string]any{
 		"publicURL":              publicURL,
 		"domain":                 domain,
+		"originHttpsEnabled":     a.caddy.ControlDomainHTTPSEnabled(),
 		"customDomainConfigured": configured,
 	}
 }
@@ -1315,7 +1316,8 @@ func temporaryPublicURL(publicURL string) bool {
 
 func (a *API) updateControlPlaneDomain(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Domain string `json:"domain"`
+		Domain             string `json:"domain"`
+		OriginHTTPSEnabled *bool  `json:"originHttpsEnabled"`
 	}
 	if !decode(w, r, &input) {
 		return
@@ -1329,6 +1331,16 @@ func (a *API) updateControlPlaneDomain(w http.ResponseWriter, r *http.Request) {
 	a.domainMu.Lock()
 	defer a.domainMu.Unlock()
 	previousDomain := a.caddy.ControlDomain()
+	previousOriginHTTPS := a.caddy.ControlDomainHTTPSEnabled()
+	originHTTPS := previousOriginHTTPS
+	if input.OriginHTTPSEnabled != nil {
+		originHTTPS = *input.OriginHTTPSEnabled
+	} else if domain != previousDomain {
+		originHTTPS = true
+	}
+	if domain == "" {
+		originHTTPS = true
+	}
 	if domain != "" && domain != previousDomain {
 		if a.caddy.IsControlHost(domain) {
 			write(w, http.StatusConflict, map[string]string{"error": "this hostname is reserved by another control-plane service"})
@@ -1353,17 +1365,17 @@ func (a *API) updateControlPlaneDomain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := a.caddy.SetControlDomain(domain); err != nil {
+	if err := a.caddy.SetControlDomain(domain, originHTTPS); err != nil {
 		bad(w, err.Error())
 		return
 	}
 	if err := a.caddy.Apply(r.Context(), routes); err != nil {
-		_ = a.caddy.SetControlDomain(previousDomain)
+		_ = a.caddy.SetControlDomain(previousDomain, previousOriginHTTPS)
 		write(w, http.StatusBadGateway, map[string]string{"error": "Caddy could not apply the control-panel domain: " + err.Error()})
 		return
 	}
-	if err := a.store.SaveControlPlaneSettings(r.Context(), store.ControlPlaneSettings{Domain: domain}); err != nil {
-		_ = a.caddy.SetControlDomain(previousDomain)
+	if err := a.store.SaveControlPlaneSettings(r.Context(), store.ControlPlaneSettings{Domain: domain, OriginHTTPSEnabled: originHTTPS}); err != nil {
+		_ = a.caddy.SetControlDomain(previousDomain, previousOriginHTTPS)
 		_ = a.caddy.Apply(r.Context(), routes)
 		problem(w, err)
 		return

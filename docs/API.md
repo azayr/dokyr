@@ -444,12 +444,20 @@ must be recreated for SMTP use.
 | `DELETE` | `/api/projects/{projectId}` | Delete project with confirmation |
 | `PUT` | `/api/projects/{projectId}/domain` | Replace all domain bindings |
 | `GET` | `/api/domains` | Read the global domain-management workspace and Caddy state |
-| `PUT` | `/api/settings/platform/domain` | Set or remove the permanent HTTPS control-panel domain (owner only) |
+| `PUT` | `/api/settings/platform/domain` | Set or remove the permanent control-panel domain and its origin HTTPS mode (owner only) |
 | `POST` | `/api/projects/{projectId}/deploy` | Deploy default/legacy application |
 | `POST` | `/api/projects/{projectId}/stop` | Stop default/legacy application |
 | `POST` | `/api/projects/{projectId}/restart` | Restart or start default/legacy application |
 | `GET` | `/api/projects/{projectId}/logs?lines=300` | Default/legacy runtime logs |
 | `GET` | `/api/projects/{projectId}/metrics` | Per-project container metrics |
+
+Set a control-panel domain with Caddy-managed HTTPS:
+
+```json
+{ "domain": "panel.example.com", "originHttpsEnabled": true }
+```
+
+Set `originHttpsEnabled` to `false` only when an external proxy terminates public TLS and connects to Caddy over HTTP. Dokyr continues to publish the control-panel URL as HTTPS, but Caddy does not request a certificate or redirect that hostname. New domains created by clients that omit the field default to automatic HTTPS; updates to the current domain preserve its existing mode.
 
 ### Create project
 

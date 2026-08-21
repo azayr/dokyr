@@ -220,7 +220,7 @@ func TestControlDomainAddsHTTPSRouteAndRemainsReserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.SetControlDomain("panel.example.com"); err != nil {
+	if err := client.SetControlDomain("panel.example.com", true); err != nil {
 		t.Fatal(err)
 	}
 	configuration := client.Render(nil)
@@ -236,6 +236,43 @@ func TestControlDomainAddsHTTPSRouteAndRemainsReserved(t *testing.T) {
 	}
 	if !client.IsControlHost("panel.example.com") {
 		t.Fatal("configured platform domain must be reserved from project routes")
+	}
+	if !client.ControlDomainHTTPSEnabled() {
+		t.Fatal("configured platform domain should use automatic HTTPS by default")
+	}
+}
+
+func TestControlDomainCanUseHTTPBehindExternalProxy(t *testing.T) {
+	client, err := New("http://caddy:2019", []string{"127.0.0.1"}, nil, "dokyr:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetControlDomain("panel.example.com", false); err != nil {
+		t.Fatal(err)
+	}
+
+	configuration := client.Render(nil)
+	for _, expected := range []string{
+		"@controlDomain host panel.example.com",
+		"reverse_proxy dokyr:8080",
+	} {
+		if !strings.Contains(configuration, expected) {
+			t.Fatalf("HTTP-origin control-domain config does not contain %q:\n%s", expected, configuration)
+		}
+	}
+	for _, unexpected := range []string{
+		"panel.example.com {",
+		"redir https://{host}{uri} permanent",
+	} {
+		if strings.Contains(configuration, unexpected) {
+			t.Fatalf("HTTP-origin control-domain config unexpectedly contains %q:\n%s", unexpected, configuration)
+		}
+	}
+	if client.ControlDomainHTTPSEnabled() {
+		t.Fatal("HTTP-origin control domain should report automatic HTTPS as disabled")
+	}
+	if !client.IsControlHost("panel.example.com") {
+		t.Fatal("HTTP-origin platform domain must remain reserved from project routes")
 	}
 }
 

@@ -49,4 +49,6 @@ Fresh installations use the server IP and port 3030 as a temporary control-panel
 
 `CONTROL_HOSTS` remains an advanced bootstrap allowlist. Unknown hostnames receive a 404 instead of being forwarded to the panel. Direct IPv4 access is allowed so a fresh installation remains reachable before DNS is configured.
 
+The platform domain offers two origin modes. **Caddy automatic HTTPS** is the secure default and works for direct DNS or a proxy configured for end-to-end TLS, such as Cloudflare Full (strict). **HTTP behind external proxy** disables Caddy certificate management and HTTPS redirects only for the control-panel hostname; use it when the external proxy terminates public TLS and deliberately connects to the server over HTTP. Keep that hostname proxied because the proxy-to-origin connection is unencrypted.
+
 Application domains belong in the Domains interface. Do not add every application hostname to `CONTROL_HOSTS`.

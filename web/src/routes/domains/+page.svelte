@@ -22,8 +22,9 @@
   let registryDomain = { domain: '', httpsEnabled: true, attached: false, registryHosts: [] };
   let controlHosts = [];
   let publicURL = '';
-  let platform = { publicURL: '', domain: '', customDomainConfigured: false };
+  let platform = { publicURL: '', domain: '', originHttpsEnabled: true, customDomainConfigured: false };
   let platformDomain = '';
+  let platformOriginHttpsEnabled = true;
   let platformSaving = false;
   let platformInput;
   let routes = [];
@@ -78,7 +79,8 @@
     domain: controlDisplayHost(host),
     projectId: 'control',
     projectName: 'Dokyr control plane · system route',
-    httpsEnabled: false,
+    httpsEnabled: host === platform.domain ? platform.originHttpsEnabled : false,
+    externalTLS: host === platform.domain && !platform.originHttpsEnabled,
     services: [{ id: 'control', name: 'Dokyr control plane', containerPort: 8080 }],
     rules: [{ path: '/*', serviceId: 'control', port: 8080 }],
     url: controlURL(host)
@@ -125,6 +127,7 @@
       publicURL = payload.publicURL || '';
       platform = payload.platform || platform;
       platformDomain = platform.domain || '';
+      platformOriginHttpsEnabled = platform.originHttpsEnabled !== false;
       routes = payload.routes || [];
       configuration = payload.configuration || '';
       managedConfiguration = configuration;
@@ -144,15 +147,18 @@
       const response = await api('/api/settings/platform/domain', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ domain: domain.trim() })
+        body: JSON.stringify({ domain: domain.trim(), originHttpsEnabled: platformOriginHttpsEnabled })
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Could not update the platform domain');
       platform = payload;
       platformDomain = payload.domain || '';
+      platformOriginHttpsEnabled = payload.originHttpsEnabled !== false;
       await load();
       notice = payload.domain
-        ? `${payload.domain} is now the permanent Dokyr address. Automatic HTTPS is being provisioned.`
+        ? payload.originHttpsEnabled
+          ? `${payload.domain} is now the permanent Dokyr address. Automatic HTTPS is being provisioned.`
+          : `${payload.domain} is now the permanent Dokyr address. Caddy will accept HTTP from your external TLS proxy.`
         : 'The custom platform domain was removed. Dokyr is using its temporary server address again.';
       toast.success(payload.domain ? 'Platform domain connected' : 'Platform domain removed');
     } catch (cause) {
@@ -588,11 +594,31 @@
       </label>
       <button class="btn btn-primary" type="submit" disabled={platformSaving || !platformDomain.trim()}>{platformSaving ? 'Connecting…' : platform.domain ? 'Update domain' : 'Connect domain'}</button>
       {#if platform.domain}<button class="btn" type="button" onclick={() => savePlatformDomain('')} disabled={platformSaving}>Remove</button>{/if}
+      <fieldset class="platform-origin">
+        <legend>Connection from the edge to Caddy</legend>
+        <div class="platform-origin-options">
+          <label class="platform-origin-option" class:active={platformOriginHttpsEnabled}>
+            <input type="radio" bind:group={platformOriginHttpsEnabled} value={true} disabled={platformSaving} />
+            <span class="platform-origin-icon"><Icon name="shield" size={15} /></span>
+            <span><strong>Caddy automatic HTTPS</strong><small>Recommended for direct DNS and Cloudflare Full or Full (strict).</small></span>
+            <i><Icon name="check" size={11} /></i>
+          </label>
+          <label class="platform-origin-option" class:active={!platformOriginHttpsEnabled}>
+            <input type="radio" bind:group={platformOriginHttpsEnabled} value={false} disabled={platformSaving} />
+            <span class="platform-origin-icon"><Icon name="cloud" size={15} /></span>
+            <span><strong>HTTP behind external proxy</strong><small>For Cloudflare Flexible or another proxy that terminates public TLS.</small></span>
+            <i><Icon name="check" size={11} /></i>
+          </label>
+        </div>
+        {#if !platformOriginHttpsEnabled}
+          <p class="platform-origin-warning"><Icon name="alert" size={13} /> Keep this hostname proxied. Traffic from the proxy to this server is not encrypted, and direct HTTPS to the origin is disabled.</p>
+        {/if}
+      </fieldset>
     </form>
     <footer>
       <span><Icon name="network" size={13} /> DNS record</span>
       <code>{dnsTarget.type} · {platformDomain || 'panel.example.com'} → {dnsTarget.value}</code>
-      <span><Icon name="lock" size={13} /> Automatic HTTPS</span>
+      <span class:http-origin={!platformOriginHttpsEnabled}><Icon name={platformOriginHttpsEnabled ? 'lock' : 'cloud'} size={13} /> {platformOriginHttpsEnabled ? 'Caddy automatic HTTPS' : 'HTTP origin · external TLS'}</span>
     </footer>
   </section>
 
@@ -652,7 +678,7 @@
         {#each filteredDomains as domain}
           <article class="domain-row" class:unassigned={domain.kind === 'managed' && !domain.projectId}>
             <span class="domain-status" class:secure={domain.status === 'verified' || domain.httpsEnabled} class:pending={domain.kind === 'managed' && domain.status !== 'verified'}>
-              <Icon name={domain.kind === 'registry' ? 'layers' : domain.status === 'verified' ? 'check' : domain.httpsEnabled ? 'lock' : 'globe'} size={15} />
+              <Icon name={domain.kind === 'registry' ? 'layers' : domain.status === 'verified' ? 'check' : domain.httpsEnabled ? 'lock' : domain.externalTLS ? 'cloud' : 'globe'} size={15} />
             </span>
             <div class="domain-identity">
               {#if domain.projectId || domain.kind !== 'managed'}
@@ -673,7 +699,7 @@
               <button class="verify-badge" class:verified={domain.status === 'verified'} type="button" onclick={() => verifyDNS(domain)} disabled={verifyingId === domain.id}>
                 <Icon name={domain.status === 'verified' ? 'check-circle' : 'refresh'} size={12} />{verifyingId === domain.id ? 'Checking…' : domain.status === 'verified' ? 'DNS verified' : 'Verify DNS'}
               </button>
-            {:else}<span class="tls-badge" class:http={!domain.httpsEnabled}>{domain.httpsEnabled ? 'Automatic SSL' : 'HTTP only'}</span>{/if}
+            {:else}<span class="tls-badge" class:http={!domain.httpsEnabled}>{domain.externalTLS ? 'External TLS · HTTP origin' : domain.httpsEnabled ? 'Automatic SSL' : 'HTTP only'}</span>{/if}
             {#if domain.kind === 'control'}
               <span class="system-badge"><Icon name="lock" size={11} /> System</span>
             {:else}
@@ -886,10 +912,26 @@
   .platform-domain-input { height: 38px; padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-2); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); color: var(--color-muted); }
   .platform-domain-input:focus-within { border-color: var(--color-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-focus) 14%, transparent); }
   .platform-domain-input input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--color-ink); font: var(--text-sm) var(--font-mono); }
+  .platform-origin { grid-column: 1 / -1; min-width: 0; margin: var(--space-2) 0 0; padding: 0; border: 0; }
+  .platform-origin legend { margin-bottom: 7px; color: var(--color-muted); font-size: var(--text-2xs); font-weight: 700; }
+  .platform-origin-options { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+  .platform-domain form .platform-origin-option { position: relative; min-height: 68px; padding: var(--space-3); display: grid; grid-template-columns: 30px minmax(0, 1fr) 18px; align-items: center; gap: var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface-subtle); cursor: pointer; }
+  .platform-domain form .platform-origin-option.active { border-color: var(--color-accent); background: var(--color-accent-softer); box-shadow: inset 0 0 0 1px var(--color-accent); }
+  .platform-origin-option input { position: absolute; opacity: 0; pointer-events: none; }
+  .platform-origin-icon { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid var(--color-rule); border-radius: 50%; background: var(--color-paper-raised); color: var(--color-muted); }
+  .platform-origin-option.active .platform-origin-icon { border-color: color-mix(in srgb, var(--color-accent) 35%, var(--color-rule)); color: var(--color-accent); }
+  .platform-domain form .platform-origin-option > span:nth-of-type(2) { display: grid; gap: 2px; color: var(--color-ink); font-size: inherit; font-weight: inherit; }
+  .platform-origin-option strong { font-size: var(--text-xs); }
+  .platform-origin-option small { color: var(--color-muted); font-size: var(--text-2xs); line-height: 1.4; }
+  .platform-origin-option i { width: 17px; height: 17px; display: none; place-items: center; border-radius: 50%; background: var(--color-accent); color: var(--color-accent-ink); }
+  .platform-origin-option.active i { display: grid; }
+  .platform-origin-warning { margin: var(--space-2) 0 0; padding: var(--space-2) var(--space-3); display: flex; align-items: flex-start; gap: var(--space-2); border: 1px solid color-mix(in srgb, var(--color-warning) 35%, var(--color-rule)); border-radius: var(--radius-sm); background: var(--color-warning-soft); color: var(--color-warning); font-size: var(--text-2xs); line-height: 1.45; }
+  .platform-origin-warning :global(svg) { margin-top: 1px; flex: none; }
   .platform-domain footer { min-height: 42px; padding: 0 var(--space-5); display: flex; align-items: center; gap: var(--space-3); border-top: 1px solid var(--color-rule); background: var(--color-surface-subtle); color: var(--color-muted); font-size: var(--text-2xs); }
   .platform-domain footer span { display: inline-flex; align-items: center; gap: 5px; }
   .platform-domain footer code { color: var(--color-ink-secondary); font-size: var(--text-2xs); }
   .platform-domain footer span:last-child { margin-left: auto; color: var(--color-success); }
+  .platform-domain footer span.http-origin { color: var(--color-warning); }
 
   .domain-overview { margin-bottom: var(--space-4); display: grid; grid-template-columns: repeat(3, minmax(140px, .45fr)) minmax(260px, 1fr); overflow: hidden; border: 1px solid var(--color-rule); border-radius: var(--radius-lg); background: var(--color-paper-raised); box-shadow: var(--shadow-panel); }
   .domain-overview article { min-height: 74px; padding: var(--space-4); display: flex; align-items: center; gap: var(--space-3); border-right: 1px solid var(--color-rule); }
@@ -1068,6 +1110,7 @@
     .page-actions .connection { display: none; }
     .platform-domain form { grid-template-columns: 1fr 1fr; }
     .platform-domain form label { grid-column: 1 / -1; }
+    .platform-origin-options { grid-template-columns: 1fr; }
     .platform-domain footer { align-items: flex-start; flex-direction: column; gap: 4px; padding-block: var(--space-3); }
     .platform-domain footer span:last-child { margin-left: 0; }
     .domain-overview { grid-template-columns: 1fr; }

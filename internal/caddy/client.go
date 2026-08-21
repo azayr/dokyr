@@ -38,6 +38,7 @@ type Client struct {
 	controlUpstream string
 	controlHosts    []string
 	controlDomain   string
+	controlHTTPS    bool
 	registryHosts   []string
 	mailHostname    string
 	http            *http.Client
@@ -90,6 +91,7 @@ func New(adminURL string, controlHosts []string, registryHosts []string, request
 		adminURL:        strings.TrimRight(adminURL, "/"),
 		controlUpstream: controlUpstream,
 		controlHosts:    normalizedHosts,
+		controlHTTPS:    true,
 		registryHosts:   normalizedRegistryHosts,
 		http:            httpClient,
 	}, nil
@@ -183,6 +185,7 @@ func (c *Client) Render(routes []Route) string {
 	c.mu.RLock()
 	mailHostname := c.mailHostname
 	controlDomain := c.controlDomain
+	controlHTTPS := c.controlHTTPS
 	controlHosts := append([]string(nil), c.controlHosts...)
 	registryHosts := append([]string(nil), c.registryHosts...)
 	controlUpstream := c.controlUpstream
@@ -191,7 +194,7 @@ func (c *Client) Render(routes []Route) string {
 		controlHosts = append(controlHosts, controlDomain)
 		sort.Strings(controlHosts)
 	}
-	return render(routes, controlHosts, registryHosts, controlUpstream, mailHostname, controlDomain)
+	return render(routes, controlHosts, registryHosts, controlUpstream, mailHostname, controlDomain, controlHTTPS)
 }
 
 // SetMailHostname reserves the public mail hostname and exposes only
@@ -233,16 +236,24 @@ func (c *Client) ControlDomain() string {
 	return c.controlDomain
 }
 
-// SetControlDomain promotes a user-configured hostname to the HTTPS control
-// plane route. Environment-provided control hosts remain available as recovery
-// addresses if DNS is changed or removed later.
-func (c *Client) SetControlDomain(domain string) error {
+func (c *Client) ControlDomainHTTPSEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.controlHTTPS
+}
+
+// SetControlDomain promotes a user-configured hostname to the control-plane
+// route. Operators using an external TLS-terminating proxy may explicitly
+// configure an HTTP origin.
+// Environment-provided control hosts remain available as recovery addresses.
+func (c *Client) SetControlDomain(domain string, httpsEnabled bool) error {
 	normalized, err := NormalizeDomain(domain)
 	if err != nil {
 		return err
 	}
 	c.mu.Lock()
 	c.controlDomain = normalized
+	c.controlHTTPS = httpsEnabled
 	c.mu.Unlock()
 	return nil
 }
@@ -324,7 +335,7 @@ func (c *Client) ApplyRaw(ctx context.Context, body string) error {
 	return fmt.Errorf("Caddy rejected configuration (%s): %s", res.Status, strings.TrimSpace(string(message)))
 }
 
-func render(routes []Route, controlHosts []string, registryHosts []string, controlUpstream, mailHostname, controlDomain string) string {
+func render(routes []Route, controlHosts []string, registryHosts []string, controlUpstream, mailHostname, controlDomain string, controlHTTPS bool) string {
 	sorted := append([]Route(nil), routes...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Domain < sorted[j].Domain })
 	// Drop any route that claims a control hostname. Callers reject these when
@@ -347,7 +358,7 @@ func render(routes []Route, controlHosts []string, registryHosts []string, contr
 	sorted = kept
 	var body strings.Builder
 	body.WriteString("{\n\tadmin unix//run/caddy-admin/admin.sock\n}\n\n")
-	if controlDomain != "" {
+	if controlDomain != "" && controlHTTPS {
 		fmt.Fprintf(&body, "%s {\n\tencode zstd gzip\n\treverse_proxy %s\n}\n\n", controlDomain, controlUpstream)
 	}
 	for _, route := range sorted {
@@ -359,7 +370,13 @@ func render(routes []Route, controlHosts []string, registryHosts []string, contr
 	}
 	body.WriteString(":80 {\n\tencode zstd gzip\n")
 	if controlDomain != "" {
-		fmt.Fprintf(&body, "\t@controlDomain host %s\n\thandle @controlDomain {\n\t\tredir https://{host}{uri} permanent\n\t}\n", controlDomain)
+		fmt.Fprintf(&body, "\t@controlDomain host %s\n\thandle @controlDomain {\n", controlDomain)
+		if controlHTTPS {
+			body.WriteString("\t\tredir https://{host}{uri} permanent\n")
+		} else {
+			fmt.Fprintf(&body, "\t\treverse_proxy %s\n", controlUpstream)
+		}
+		body.WriteString("\t}\n")
 	}
 	// Caddy stops at the first matching handle block, so the control-panel
 	// matchers are written before any project route. The panel stays reachable
