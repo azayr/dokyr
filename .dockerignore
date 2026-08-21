@@ -6,6 +6,7 @@
 README.md
 Makefile
 compose.yaml
+compose.production.yaml
 Caddyfile
 server
 scripts/

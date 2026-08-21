@@ -685,7 +685,7 @@ func (s *Service) CloneRepository(ctx context.Context, connection store.SourceCo
 	}
 	defer os.RemoveAll(credentialsDir)
 	askPassPath := credentialsDir + "/askpass.sh"
-	askPass := "#!/bin/sh\ncase \"$1\" in\n  *Username*) printf '%s\\n' \"$SELFHOST_GIT_USERNAME\" ;;\n  *) printf '%s\\n' \"$SELFHOST_GIT_TOKEN\" ;;\nesac\n"
+	askPass := "#!/bin/sh\ncase \"$1\" in\n  *Username*) printf '%s\\n' \"$DOKYR_GIT_USERNAME\" ;;\n  *) printf '%s\\n' \"$DOKYR_GIT_TOKEN\" ;;\nesac\n"
 	if err := os.WriteFile(askPassPath, []byte(askPass), 0700); err != nil {
 		return err
 	}
@@ -708,7 +708,7 @@ func (s *Service) CloneRepository(ctx context.Context, connection store.SourceCo
 		args = append([]string{"-c", resolveOption}, args...)
 	}
 	command := exec.CommandContext(ctx, "git", args...)
-	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS="+askPassPath, "SELFHOST_GIT_USERNAME="+username, "SELFHOST_GIT_TOKEN="+token)
+	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS="+askPassPath, "DOKYR_GIT_USERNAME="+username, "DOKYR_GIT_TOKEN="+token)
 	command.Stdout = output
 	command.Stderr = output
 	if err := command.Run(); err != nil {

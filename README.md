@@ -72,17 +72,18 @@ configured maintenance hour. Release migrations must remain backward
 compatible so a container rollback can safely run the previous binary.
 
 The in-app updater replaces the Dokyr image only. When a release changes the
-Compose topology—such as adding the bundled Stalwart service—an existing VPS
-must also refresh `compose.yaml`. Preserve a backup and any local edits:
+Compose topology—such as adding or removing a platform service—update the VPS
+topology separately:
 
 ```sh
-cd /opt/dokyr
-sudo cp compose.yaml compose.yaml.before-stalwart
-sudo curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/compose.yaml -o compose.yaml
-sudo sed -i.bak '/^    build: \.$/d' compose.yaml
-sudo docker compose pull
-sudo docker compose up -d --remove-orphans
+curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/update.sh | sudo sh
 ```
+
+The topology updater validates and pulls the replacement before changing the
+installation, saves the previous files under `/opt/dokyr/backups`, and restores
+them if Compose reconciliation fails. It does not run `compose down` or remove
+volumes. Dokyr-managed project containers and databases are separate from the
+platform Compose project and remain running.
 
 Caddy rejects unknown hostnames with a 404 instead of forwarding them to the control panel. Direct IPv4 access is allowed automatically, so a fresh installation remains reachable at the VPS IP and published HTTP port. `CONTROL_HOSTS` is the allowlist for additional control-panel domain names. For example, on a VPS:
 

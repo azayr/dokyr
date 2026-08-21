@@ -28,15 +28,24 @@ Automatic updates are disabled by default. When enabled, they run during the con
 
 ## Compose topology changes
 
-The in-app updater replaces the Dokyr image only. When release notes mention changes to `compose.yaml`, refresh the file separately and preserve a backup of local edits:
+The in-app updater replaces the Dokyr image only. When release notes mention changes to the platform Compose topology, run the topology updater:
 
 ```sh
-cd /opt/dokyr
-sudo cp compose.yaml compose.yaml.before-update
-sudo curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/compose.yaml -o compose.yaml
-sudo sed -i.bak '/^    build: \.$/d' compose.yaml
-sudo docker compose pull
-sudo docker compose up -d --remove-orphans
+curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/update.sh | sudo sh
+```
+
+The script downloads and validates `compose.production.yaml`, pulls required
+images, backs up the current Compose file and runtime configuration, and runs
+`docker compose up -d --remove-orphans`. If reconciliation fails, it restores
+the previous files and attempts to bring the previous topology back up. It never
+runs `compose down` or removes volumes, so separately managed project
+containers and databases remain running.
+
+To validate an update without changing the installed stack:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/update.sh -o /tmp/update-dokyr.sh
+sudo DOKYR_UPDATE_DRY_RUN=true sh /tmp/update-dokyr.sh
 ```
 
 Release database migrations are designed to remain backward compatible so the previous image can run after a failed update.

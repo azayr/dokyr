@@ -560,9 +560,17 @@ func TestRailpackBuildctlArgsUsesPlanAndRegistryCache(t *testing.T) {
 }
 
 func TestBuildkitCacheRefScopesTemplateToService(t *testing.T) {
-	t.Setenv("SELFHOST_BUILDKIT_CACHE_REF", "registry.example.com/dokyr/{service}:cache")
+	t.Setenv("DOKYR_BUILDKIT_CACHE_REF", "registry.example.com/dokyr/{service}:cache")
 	if got := buildkitCacheRef("svc_api"); got != "registry.example.com/dokyr/svc_api:cache" {
 		t.Fatalf("cache ref = %q", got)
+	}
+}
+
+func TestBuildkitCacheRefAcceptsLegacyEnvironmentName(t *testing.T) {
+	t.Setenv("DOKYR_BUILDKIT_CACHE_REF", "")
+	t.Setenv("SELFHOST_BUILDKIT_CACHE_REF", "legacy.example.com/{service}:cache")
+	if got := buildkitCacheRef("svc_api"); got != "legacy.example.com/svc_api:cache" {
+		t.Fatalf("legacy cache ref = %q", got)
 	}
 }
 

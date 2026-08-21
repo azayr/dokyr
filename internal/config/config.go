@@ -78,17 +78,17 @@ func Load() Config {
 	smtpFromEmail := strings.TrimSpace(os.Getenv("SMTP_FROM_EMAIL"))
 	registryStorage := strings.ToLower(strings.TrimSpace(env("REGISTRY_STORAGE", "filesystem")))
 	s3Bucket := strings.TrimSpace(os.Getenv("REGISTRY_S3_BUCKET"))
-	encryptionKey := env("SELFHOST_ENCRYPTION_KEY", "development-encryption-key-change-now")
+	encryptionKey := dokyrEnv("DOKYR_ENCRYPTION_KEY", "development-encryption-key-change-now")
 	registryInternalSeed := env("REGISTRY_INTERNAL_SECRET", encryptionKey)
 	registryInternalHash := sha256.Sum256([]byte(registryInternalSeed))
 	return Config{
-		Address:                      env("SELFHOST_ADDRESS", ":8080"),
-		Frontend:                     env("SELFHOST_FRONTEND_DIR", "./web/build"),
+		Address:                      dokyrEnv("DOKYR_ADDRESS", ":8080"),
+		Frontend:                     dokyrEnv("DOKYR_FRONTEND_DIR", "./web/build"),
 		DatabaseURL:                  env("DATABASE_URL", "postgres://selfhost:selfhost@localhost:5432/selfhost?sslmode=disable"),
-		JWTSecret:                    env("SELFHOST_JWT_SECRET", "development-only-change-this-secret-now"),
-		JWTIssuer:                    env("SELFHOST_JWT_ISSUER", "selfhost"),
-		CookieSecure:                 env("SELFHOST_COOKIE_SECURE", "false") == "true",
-		PublicURL:                    env("SELFHOST_PUBLIC_URL", "http://localhost:8080"),
+		JWTSecret:                    dokyrEnv("DOKYR_JWT_SECRET", "development-only-change-this-secret-now"),
+		JWTIssuer:                    dokyrEnv("DOKYR_JWT_ISSUER", "selfhost"),
+		CookieSecure:                 dokyrEnv("DOKYR_COOKIE_SECURE", "false") == "true",
+		PublicURL:                    dokyrEnv("DOKYR_PUBLIC_URL", "http://localhost:8080"),
 		EncryptionKey:                encryptionKey,
 		GitLabClientID:               os.Getenv("GITLAB_CLIENT_ID"),
 		GitLabClientSecret:           os.Getenv("GITLAB_CLIENT_SECRET"),
@@ -98,15 +98,15 @@ func Load() Config {
 		GiteaBaseURL:                 env("GITEA_BASE_URL", "https://gitea.com"),
 		CaddyAdminURL:                env("CADDY_ADMIN_URL", "unix:///run/caddy-admin/admin.sock"),
 		ControlUpstream:              env("DOKYR_CONTROL_UPSTREAM", "selfhost:8080"),
-		ControlHosts:                 splitHosts(env("SELFHOST_CONTROL_HOSTS", "localhost")),
+		ControlHosts:                 splitHosts(dokyrEnv("DOKYR_CONTROL_HOSTS", "localhost")),
 		RegistryHosts:                splitHosts(env("REGISTRY_HOSTS", "registry.invalid")),
 		RegistryTokenIssuer:          env("REGISTRY_TOKEN_ISSUER", "dokyr-registry"),
 		RegistryTokenService:         env("REGISTRY_TOKEN_SERVICE", "dokyr-registry"),
 		RegistryTokenPrivateKeyPath:  env("REGISTRY_TOKEN_PRIVATE_KEY_PATH", "/run/registry-auth/registry-token.key"),
 		RegistryTokenCertificatePath: env("REGISTRY_TOKEN_CERTIFICATE_PATH", "/run/registry-auth/registry-token.crt"),
 		RegistryInternalSecret:       hex.EncodeToString(registryInternalHash[:]),
-		PlatformImage:                env("SELFHOST_PLATFORM_IMAGE", "ghcr.io/azayr/dokyr"),
-		UpdateChannel:                env("SELFHOST_UPDATE_CHANNEL", "latest"),
+		PlatformImage:                dokyrEnv("DOKYR_PLATFORM_IMAGE", "ghcr.io/azayr/dokyr"),
+		UpdateChannel:                dokyrEnv("DOKYR_UPDATE_CHANNEL", "latest"),
 		MailStalwartURL:              strings.TrimSpace(os.Getenv("MAIL_STALWART_URL")),
 		MailStalwartAPIKey:           strings.TrimSpace(os.Getenv("MAIL_STALWART_API_KEY")),
 		MailStalwartUser:             strings.TrimSpace(os.Getenv("MAIL_STALWART_USER")),
@@ -149,6 +149,19 @@ func splitHosts(value string) []string {
 
 func env(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+// dokyrEnv prefers the current DOKYR_* name while accepting the former
+// SELFHOST_* spelling during the Compose topology migration window.
+func dokyrEnv(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	legacyKey := "SELFHOST_" + strings.TrimPrefix(key, "DOKYR_")
+	if value := os.Getenv(legacyKey); value != "" {
 		return value
 	}
 	return fallback

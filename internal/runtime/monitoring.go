@@ -148,9 +148,9 @@ type dockerStats struct {
 func newMetricsCache() *metricsCache {
 	return &metricsCache{
 		containerDisks: map[string]DiskMetrics{},
-		procRoot:       availablePath(os.Getenv("SELFHOST_HOST_PROC"), "/host/proc", "/proc"),
-		sysRoot:        availablePath(os.Getenv("SELFHOST_HOST_SYS"), "/host/sys", "/sys"),
-		diskPath:       availablePath(os.Getenv("SELFHOST_HOST_DISK"), "/host/disk", "/"),
+		procRoot:       availablePath(dokyrEnvironment("DOKYR_HOST_PROC"), "/host/proc", "/proc"),
+		sysRoot:        availablePath(dokyrEnvironment("DOKYR_HOST_SYS"), "/host/sys", "/sys"),
+		diskPath:       availablePath(dokyrEnvironment("DOKYR_HOST_DISK"), "/host/disk", "/"),
 	}
 }
 

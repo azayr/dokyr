@@ -306,7 +306,7 @@ GitHub account linking uses the redirect returned by `GET /api/account/github/st
 GitHub login and account linking use a public, identity-only GitHub App created
 for the individual Dokyr server through GitHub's App Manifest flow. When it is
 not configured, an authenticated request to `GET /api/account/github/start`
-creates it automatically using `SELFHOST_PUBLIC_URL` for its manifest and
+creates it automatically using `DOKYR_PUBLIC_URL` for its manifest and
 callback URLs, then continues into account authorization. No GitHub client
 credentials or callback domain are configured manually.
 
@@ -651,7 +651,7 @@ Git service:
 
 Git repositories must be visible to the selected GitHub, GitLab, or Gitea connection. `buildStrategy` is `dockerfile` (default) or `auto`. Dockerfile builds require `dockerfilePath` and `buildContext`, both of which must remain inside the repository; absolute paths and parent traversal are rejected. Auto uses Railpack to inspect the repository and does not require a Dockerfile.
 
-Auto builds run `railpack prepare` to generate `railpack-plan.json`, then send the source and plan to the rootless BuildKit service included in `compose.yaml` through `SELFHOST_BUILDKIT_HOST=tcp://buildkit:1234`. The daemon is isolated on the dedicated build network and its port is not published to the host. Set `SELFHOST_BUILDKIT_HOST` to another reachable `tcp://host:port` endpoint to use an externally managed BuildKit deployment instead. Set `SELFHOST_BUILDKIT_CACHE_REF` to a registry cache reference such as `registry.example.com/dokyr/{service}:cache`; `{service}` is replaced with the service ID, and Dokyr imports and exports that cache for each build.
+Auto builds run `railpack prepare` to generate `railpack-plan.json`, then send the source and plan to the BuildKit service included in `compose.yaml` through `DOKYR_BUILDKIT_HOST=tcp://buildkit:1234`. The daemon is isolated on the dedicated build network and its port is not published to the host. Set `DOKYR_BUILDKIT_HOST` to another reachable `tcp://host:port` endpoint to use an externally managed BuildKit deployment instead. Set `DOKYR_BUILDKIT_CACHE_REF` to a registry cache reference such as `registry.example.com/dokyr/{service}:cache`; `{service}` is replaced with the service ID, and Dokyr imports and exports that cache for each build.
 
 The bundled builder reads DNS servers from `buildkitd.toml`. Adjust that file when production builds must resolve private package mirrors or internal hostnames instead of the public defaults.
 

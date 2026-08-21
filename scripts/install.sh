@@ -87,7 +87,7 @@ require_command stty
 require_command tr
 require_command head
 require_command grep
-require_command sed
+require_command chmod
 
 # Docker socket is required for Dokyr to manage the host engine.
 if [ ! -S /var/run/docker.sock ]; then
@@ -136,8 +136,12 @@ log "Downloading Compose files into ${INSTALL_DIR}..."
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
-# Download files from the selected branch on GitHub.
-for file in compose.yaml Caddyfile buildkitd.toml .env.example; do
+# Install the VPS topology under Docker Compose's conventional filename.
+log "  - compose.yaml"
+curl -fsSL "${GITHUB_RAW}/compose.production.yaml" -o compose.yaml.tmp || error "Failed to download compose.production.yaml"
+mv compose.yaml.tmp compose.yaml
+
+for file in Caddyfile buildkitd.toml .env.example; do
   log "  - ${file}"
   curl -fsSL "${GITHUB_RAW}/${file}" -o "${file}.tmp" || error "Failed to download ${file}"
   mv "${file}.tmp" "$file"
@@ -145,13 +149,6 @@ done
 
 if ! grep -q '^  dokyr:$' compose.yaml 2>/dev/null; then
   error "Downloaded compose.yaml does not contain the Dokyr service"
-fi
-
-# The repository compose.yaml includes `build: .` for local development. The
-# published image is used for a VPS install, so remove the build directive so the
-# installer does not need a local Dockerfile.
-if grep -q '^    build: \.$' compose.yaml 2>/dev/null; then
-  sed -i.bak '/^    build: \.$/d' compose.yaml && rm -f compose.yaml.bak
 fi
 
 # Build .env from the example. Keep the example as a reference.
@@ -165,13 +162,14 @@ POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 JWT_SECRET=${JWT_SECRET}
 ENCRYPTION_KEY=${ENCRYPTION_KEY}
 COOKIE_SECURE=false
+DOKYR_INSTALL_DIR=${INSTALL_DIR}
 HOST_DISK_PATH=${INSTALL_DIR}/host-disk
 
 # Auto builds analyze with Railpack and execute the generated plan on BuildKit.
-SELFHOST_BUILDKIT_HOST=tcp://buildkit:1234
-BUILDKIT_IMAGE=moby/buildkit:rootless
-SELFHOST_BUILDKIT_CACHE_REF=
-SELFHOST_RAILPACK_FRONTEND=ghcr.io/railwayapp/railpack-frontend:latest
+DOKYR_BUILDKIT_HOST=tcp://buildkit:1234
+BUILDKIT_IMAGE=moby/buildkit:buildx-stable-1
+DOKYR_BUILDKIT_CACHE_REF=
+DOKYR_RAILPACK_FRONTEND=ghcr.io/railwayapp/railpack-frontend:latest
 
 DOKYR_IMAGE=${DOKYR_IMAGE}
 DOKYR_REGISTRY_IMAGE=${DOKYR_REGISTRY_IMAGE}
@@ -236,6 +234,7 @@ MAIL_STALWART_RELAY_HOST=stalwart
 MAIL_STALWART_RELAY_PORT=465
 MAIL_STALWART_RELAY_PASSWORD=${STALWART_RELAY_PASSWORD}
 EOF
+chmod 600 .env
 
 # Create the host disk mount target so the path is stable.
 mkdir -p "${INSTALL_DIR}/host-disk"

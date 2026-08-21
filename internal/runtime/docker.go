@@ -721,7 +721,7 @@ func (w *buildProgressWriter) Flush() {
 func (d *Docker) buildWithRailpack(ctx context.Context, serviceID, image, sourceDir string, environment []string, progress ProgressFunc) (string, error) {
 	buildkitAddress := buildkitHost()
 	if buildkitAddress == "" {
-		return "", errors.New("automatic builds require SELFHOST_BUILDKIT_HOST to point to a reachable BuildKit daemon")
+		return "", errors.New("automatic builds require DOKYR_BUILDKIT_HOST to point to a reachable BuildKit daemon")
 	}
 	artifactsDir, err := os.MkdirTemp("", "dokyr-railpack-")
 	if err != nil {
@@ -860,22 +860,29 @@ func (d *Docker) loadImageArchive(ctx context.Context, archivePath string, progr
 }
 
 func buildkitHost() string {
-	if value := strings.TrimSpace(os.Getenv("SELFHOST_BUILDKIT_HOST")); value != "" {
+	if value := strings.TrimSpace(dokyrEnvironment("DOKYR_BUILDKIT_HOST")); value != "" {
 		return value
 	}
 	return ""
 }
 
 func railpackFrontend() string {
-	if value := strings.TrimSpace(os.Getenv("SELFHOST_RAILPACK_FRONTEND")); value != "" {
+	if value := strings.TrimSpace(dokyrEnvironment("DOKYR_RAILPACK_FRONTEND")); value != "" {
 		return value
 	}
 	return "ghcr.io/railwayapp/railpack-frontend:latest"
 }
 
 func buildkitCacheRef(serviceID string) string {
-	value := strings.TrimSpace(os.Getenv("SELFHOST_BUILDKIT_CACHE_REF"))
+	value := strings.TrimSpace(dokyrEnvironment("DOKYR_BUILDKIT_CACHE_REF"))
 	return strings.ReplaceAll(value, "{service}", serviceID)
+}
+
+func dokyrEnvironment(key string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return os.Getenv("SELFHOST_" + strings.TrimPrefix(key, "DOKYR_"))
 }
 
 func (d *Docker) DeployApplicationBuiltImage(ctx context.Context, serviceID, projectID, serviceName, image string, containerPort int, environment []string, command string, healthCheck ApplicationHealthCheck, progress ProgressFunc) (Service, error) {

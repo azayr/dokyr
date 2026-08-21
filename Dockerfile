@@ -43,7 +43,7 @@ COPY --from=api /selfhost /usr/local/bin/selfhost
 COPY --from=railpack /go/bin/railpack /usr/local/bin/railpack
 COPY --from=buildkit /usr/bin/buildctl /usr/local/bin/buildctl
 COPY --from=web /src/web/build ./web/build
-ENV SELFHOST_ADDRESS=:8080 SELFHOST_FRONTEND_DIR=/app/web/build
+ENV DOKYR_ADDRESS=:8080 DOKYR_FRONTEND_DIR=/app/web/build
 LABEL org.opencontainers.image.title="Dokyr" \
   org.opencontainers.image.description="A lightweight self-hosted deployment control plane" \
   org.opencontainers.image.source="https://github.com/azayr/dokyr" \

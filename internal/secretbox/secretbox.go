@@ -15,7 +15,7 @@ type Box struct{ aead cipher.AEAD }
 
 func New(passphrase string) (*Box, error) {
 	if len(passphrase) < 32 {
-		return nil, errors.New("SELFHOST_ENCRYPTION_KEY must contain at least 32 characters")
+		return nil, errors.New("DOKYR_ENCRYPTION_KEY must contain at least 32 characters")
 	}
 	key := sha256.Sum256([]byte(passphrase))
 	block, err := aes.NewCipher(key[:])

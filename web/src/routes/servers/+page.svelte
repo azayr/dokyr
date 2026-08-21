@@ -1015,7 +1015,7 @@
 
       <div class="backup-recovery-note">
         <Icon name="shield" size={15} />
-        <p><strong>Keep the installation encryption key.</strong> The archive contains encrypted credentials. Restoring on another server requires the same <code>SELFHOST_ENCRYPTION_KEY</code>.</p>
+        <p><strong>Keep the installation encryption key.</strong> The archive contains encrypted credentials. Restoring on another server requires the same <code>DOKYR_ENCRYPTION_KEY</code>.</p>
       </div>
     {/if}
   {/if}

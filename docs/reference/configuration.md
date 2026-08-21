@@ -19,9 +19,9 @@ The installer writes the production environment file. For local development, cop
 | `JWT_SECRET` | Session signing key, at least 32 characters | development placeholder |
 | `ENCRYPTION_KEY` | Stored-secret encryption key, at least 32 characters | development placeholder |
 | `COOKIE_SECURE` | Send the session cookie only over HTTPS | `false` |
-| `SELFHOST_BUILDKIT_HOST` | BuildKit daemon used by Auto builds | `tcp://buildkit:1234` |
-| `SELFHOST_BUILDKIT_CACHE_REF` | Optional registry cache reference; supports `{service}` | empty |
-| `SELFHOST_RAILPACK_FRONTEND` | BuildKit frontend used for Railpack plans | `ghcr.io/railwayapp/railpack-frontend:latest` |
+| `DOKYR_BUILDKIT_HOST` | BuildKit daemon used by Auto builds | `tcp://buildkit:1234` |
+| `DOKYR_BUILDKIT_CACHE_REF` | Optional registry cache reference; supports `{service}` | empty |
+| `DOKYR_RAILPACK_FRONTEND` | BuildKit frontend used for Railpack plans | `ghcr.io/railwayapp/railpack-frontend:latest` |
 
 ## Platform updates
 

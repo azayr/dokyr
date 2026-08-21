@@ -1,21 +1,20 @@
 services:
   dokyr:
     image: ${DOKYR_IMAGE:-ghcr.io/azayr/dokyr:latest}
-    build: .
     restart: unless-stopped
     environment:
       DOCKER_HOST: unix:///var/run/docker.sock
       DOKYR_HOST_PROC: /host/proc
       DOKYR_HOST_SYS: /host/sys
       DOKYR_HOST_DISK: /host/disk
-      DOKYR_BUILDKIT_HOST: ${DOKYR_BUILDKIT_HOST:-tcp://buildkit:1234}
-      DOKYR_BUILDKIT_CACHE_REF: ${DOKYR_BUILDKIT_CACHE_REF:-}
-      DOKYR_RAILPACK_FRONTEND: ${DOKYR_RAILPACK_FRONTEND:-ghcr.io/railwayapp/railpack-frontend:latest}
       DATABASE_URL: postgres://selfhost:${POSTGRES_PASSWORD:-selfhost-local-password}@postgres:5432/selfhost?sslmode=disable
       DOKYR_JWT_SECRET: ${JWT_SECRET:-development-secret-change-before-production}
       DOKYR_COOKIE_SECURE: ${COOKIE_SECURE:-false}
       DOKYR_PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8888}
       DOKYR_ENCRYPTION_KEY: ${ENCRYPTION_KEY:-development-encryption-key-change-now}
+      DOKYR_BUILDKIT_HOST: ${DOKYR_BUILDKIT_HOST:-tcp://buildkit:1234}
+      DOKYR_BUILDKIT_CACHE_REF: ${DOKYR_BUILDKIT_CACHE_REF:-}
+      DOKYR_RAILPACK_FRONTEND: ${DOKYR_RAILPACK_FRONTEND:-ghcr.io/railwayapp/railpack-frontend:latest}
       GITLAB_CLIENT_ID: ${GITLAB_CLIENT_ID:-}
       GITLAB_CLIENT_SECRET: ${GITLAB_CLIENT_SECRET:-}
       GITLAB_BASE_URL: ${GITLAB_BASE_URL:-https://gitlab.com}
@@ -67,8 +66,6 @@ services:
       - ${HOST_DISK_PATH:-.}:/host/disk:ro
       - caddy_admin:/run/caddy-admin
       - registry_auth:/run/registry-auth
-    extra_hosts:
-      - "gitea.localhost:host-gateway"
     networks: [control, proxy, build]
     depends_on:
       buildkit:
@@ -81,46 +78,6 @@ services:
         condition: service_started
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
-    develop:
-      watch:
-        # UI: rebuild the bundled Svelte app when frontend sources change.
-        - action: rebuild
-          path: ./web
-          ignore:
-            - node_modules/
-            - .svelte-kit/
-            - build/
-        # API: rebuild the Go binary when application sources change.
-        - action: rebuild
-          path: ./cmd
-        - action: rebuild
-          path: ./internal
-        - action: rebuild
-          path: ./go.mod
-        - action: rebuild
-          path: ./go.sum
-        # Recreate the development image when its build recipe changes.
-        - action: rebuild
-          path: ./Dockerfile
-
-  buildkit:
-    image: ${BUILDKIT_IMAGE:-moby/buildkit:rootless}
-    restart: unless-stopped
-    command: ["--config", "/etc/buildkit/buildkitd.toml", "--addr", "tcp://0.0.0.0:1234"]
-    security_opt:
-      - seccomp=unconfined
-      - apparmor=unconfined
-      - systempaths=unconfined
-    volumes:
-      - buildkit_data:/home/user/.local/share/buildkit
-      - ./buildkitd.toml:/etc/buildkit/buildkitd.toml:ro
-    networks: [build]
-    healthcheck:
-      test: ["CMD", "buildctl", "--addr", "tcp://127.0.0.1:1234", "debug", "workers"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-      start_period: 5s
 
   postgres:
     image: postgres:17-alpine
@@ -237,11 +194,31 @@ services:
       - caddy_admin:/run/caddy-admin
     networks: [control, proxy]
 
+  buildkit:
+    image: ${BUILDKIT_IMAGE:-moby/buildkit:buildx-stable-1}
+    restart: unless-stopped
+    privileged: true
+    command: ["--config", "/etc/buildkit/buildkitd.toml", "--addr", "tcp://0.0.0.0:1234"]
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+      - systempaths=unconfined
+    volumes:
+      - buildkit_data:/var/lib/buildkit
+      - ${DOKYR_INSTALL_DIR:-/opt/dokyr}/buildkitd.toml:/etc/buildkit/buildkitd.toml:ro
+    networks: [build]
+    healthcheck:
+      test: ["CMD", "buildctl", "--addr", "tcp://127.0.0.1:1234", "debug", "workers"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
 networks:
   control:
     internal: true
-  build:
   mail_egress:
+  build:
   proxy:
     name: selfhost-proxy
 

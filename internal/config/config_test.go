@@ -46,6 +46,19 @@ func TestControlUpstreamDefaultsToLegacyServiceAndAcceptsDokyr(t *testing.T) {
 	}
 }
 
+func TestDokyrEnvironmentPrefersCurrentNameAndAcceptsLegacyName(t *testing.T) {
+	t.Setenv("DOKYR_ENCRYPTION_KEY", "")
+	t.Setenv("SELFHOST_ENCRYPTION_KEY", "legacy-encryption-key-value")
+	if loaded := Load(); loaded.EncryptionKey != "legacy-encryption-key-value" {
+		t.Fatalf("legacy encryption key = %q", loaded.EncryptionKey)
+	}
+
+	t.Setenv("DOKYR_ENCRYPTION_KEY", "current-encryption-key-value")
+	if loaded := Load(); loaded.EncryptionKey != "current-encryption-key-value" {
+		t.Fatalf("current encryption key = %q", loaded.EncryptionKey)
+	}
+}
+
 func TestGiteaConfigurationSupportsLocalNetworkOrigin(t *testing.T) {
 	t.Setenv("GITEA_CLIENT_ID", "dokyr-local")
 	t.Setenv("GITEA_CLIENT_SECRET", "secret")

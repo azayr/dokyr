@@ -41,7 +41,7 @@ type Manager struct {
 
 func New(secret, issuer string, secure bool) (*Manager, error) {
 	if len(secret) < 32 {
-		return nil, errors.New("SELFHOST_JWT_SECRET must be at least 32 characters")
+		return nil, errors.New("DOKYR_JWT_SECRET must be at least 32 characters")
 	}
 	return &Manager{secret: []byte(secret), issuer: issuer, secure: secure}, nil
 }

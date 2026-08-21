@@ -8,7 +8,7 @@
   handle @controlIP {
     reverse_proxy {$DOKYR_CONTROL_UPSTREAM:dokyr:8080}
   }
-  @control host {$SELFHOST_CONTROL_HOSTS:localhost 127.0.0.1}
+  @control host {$DOKYR_CONTROL_HOSTS:localhost 127.0.0.1}
   handle @control {
     reverse_proxy {$DOKYR_CONTROL_UPSTREAM:dokyr:8080}
   }
