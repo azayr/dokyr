@@ -30,7 +30,7 @@ import serverIcon from '@iconify-icons/lucide/server';
 import terminalIcon from '@iconify-icons/lucide/terminal';
 import { releaseTag, releaseURL } from '../release';
 
-const installCommand = 'curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/install.sh | sudo sh';
+const installCommand = 'curl -fsSL https://sh.dokyr.com | sudo sh';
 const copied = ref(false);
 
 const stack = [

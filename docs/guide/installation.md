@@ -24,7 +24,7 @@ Dokyr controls the host Docker Engine through `/var/run/docker.sock`. Anyone who
 ## Run the installer
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/install.sh | sudo sh
+curl -fsSL https://sh.dokyr.com | sudo sh
 ```
 
 The installer uses `/opt/dokyr` by default, detects the server's public IP, publishes the temporary panel URL on port 3030, and generates the database password and application secrets automatically. It does not prompt for infrastructure configuration.
@@ -36,7 +36,7 @@ After Compose reports the services as running, open the displayed panel URL and 
 Download the script first when you need a repeatable, non-interactive installation:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/install.sh -o /tmp/install-dokyr.sh
+curl -fsSL https://sh.dokyr.com/install.sh -o /tmp/install-dokyr.sh
 
 sudo DOKYR_INSTALL_DIR=/srv/dokyr \
   HTTP_PORT=3030 \

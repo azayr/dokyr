@@ -2,7 +2,7 @@
 set -eu
 
 # Dokyr one-line installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/install.sh | sh
+# Usage: curl -fsSL https://sh.dokyr.com | sudo sh
 # The script installs the Docker Compose stack into /opt/dokyr by default.
 
 REPO="azayr/dokyr"

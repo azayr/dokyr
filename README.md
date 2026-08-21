@@ -15,7 +15,7 @@ The prebuilt control-plane image is available as `ghcr.io/azayr/dokyr:latest`. I
 The fastest way to install Dokyr on a fresh server is the remote installer. It downloads the Compose files, generates secure secrets, and starts the stack:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/install.sh | sudo sh
+curl -fsSL https://sh.dokyr.com | sudo sh
 ```
 
 The installer defaults to `/opt/dokyr`, detects the server's public IP, publishes the temporary control-panel address on HTTP port `3030`, and generates every infrastructure secret automatically. It does not ask for database credentials or hostnames. Run it as root so the control plane can access the host Docker socket, then open the displayed IP address and create the owner account.
@@ -23,7 +23,7 @@ The installer defaults to `/opt/dokyr`, detects the server's public IP, publishe
 For an automated install, download the script and run it with the variables you want preset:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/install.sh -o /tmp/install-dokyr.sh
+curl -fsSL https://sh.dokyr.com/install.sh -o /tmp/install-dokyr.sh
 sudo DOKYR_INSTALL_DIR=/srv/dokyr \
   HTTP_PORT=3030 HTTPS_PORT=443 \
   sh /tmp/install-dokyr.sh
@@ -36,7 +36,7 @@ After signing in, use the dashboard warning or **Infrastructure → Domains** to
 To remove the Dokyr control plane, PostgreSQL data, and configuration, run the uninstaller:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/uninstall.sh | sudo sh
+curl -fsSL https://sh.dokyr.com/uninstall.sh | sudo sh
 ```
 
 This stops the containers, removes their volumes, and deletes the install directory. It does not remove Docker images, networks, or any project containers and volumes Dokyr created for your applications.

@@ -2,7 +2,7 @@
 set -eu
 
 # Dokyr uninstaller
-# Usage: curl -fsSL https://raw.githubusercontent.com/azayr/dokyr/main/scripts/uninstall.sh | sudo sh
+# Usage: curl -fsSL https://sh.dokyr.com/uninstall.sh | sudo sh
 
 REPO="azayr/dokyr"
 BRANCH="${DOKYR_BRANCH:-main}"
